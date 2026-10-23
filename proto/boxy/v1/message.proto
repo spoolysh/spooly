@@ -1,0 +1,291 @@
+syntax = "proto3";
+
+package boxy.v1;
+
+import "boxy/v1/common.proto";
+import "buf/validate/validate.proto";
+import "gnostic/openapi/v3/annotations.proto";
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/httpbody.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
+
+service MessageService {
+  // Store an incoming message. Over REST, the body is the raw message
+  // (message/rfc822) and other fields go in the query string.
+  rpc CreateMessage(stream CreateMessageRequest) returns (CreateMessageResponse) {
+    option (google.api.http) = {
+      post: "/v1/messages"
+      body: "raw"
+      response_body: "message"
+      additional_bindings: {
+        post: "/v1/mailboxes/{mailbox_id_or_addr}/messages"
+        body: "raw"
+        response_body: "message"
+      }
+    };
+    option (gnostic.openapi.v3.operation) = {
+      parameters: {
+        parameter: {
+          name: "mailbox_id_or_addr"
+          in: "query"
+          description: "Mailbox ID or address. Only for POST /v1/messages."
+          schema: {
+            schema: {type: "string"}
+          }
+        }
+      }
+      parameters: {
+        parameter: {
+          name: "sender"
+          in: "query"
+          description: "SMTP envelope sender (MAIL FROM)."
+          schema: {
+            schema: {
+              type: "string"
+              max_length: 254
+            }
+          }
+        }
+      }
+      parameters: {
+        parameter: {
+          name: "received_at"
+          in: "query"
+          description: "When the MTA accepted it. Absent means now."
+          schema: {
+            schema: {
+              type: "string"
+              format: "date-time"
+            }
+          }
+        }
+      }
+      parameters: {
+        parameter: {
+          name: "idempotency_key"
+          in: "query"
+          description: "Unique per mailbox. A repeat returns the stored message."
+          schema: {
+            schema: {
+              type: "string"
+              max_length: 128
+            }
+          }
+        }
+      }
+      request_body: {
+        request_body: {
+          required: true
+          content: {
+            additional_properties: {
+              name: "message/rfc822"
+              value: {
+                schema: {
+                  schema: {
+                    type: "string"
+                    format: "binary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+  }
+
+  // List messages, newest first by ID. A page shorter than limit is the last one.
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/messages"
+      response_body: "messages"
+      additional_bindings: {
+        get: "/v1/mailboxes/{mailbox_id_or_addr}/messages"
+        response_body: "messages"
+      }
+    };
+  }
+
+  // Get a message with its body.
+  rpc GetMessage(GetMessageRequest) returns (GetMessageResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/messages/{id}"
+      response_body: "message"
+    };
+  }
+
+  // Get a message's raw source.
+  rpc GetRawMessage(GetRawMessageRequest) returns (stream GetRawMessageResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/messages/{id}/raw"
+      response_body: "raw"
+    };
+    option (gnostic.openapi.v3.operation) = {
+      responses: {
+        response_or_reference: {
+          name: "200"
+          value: {
+            response: {
+              description: "Raw RFC 5322 source."
+              content: {
+                additional_properties: {
+                  name: "message/rfc822"
+                  value: {
+                    schema: {
+                      schema: {
+                        type: "string"
+                        format: "binary"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+  }
+}
+
+// A stored message. Everything but the delivery fields is parsed from the
+// raw source.
+message Message {
+  // Lowercase ULID.
+  string id = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+    }
+  ];
+  string mailbox_id = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+    }
+  ];
+
+  // SMTP envelope sender (MAIL FROM), not the From header. Empty for bounces.
+  string sender = 13 [(google.api.field_behavior) = REQUIRED];
+
+  // Absent when there's no From header.
+  optional Address from = 3;
+  repeated Address to = 4 [(google.api.field_behavior) = REQUIRED];
+  repeated Address cc = 5 [(google.api.field_behavior) = REQUIRED];
+  string subject = 6 [(google.api.field_behavior) = REQUIRED];
+  // Date header, as claimed by the sender. Absent when missing or invalid.
+  optional google.protobuf.Timestamp date = 7;
+
+  // Start of the text body, for list views.
+  string snippet = 8 [(google.api.field_behavior) = REQUIRED];
+  // Raw size in bytes.
+  int64 size = 9 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).int64.gte = 0
+  ];
+  repeated Attachment attachments = 10 [(google.api.field_behavior) = REQUIRED];
+  // Only set by GetMessage.
+  optional MessageBody body = 11;
+
+  // When the MTA accepted it.
+  google.protobuf.Timestamp received_at = 12 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+}
+
+message MessageBody {
+  string text = 1 [(google.api.field_behavior) = REQUIRED];
+  // Unsanitized.
+  string html = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message Attachment {
+  // Empty when not set.
+  string filename = 1 [(google.api.field_behavior) = REQUIRED];
+  string content_type = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+  // In bytes.
+  int64 size = 3 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).int64.gte = 0
+  ];
+}
+
+// Over Connect/gRPC, the first message carries all fields, later ones
+// only raw chunks.
+message CreateMessageRequest {
+  // Treated as an address if it contains "@". Required in the first message.
+  string mailbox_id_or_addr = 1 [(buf.validate.field) = {
+    ignore: IGNORE_IF_ZERO_VALUE
+    cel: {
+      id: "mailbox_id_or_addr"
+      message: "must be a mailbox ID or an email address"
+      expression: "this.matches('^[0-7][0-9a-hjkmnp-tv-z]{25}$') || this.isEmail()"
+    }
+  }];
+  // Raw RFC 5322 source.
+  google.api.HttpBody raw = 2 [(buf.validate.field).required = true];
+  // SMTP envelope sender (MAIL FROM), e.g. Cloudflare's message.from.
+  string sender = 3 [(buf.validate.field).string.max_len = 254];
+  // Absent means now.
+  optional google.protobuf.Timestamp received_at = 4;
+  // Unique per mailbox. A repeat returns the stored message.
+  optional string idempotency_key = 5 [(buf.validate.field).string.max_len = 128];
+}
+
+message CreateMessageResponse {
+  Message message = 1 [(buf.validate.field).required = true];
+}
+
+message ListMessagesRequest {
+  // Treated as an address if it contains "@". Absent means all mailboxes.
+  optional string mailbox_id_or_addr = 1 [(buf.validate.field).cel = {
+    id: "mailbox_id_or_addr"
+    message: "must be a mailbox ID or an email address"
+    expression: "this.matches('^[0-7][0-9a-hjkmnp-tv-z]{25}$') || this.isEmail()"
+  }];
+  // Absent means 50.
+  optional int32 limit = 2 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 100
+  }];
+  // ID of the last message from the previous page.
+  optional string after = 3 [(buf.validate.field).string.pattern = "^[0-7][0-9a-hjkmnp-tv-z]{25}$"];
+}
+
+message ListMessagesResponse {
+  repeated Message messages = 1;
+}
+
+message GetMessageRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+}
+
+message GetMessageResponse {
+  Message message = 1 [(buf.validate.field).required = true];
+}
+
+message GetRawMessageRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+}
+
+message GetRawMessageResponse {
+  google.api.HttpBody raw = 1 [(buf.validate.field).required = true];
+}

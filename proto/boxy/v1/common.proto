@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package boxy.v1;
+
+import "google/api/field_behavior.proto";
+
+option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
+
+// Address from a From/To/Cc header, as the sender wrote it.
+message Address {
+  // Empty when not set.
+  string name = 1 [(google.api.field_behavior) = REQUIRED];
+  string addr = 2 [(google.api.field_behavior) = REQUIRED];
+}

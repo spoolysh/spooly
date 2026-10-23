@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package boxy.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
+
+service MailboxService {
+  // Create a mailbox.
+  rpc CreateMailbox(CreateMailboxRequest) returns (CreateMailboxResponse) {
+    option (google.api.http) = {
+      post: "/v1/mailboxes"
+      body: "*"
+      response_body: "mailbox"
+    };
+  }
+
+  // List mailboxes, newest first by ID. A page shorter than limit is the last one.
+  rpc ListMailboxes(ListMailboxesRequest) returns (ListMailboxesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/mailboxes"
+      response_body: "mailboxes"
+    };
+  }
+
+  // Get a mailbox by ID or address.
+  rpc GetMailbox(GetMailboxRequest) returns (GetMailboxResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/mailboxes/{id_or_addr}"
+      response_body: "mailbox"
+    };
+  }
+}
+
+// A mailbox receives all mail sent to its address.
+message Mailbox {
+  // Lowercase ULID.
+  string id = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+    }
+  ];
+  // Lowercased, e.g. "hello@boxy.sh".
+  string addr = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {
+        email: true
+        max_len: 254
+      }
+    }
+  ];
+  // Empty when not set.
+  string name = 3 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string.max_len = 128
+  ];
+  google.protobuf.Timestamp created_at = 4 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+}
+
+message CreateMailboxRequest {
+  string addr = 1 [(buf.validate.field) = {
+    required: true
+    string: {
+      email: true
+      max_len: 254
+    }
+  }];
+  optional string name = 2 [(buf.validate.field).string.max_len = 128];
+}
+
+message CreateMailboxResponse {
+  Mailbox mailbox = 1 [(buf.validate.field).required = true];
+}
+
+message ListMailboxesRequest {
+  // Absent means 50.
+  optional int32 limit = 1 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 100
+  }];
+  // ID of the last mailbox from the previous page.
+  optional string after = 2 [(buf.validate.field).string.pattern = "^[0-7][0-9a-hjkmnp-tv-z]{25}$"];
+}
+
+message ListMailboxesResponse {
+  repeated Mailbox mailboxes = 1;
+}
+
+message GetMailboxRequest {
+  // Treated as an address if it contains "@".
+  string id_or_addr = 1 [(buf.validate.field) = {
+    required: true
+    cel: {
+      id: "id_or_addr"
+      message: "must be a mailbox ID or an email address"
+      expression: "this.matches('^[0-7][0-9a-hjkmnp-tv-z]{25}$') || this.isEmail()"
+    }
+  }];
+}
+
+message GetMailboxResponse {
+  Mailbox mailbox = 1 [(buf.validate.field).required = true];
+}
