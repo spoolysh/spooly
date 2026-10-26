@@ -2,15 +2,15 @@ package web
 
 import (
 	"encoding/json"
-	"io"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"buf.build/go/protovalidate"
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	boxyv1 "github.com/boxysh/boxy/gen/boxy/v1"
-	"github.com/boxysh/boxy/internal/service"
 )
 
 // The dashboard calls the service directly rather than over HTTP, so it
@@ -88,25 +88,6 @@ func (h *Handler) deleteLabel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// uploadMessage stores the request body, a raw message, in the account
-// named by the account query parameter, as if it had just been delivered.
-func (h *Handler) uploadMessage(w http.ResponseWriter, r *http.Request) {
-	if !h.signedIn(w, r) {
-		return
-	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, service.MaxMessageSize))
-	if err != nil {
-		http.Error(w, "the message is too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-	m, err := h.svc.Store(r.Context(), service.Incoming{AccountIDOrAddr: r.URL.Query().Get("account"), Raw: raw})
-	if err != nil {
-		writeError(w, "uploadMessage", err)
-		return
-	}
-	writeJSON(w, map[string]string{"id": m.ID})
-}
-
 // updateLabels adds and removes a message's labels: the body is
 // {"add_labels": [...], "remove_labels": [...]}, as in PATCH /v1/messages/{id}.
 func (h *Handler) updateLabels(w http.ResponseWriter, r *http.Request) {
@@ -132,4 +113,50 @@ func (h *Handler) updateLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string][]string{"labels": resp.Message.Labels})
+}
+
+// maxBulk is the most messages one bulk action changes: a page and then some.
+const maxBulk = 100
+
+// updateManyLabels adds and removes labels on several messages at once:
+// the body is {"ids": [...], "add_labels": [...], "remove_labels": [...]}.
+func (h *Handler) updateManyLabels(w http.ResponseWriter, r *http.Request) {
+	if !h.signedIn(w, r) {
+		return
+	}
+	var body struct {
+		IDs          []string `json:"ids"`
+		AddLabels    []string `json:"add_labels"`
+		RemoveLabels []string `json:"remove_labels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if len(body.IDs) == 0 || len(body.IDs) > maxBulk {
+		http.Error(w, fmt.Sprintf("select 1 to %d messages", maxBulk), http.StatusBadRequest)
+		return
+	}
+	// Check every request first, so a bad one changes nothing.
+	reqs := make([]*boxyv1.UpdateMessageRequest, len(body.IDs))
+	for i, id := range body.IDs {
+		reqs[i] = &boxyv1.UpdateMessageRequest{Id: id, AddLabels: body.AddLabels, RemoveLabels: body.RemoveLabels}
+		if err := validate(reqs[i]); err != nil {
+			writeError(w, "updateManyLabels", err)
+			return
+		}
+	}
+	updated := 0
+	for _, req := range reqs {
+		_, err := h.svc.UpdateMessage(r.Context(), req)
+		if connect.CodeOf(err) == connect.CodeNotFound && strings.Contains(err.Error(), "message not found") {
+			continue // deleted meanwhile
+		}
+		if err != nil {
+			writeError(w, "updateManyLabels", err)
+			return
+		}
+		updated++
+	}
+	writeJSON(w, map[string]int{"updated": updated})
 }

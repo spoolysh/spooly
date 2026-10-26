@@ -207,6 +207,9 @@ func TestCreateMessageREST(t *testing.T) {
 	if string(raw) != rawMessage(1) || resp.Header.Get("Content-Type") != "message/rfc822" {
 		t.Errorf("raw = %q (%s)", raw, resp.Header.Get("Content-Type"))
 	}
+	if got := resp.Header.Get("Content-Disposition"); got != `attachment; filename="Hi 1.eml"` {
+		t.Errorf("raw Content-Disposition = %q", got)
+	}
 }
 
 func TestCreateMessageConnectStream(t *testing.T) {
@@ -347,7 +350,7 @@ func TestLabels(t *testing.T) {
 			t.Errorf("%s: system %v, created_at %v", l.Name, l.System, l.CreatedAt)
 		}
 	}
-	if got := strings.Join(names, ","); got != "inbox,unread,starred,spam,trash,alpha-1,zeta" {
+	if got := strings.Join(names, ","); got != "inbox,unread,starred,sent,spam,trash,alpha-1,zeta" {
 		t.Errorf("labels = %s", got)
 	}
 
@@ -396,7 +399,7 @@ func TestStoreKeepsRawInStorage(t *testing.T) {
 		t.Errorf("retry left objects %v", store.ids)
 	}
 
-	rc, err := svc.OpenRaw(t.Context(), m.ID)
+	_, rc, err := svc.OpenRaw(t.Context(), m.ID)
 	if err != nil {
 		t.Fatalf("OpenRaw: %v", err)
 	}
@@ -408,7 +411,7 @@ func TestStoreKeepsRawInStorage(t *testing.T) {
 
 	// A row whose bytes are gone reads as not found, not as an empty message.
 	store.Delete(t.Context(), m.ID)
-	if _, err := svc.OpenRaw(t.Context(), m.ID); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, _, err := svc.OpenRaw(t.Context(), m.ID); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Errorf("OpenRaw without bytes = %v, want not found", err)
 	}
 }
@@ -428,5 +431,57 @@ func TestRawMessageLargerThanAChunk(t *testing.T) {
 	resp.Body.Close()
 	if string(got) != raw {
 		t.Errorf("raw is %d bytes, want %d", len(got), len(raw))
+	}
+}
+
+func TestGetAttachment(t *testing.T) {
+	srv := newTestServer(t)
+	createAccount(t, srv, "hello@boxy.sh")
+	raw := "Subject: files\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n" +
+		"--b\r\nContent-Type: text/plain\r\n\r\nbody\r\n" +
+		"--b\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Disposition: attachment; filename*=iso-8859-1''caf%E9.txt\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\ncaf=E9\r\n" +
+		"--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"invoice.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQ=\r\n--b--\r\n"
+	var m messageJSON
+	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages", "message/rfc822", raw, 200, &m)
+
+	for _, tc := range []struct {
+		index, contentType, disposition, body string
+	}{
+		{"0", "text/plain; charset=utf-8", "attachment; filename*=utf-8''caf%C3%A9.txt", "café"},
+		{"1", "application/pdf", `attachment; filename=invoice.pdf`, "%PDF-1.4"},
+	} {
+		resp, err := srv.Client().Get(srv.URL + "/v1/messages/" + m.ID + "/attachments/" + tc.index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || string(body) != tc.body {
+			t.Errorf("attachment %s: %d %q", tc.index, resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("Content-Type"); got != tc.contentType {
+			t.Errorf("attachment %s: Content-Type %q, want %q", tc.index, got, tc.contentType)
+		}
+		if got := resp.Header.Get("Content-Disposition"); got != tc.disposition {
+			t.Errorf("attachment %s: Content-Disposition %q, want %q", tc.index, got, tc.disposition)
+		}
+	}
+	call(t, srv, "GET", "/v1/messages/"+m.ID+"/attachments/2", "", "", 404, nil)
+	call(t, srv, "GET", "/v1/messages/"+m.ID+"/attachments/-1", "", "", 400, nil)
+}
+
+func TestEmlFilename(t *testing.T) {
+	for subject, want := range map[string]string{
+		"Can't sign in":             "Can't sign in.eml",
+		"Re: Invoice 1/2 <urgent>?": "Re_ Invoice 1_2 _urgent__.eml",
+		"Счёт\tза  октябрь":         "Счёт за октябрь.eml",
+		"...hidden.":                "hidden.eml",
+		"":                          "01m5w8mp868fgkg22shbhjph9s.eml",
+		"   ":                       "01m5w8mp868fgkg22shbhjph9s.eml",
+		strings.Repeat("я", 150):    strings.Repeat("я", 100) + ".eml",
+	} {
+		if got := EmlFilename(&db.Message{ID: "01m5w8mp868fgkg22shbhjph9s", Subject: subject}); got != want {
+			t.Errorf("EmlFilename(%q) = %q, want %q", subject, got, want)
+		}
 	}
 }

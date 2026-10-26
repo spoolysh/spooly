@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/emersion/go-message"
-	_ "github.com/emersion/go-message/charset" // decode non-UTF-8 charsets
+	"github.com/emersion/go-message/charset" // also registers non-UTF-8 charsets
 	"github.com/emersion/go-message/mail"
 	"golang.org/x/net/html"
 
@@ -42,9 +44,9 @@ var ErrInvalid = errors.New("not an RFC 5322 message")
 // Parse parses raw. It is lenient: bad addresses, dates, charsets, or parts
 // leave those fields empty rather than failing.
 func Parse(raw []byte) (*Parsed, error) {
-	mr, err := mail.CreateReader(bytes.NewReader(raw))
-	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
-		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	mr, err := newReader(raw)
+	if err != nil {
+		return nil, err
 	}
 	defer mr.Close()
 
@@ -65,58 +67,136 @@ func Parse(raw []byte) (*Parsed, error) {
 		p.Date = &d
 	}
 
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
+	walkParts(mr, func(pt part) bool {
+		switch pt.kind {
+		case partText:
+			p.Text = readText(pt.body)
+		case partHTML:
+			p.HTML = readText(pt.body)
+		case partAttachment:
+			n, _ := io.Copy(io.Discard, pt.body)
+			p.Attachments = append(p.Attachments, db.Attachment{Filename: pt.filename, ContentType: pt.contentType, Size: n})
 		}
-		if err != nil {
-			if message.IsUnknownCharset(err) || message.IsUnknownEncoding(err) {
-				continue
-			}
-			break // keep what was parsed so far
-		}
-		p.addPart(part)
-	}
+		return true
+	})
 
 	p.Snippet = snippet(p.Text, p.HTML)
 	return p, nil
 }
 
-func (p *Parsed) addPart(part *mail.Part) {
-	switch h := part.Header.(type) {
-	case *mail.InlineHeader:
-		ct, params, _ := h.ContentType()
-		filename := params["name"]
-		if _, dp, err := h.ContentDisposition(); err == nil && dp["filename"] != "" {
-			filename = dp["filename"]
-		}
-		if filename == "" {
-			switch {
-			case ct == "text/plain" && p.Text == "":
-				p.Text = readText(part.Body)
-				return
-			case ct == "text/html" && p.HTML == "":
-				p.HTML = readText(part.Body)
-				return
-			case strings.HasPrefix(ct, "text/"):
-				return // alternative bodies beyond the first
-			}
-		}
-		p.addAttachment(filename, ct, part.Body)
-	case *mail.AttachmentHeader:
-		filename, _ := h.Filename()
-		ct, _, _ := h.ContentType()
-		p.addAttachment(filename, ct, part.Body)
+// ErrNoAttachment reports an attachment index past the message's last one.
+var ErrNoAttachment = errors.New("no such attachment")
+
+// Attachment returns attachment index of raw, counted from 0 in the order
+// Parse lists them, with its decoded content.
+func Attachment(raw []byte, index int) (db.Attachment, []byte, error) {
+	mr, err := newReader(raw)
+	if err != nil {
+		return db.Attachment{}, nil, err
 	}
+	defer mr.Close()
+
+	var found *db.Attachment
+	var content []byte
+	i := 0
+	walkParts(mr, func(pt part) bool {
+		if pt.kind != partAttachment {
+			return true
+		}
+		if i < index {
+			i++
+			return true
+		}
+		content, _ = io.ReadAll(pt.body)
+		found = &db.Attachment{Filename: pt.filename, ContentType: pt.contentType, Size: int64(len(content))}
+		return false
+	})
+	if found == nil {
+		return db.Attachment{}, nil, fmt.Errorf("%w: %d", ErrNoAttachment, index)
+	}
+	return *found, content, nil
 }
 
-func (p *Parsed) addAttachment(filename, contentType string, body io.Reader) {
-	if contentType == "" {
-		contentType = "application/octet-stream"
+func newReader(raw []byte) (*mail.Reader, error) {
+	mr, err := mail.CreateReader(bytes.NewReader(raw))
+	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	n, _ := io.Copy(io.Discard, body)
-	p.Attachments = append(p.Attachments, db.Attachment{Filename: filename, ContentType: contentType, Size: n})
+	return mr, nil
+}
+
+type partKind int
+
+const (
+	partSkip       partKind = iota
+	partText                // the text body
+	partHTML                // the HTML body
+	partAttachment          // anything else with content
+)
+
+type part struct {
+	kind        partKind
+	filename    string
+	contentType string
+	body        io.Reader
+}
+
+// walkParts calls fn with each part of mr in order, classified, until fn
+// returns false. The first text/plain and text/html parts without a filename
+// are the bodies; other text parts without one are alternative bodies and
+// skipped; everything else is an attachment. Parse and Attachment both walk
+// this way, so attachment indexes agree.
+func walkParts(mr *mail.Reader, fn func(part) bool) {
+	var haveText, haveHTML bool
+	for {
+		mp, err := mr.NextPart()
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			if message.IsUnknownCharset(err) || message.IsUnknownEncoding(err) {
+				continue
+			}
+			return // keep what was walked so far
+		}
+
+		pt := part{kind: partAttachment, body: mp.Body}
+		switch h := mp.Header.(type) {
+		case *mail.InlineHeader:
+			ct, params, _ := h.ContentType()
+			pt.contentType, pt.filename = ct, params["name"]
+			if _, dp, err := h.ContentDisposition(); err == nil && dp["filename"] != "" {
+				pt.filename = dp["filename"]
+			}
+			if name := filename(h.Header); name != "" {
+				pt.filename = name
+			}
+			if pt.filename == "" {
+				switch {
+				case ct == "text/plain" && !haveText:
+					pt.kind, haveText = partText, true
+				case ct == "text/html" && !haveHTML:
+					pt.kind, haveHTML = partHTML, true
+				case strings.HasPrefix(ct, "text/"):
+					pt.kind = partSkip
+				}
+			}
+		case *mail.AttachmentHeader:
+			pt.filename, _ = h.Filename()
+			if name := filename(h.Header); name != "" {
+				pt.filename = name
+			}
+			pt.contentType, _, _ = h.ContentType()
+		default:
+			continue
+		}
+		if pt.kind == partAttachment && pt.contentType == "" {
+			pt.contentType = "application/octet-stream"
+		}
+		if !fn(pt) {
+			return
+		}
+	}
 }
 
 func readText(r io.Reader) string {
@@ -187,4 +267,96 @@ func isHidden(tag []byte) bool {
 		return true
 	}
 	return false
+}
+
+// filename decodes a part's file name from its RFC 2231 extended form, such
+// as:
+//
+//	filename*=windows-1251''%D1%F7%E5%F2.pdf
+//
+// Go's mime.ParseMediaType decodes only UTF-8 there and drops other
+// charsets, either entirely or just the first of several continuations, so a
+// name found here wins. It tries Content-Disposition's filename, then
+// Content-Type's name.
+func filename(h message.Header) string {
+	for _, f := range []struct{ header, param string }{
+		{"Content-Disposition", "filename"},
+		{"Content-Type", "name"},
+	} {
+		if name := rfc2231Param(h.Get(f.header), f.param); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// rfc2231Param decodes parameter name of a header value from its extended
+// form (name*=charset'lang'value), which may be split into numbered
+// continuations (name*0*=..., name*1*=...).
+func rfc2231Param(value, name string) string {
+	segments := map[int]string{}
+	extended := map[int]bool{}
+	for _, field := range strings.Split(value, ";") {
+		key, val, ok := strings.Cut(strings.TrimSpace(field), "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		rest, ok := strings.CutPrefix(key, strings.ToLower(name)+"*")
+		if !ok {
+			continue
+		}
+		n := 0
+		if num := strings.TrimSuffix(rest, "*"); num != "" {
+			var err error
+			if n, err = strconv.Atoi(num); err != nil {
+				continue
+			}
+		}
+		segments[n] = strings.Trim(strings.TrimSpace(val), `"`)
+		extended[n] = rest == "" || strings.HasSuffix(rest, "*")
+	}
+	if len(segments) == 0 || !extended[0] {
+		return ""
+	}
+
+	// The first segment starts with charset'language'.
+	cs, first, ok := strings.Cut(segments[0], "'")
+	if !ok {
+		return ""
+	}
+	if _, first, ok = strings.Cut(first, "'"); !ok {
+		return ""
+	}
+	var raw []byte
+	for i := 0; ; i++ {
+		seg, ok := segments[i]
+		if !ok {
+			break
+		}
+		if i == 0 {
+			seg = first
+		}
+		if !extended[i] {
+			raw = append(raw, seg...)
+			continue
+		}
+		decoded, err := url.PathUnescape(seg)
+		if err != nil {
+			return ""
+		}
+		raw = append(raw, decoded...)
+	}
+	if cs == "" || strings.EqualFold(cs, "utf-8") || strings.EqualFold(cs, "us-ascii") {
+		return strings.ToValidUTF8(string(raw), "_")
+	}
+	r, err := charset.Reader(cs, bytes.NewReader(raw))
+	if err != nil {
+		return ""
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io"
 	"log"
+	"mime"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"connectrpc.com/connect/v2"
 	"google.golang.org/genproto/googleapis/api/httpbody"
@@ -217,25 +219,60 @@ func (s *Service) GetMessage(ctx context.Context, req *boxyv1.GetMessageRequest)
 	return &boxyv1.GetMessageResponse{Message: messageProto(m, true)}, nil
 }
 
-// OpenRaw returns a message's raw source. The caller must close it. Errors
-// are connect errors.
-func (s *Service) OpenRaw(ctx context.Context, id string) (io.ReadCloser, error) {
-	if err := s.db.MessageExists(ctx, id); err != nil {
-		return nil, dbError(err)
+// OpenRaw returns a message, without its bodies, and its raw source. The
+// caller must close the source. Errors are connect errors.
+func (s *Service) OpenRaw(ctx context.Context, id string) (*db.Message, io.ReadCloser, error) {
+	m, err := s.db.GetMessage(ctx, id, false)
+	if err != nil {
+		return nil, nil, dbError(err)
 	}
 	rc, err := s.store.Get(ctx, id)
 	if err != nil {
-		return nil, dbError(err)
+		return nil, nil, dbError(err)
 	}
-	return rc, nil
+	return m, rc, nil
+}
+
+// unsafeInFilename are characters that Windows, macOS, or Linux reject in
+// file names, or that would end up as a path.
+var unsafeInFilename = strings.NewReplacer(
+	"/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", `"`, "_", "<", "_", ">", "_", "|", "_",
+)
+
+// maxFilenameRunes keeps names well under file system limits (255 bytes).
+const maxFilenameRunes = 100
+
+// EmlFilename names a message's .eml file after its subject, like mail
+// clients do, falling back to the ID when there's no usable subject.
+func EmlFilename(m *db.Message) string {
+	name := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, unsafeInFilename.Replace(m.Subject))
+	name = strings.Join(strings.Fields(name), " ")
+	if r := []rune(name); len(r) > maxFilenameRunes {
+		name = string(r[:maxFilenameRunes])
+	}
+	// Leading dots hide files; trailing dots and spaces are dropped by Windows.
+	name = strings.Trim(name, ". ")
+	if name == "" {
+		name = m.ID
+	}
+	return name + ".eml"
 }
 
 func (s *Service) GetRawMessage(ctx context.Context, req *boxyv1.GetRawMessageRequest, stream boxyv1connect.MessageServiceGetRawMessageServerStream) error {
-	rc, err := s.OpenRaw(ctx, req.Id)
+	m, rc, err := s.OpenRaw(ctx, req.Id)
 	if err != nil {
 		return err
 	}
 	defer rc.Close()
+	// Over REST, Vanguard copies response headers onto the HTTP response.
+	if info, ok := connect.CallInfoForServerContext(ctx); ok {
+		info.ResponseHeader().Set("Content-Disposition", ContentDisposition("attachment", EmlFilename(m)))
+	}
 
 	buf := make([]byte, chunkSize)
 	first := true
@@ -258,4 +295,67 @@ func (s *Service) GetRawMessage(ctx context.Context, req *boxyv1.GetRawMessageRe
 			return connect.NewError(connect.CodeInternal, "reading raw message").WithCause(readErr)
 		}
 	}
+}
+
+// OpenAttachment returns attachment index of message id, decoded, with its
+// filename and a content type to serve it as: text attachments are decoded
+// to UTF-8, so they say so. Errors are connect errors.
+func (s *Service) OpenAttachment(ctx context.Context, id string, index int) (db.Attachment, []byte, error) {
+	_, rc, err := s.OpenRaw(ctx, id)
+	if err != nil {
+		return db.Attachment{}, nil, err
+	}
+	raw, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		return db.Attachment{}, nil, connect.NewError(connect.CodeInternal, "reading raw message").WithCause(err)
+	}
+	a, content, err := mailparse.Attachment(raw, index)
+	if errors.Is(err, mailparse.ErrNoAttachment) {
+		return db.Attachment{}, nil, connect.NewError(connect.CodeNotFound, err.Error())
+	}
+	if err != nil {
+		return db.Attachment{}, nil, connect.NewError(connect.CodeInternal, "parsing raw message").WithCause(err)
+	}
+	if strings.HasPrefix(a.ContentType, "text/") {
+		a.ContentType += "; charset=utf-8"
+	}
+	return a, content, nil
+}
+
+// ContentDisposition is the Content-Disposition for serving a file named
+// filename: "attachment" to download it, or "inline" to show it.
+func ContentDisposition(disposition, filename string) string {
+	filename = strings.ToValidUTF8(filename, "_")
+	if filename == "" {
+		return disposition
+	}
+	// FormatMediaType encodes non-ASCII names per RFC 2231; it returns ""
+	// for names it can't encode.
+	if v := mime.FormatMediaType(disposition, map[string]string{"filename": filename}); v != "" {
+		return v
+	}
+	return disposition
+}
+
+func (s *Service) GetAttachment(ctx context.Context, req *boxyv1.GetAttachmentRequest, stream boxyv1connect.MessageServiceGetAttachmentServerStream) error {
+	a, content, err := s.OpenAttachment(ctx, req.Id, int(req.Index))
+	if err != nil {
+		return err
+	}
+	// Over REST, Vanguard copies response headers onto the HTTP response.
+	if info, ok := connect.CallInfoForServerContext(ctx); ok {
+		info.ResponseHeader().Set("Content-Disposition", ContentDisposition("attachment", a.Filename))
+		info.ResponseHeader().Set("X-Content-Type-Options", "nosniff")
+	}
+	for i := 0; i == 0 || i < len(content); i += chunkSize {
+		chunk := &httpbody.HttpBody{Data: content[i:min(i+chunkSize, len(content))]}
+		if i == 0 {
+			chunk.ContentType = a.ContentType
+		}
+		if err := stream.Send(&boxyv1.GetAttachmentResponse{Content: chunk}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

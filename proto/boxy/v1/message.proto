@@ -164,6 +164,41 @@ service MessageService {
       }
     };
   }
+
+  // Get an attachment's content. Over REST, the body is the attachment, with
+  // its content type and a Content-Disposition naming the file.
+  rpc GetAttachment(GetAttachmentRequest) returns (stream GetAttachmentResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/messages/{id}/attachments/{index}"
+      response_body: "content"
+    };
+    option (gnostic.openapi.v3.operation) = {
+      responses: {
+        response_or_reference: {
+          name: "200"
+          value: {
+            response: {
+              description: "The attachment, decoded."
+              content: {
+                additional_properties: {
+                  name: "application/octet-stream"
+                  value: {
+                    schema: {
+                      schema: {
+                        type: "string"
+                        format: "binary"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+  }
 }
 
 // A stored message. Headers, snippet, size, attachments, and body are parsed
@@ -376,4 +411,21 @@ message GetRawMessageRequest {
 
 message GetRawMessageResponse {
   google.api.HttpBody raw = 1 [(buf.validate.field).required = true];
+}
+
+message GetAttachmentRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+  // Position in the message's attachments, from 0.
+  int32 index = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lt: 1000
+  }];
+}
+
+message GetAttachmentResponse {
+  // The first message has the content type; later ones only data chunks.
+  google.api.HttpBody content = 1 [(buf.validate.field).required = true];
 }

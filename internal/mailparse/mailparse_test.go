@@ -1,6 +1,7 @@
 package mailparse
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -96,5 +97,78 @@ func TestParseLongSnippet(t *testing.T) {
 	}
 	if n := len([]rune(p.Snippet)); n != SnippetLength {
 		t.Errorf("snippet length = %d", n)
+	}
+}
+
+func TestAttachment(t *testing.T) {
+	raw := crlf(`Subject: files
+Content-Type: multipart/mixed; boundary=b
+
+--b
+Content-Type: text/plain
+
+body
+--b
+Content-Type: text/plain; name="a.txt"
+Content-Disposition: attachment; filename="a.txt"
+
+first
+--b
+Content-Type: image/png
+Content-Disposition: inline; filename="b.png"
+Content-Transfer-Encoding: base64
+
+iVBORw==
+--b--
+`)
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []struct {
+		name, contentType, content string
+	}{{"a.txt", "text/plain", "first"}, {"b.png", "image/png", "\x89PNG"}} {
+		a, content, err := Attachment(raw, i)
+		if err != nil {
+			t.Fatalf("Attachment(%d): %v", i, err)
+		}
+		if a.Filename != want.name || a.ContentType != want.contentType || string(content) != want.content {
+			t.Errorf("Attachment(%d) = %+v %q", i, a, content)
+		}
+		if a != p.Attachments[i] {
+			t.Errorf("Attachment(%d) = %+v, Parse listed %+v", i, a, p.Attachments[i])
+		}
+	}
+	if _, _, err := Attachment(raw, 2); !errors.Is(err, ErrNoAttachment) {
+		t.Errorf("Attachment(2) = %v, want ErrNoAttachment", err)
+	}
+}
+
+func TestNonUTF8FileNames(t *testing.T) {
+	raw := crlf(`Subject: files
+Content-Type: multipart/mixed; boundary=b
+
+--b
+Content-Type: application/pdf
+Content-Disposition: attachment; filename*=windows-1251''%D1%F7%E5%F2.pdf
+
+x
+--b
+Content-Type: text/plain; name*0*=iso-8859-1''caf%E9; name*1*=_menu; name*2=.txt
+Content-Disposition: attachment
+
+y
+--b--
+`)
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, a := range p.Attachments {
+		names = append(names, a.Filename)
+	}
+	if got := strings.Join(names, ","); got != "Счет.pdf,café_menu.txt" {
+		t.Errorf("file names = %q", got)
 	}
 }

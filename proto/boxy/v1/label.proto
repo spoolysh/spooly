@@ -36,8 +36,8 @@ service LabelService {
 }
 
 // A label tags messages; a message can have several. Labels are shared by
-// all accounts. System labels (inbox, unread, starred, spam, trash) always
-// exist and can't be deleted.
+// all accounts. System labels (inbox, unread, starred, sent, spam, trash)
+// always exist and can't be deleted.
 message Label {
   // Unique, e.g. "billing".
   string name = 1 [

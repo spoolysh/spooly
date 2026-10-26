@@ -4,6 +4,7 @@ services:
       dockerfile: Dockerfile.dev
     ports:
       - "8080:8080"
+      - "1110:1110"
     environment:
       - PORT=8080
       - DATABASE_URL=file:/data/boxy.db

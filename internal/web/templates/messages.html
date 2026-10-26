@@ -2,28 +2,19 @@
 <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
   <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">{{labelTitle .Label}}</h2>
   <div class="flex flex-wrap items-center gap-3">
-    <form method="get" action="/" class="flex items-center gap-2">
-      <input type="hidden" name="label" value="{{.Label}}">
-      <label for="account-filter" class="sr-only">Account</label>
-      <select id="account-filter" name="account" onchange="this.form.submit()"
-        class="select">
-        <option value="">All accounts</option>
-        {{range .Accounts}}<option value="{{.ID}}"{{if eq .ID $.AccountID}} selected{{end}}>{{.Addr}}</option>{{end}}
-      </select>
-    </form>
-    {{if .Accounts}}
-    <input type="file" id="upload-input" accept=".eml,message/rfc822" class="hidden">
-    <button type="button" id="upload-button" title="Store a .eml file as if it had just been delivered to the selected account"
-      class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Upload .eml</button>
-    {{end}}
+    <label for="account-filter" class="sr-only">Account</label>
+    <select id="account-filter" onchange="location.href = this.value" class="select">
+      <option value="{{listURL "" .Label}}">All accounts</option>
+      {{range .Accounts}}<option value="{{listURL .Addr $.Label}}"{{if eq .Addr $.Account}} selected{{end}}>{{.Addr}}</option>{{end}}
+    </select>
   </div>
 </div>
-<div id="upload-status" role="status" class="hidden mb-6 rounded-lg border px-4 py-3 text-sm"></div>
 
 <div class="flex flex-col md:flex-row gap-6">
   <nav aria-label="Labels" class="md:w-48 shrink-0 flex md:flex-col gap-1 overflow-x-auto">
     {{range .Labels}}
-    <a href="/?account={{$.AccountID}}&label={{.Name}}"
+    {{if .FirstUser}}<div role="separator" class="shrink-0 self-stretch border-l border-gray-200 mx-1 md:mx-3 md:my-2 md:border-l-0 md:border-t"></div>{{end}}
+    <a href="{{listURL $.Account .Name}}"
       class="flex items-center justify-between gap-3 whitespace-nowrap px-3 py-2 rounded-md text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if .Active}}bg-brand-50 text-brand-700 font-semibold{{else}}text-gray-700 hover:bg-gray-100{{end}}"
       {{if .Active}}aria-current="page"{{end}}>
       <span class="truncate">{{.Title}}</span>
@@ -32,12 +23,47 @@
     {{end}}
   </nav>
 
-  <div class="flex-1 min-w-0 bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+  <div class="flex-1 min-w-0 md:self-start bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+    {{if or .Messages .Paged}}
+    <div class="flex flex-wrap items-center gap-x-1 gap-y-2 border-b border-gray-200 bg-gray-50 px-4 py-2" role="toolbar" aria-label="Message actions">
+      <input type="checkbox" id="select-all" autocomplete="off" aria-label="Select all on this page" {{if not .Messages}}disabled{{end}}
+        class="mr-2 h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500">
+      {{if eq .Label "inbox"}}
+      <button type="button" class="tb" data-bulk disabled onclick="bulk([], ['inbox'])">Archive</button>
+      {{else}}
+      <button type="button" class="tb" data-bulk disabled onclick="bulk(['inbox'], ['trash', 'spam'])">Move to Inbox</button>
+      {{end}}
+      <button type="button" class="tb" data-bulk disabled onclick="bulk([], ['unread'])">Mark read</button>
+      <button type="button" class="tb" data-bulk disabled onclick="bulk(['unread'], [])">Mark unread</button>
+      <button type="button" class="tb" data-bulk disabled onclick="bulk(['starred'], [])">Star</button>
+      {{if ne .Label "spam"}}<button type="button" class="tb" data-bulk disabled onclick="bulk(['spam'], ['inbox'])">Spam</button>{{end}}
+      {{if ne .Label "trash"}}<button type="button" class="tb text-red-600" data-bulk disabled onclick="bulk(['trash'], ['inbox'])">Trash</button>{{end}}
+      {{if .UserLabels}}
+      <label for="bulk-label" class="sr-only">Add label</label>
+      <select id="bulk-label" data-bulk disabled onchange="if (this.value) bulk([this.value], [])" class="select !py-1 !text-xs disabled:opacity-40">
+        <option value="">Label&hellip;</option>
+        {{range .UserLabels}}<option value="{{.Name}}">{{labelTitle .Name}}</option>{{end}}
+      </select>
+      {{end}}
+      <span id="selected-count" class="ml-2 text-xs text-gray-500" aria-live="polite"></span>
+
+      <div class="ml-auto flex items-center gap-1 text-xs text-gray-500">
+        {{if .Total}}<span class="mr-1 tabular-nums">{{.Start}}&ndash;{{.End}} of {{.Total}}</span>{{end}}
+        {{if .Newer}}<a href="{{.Newer}}" class="tb !px-1.5" title="Newer" aria-label="Newer messages">{{template "chevron-left"}}</a>{{else}}<span class="tb !px-1.5 opacity-40" aria-hidden="true">{{template "chevron-left"}}</span>{{end}}
+        {{if .Older}}<a href="{{.Older}}" class="tb !px-1.5" title="Older" aria-label="Older messages">{{template "chevron-right"}}</a>{{else}}<span class="tb !px-1.5 opacity-40" aria-hidden="true">{{template "chevron-right"}}</span>{{end}}
+      </div>
+    </div>
+    <div id="bulk-status" role="status" class="hidden border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800"></div>
+    {{end}}
     {{if .Messages}}
     <ul class="divide-y divide-gray-200">
       {{range .Messages}}
-      <li class="relative hover:bg-gray-50 transition-colors {{if .Unread}}bg-white{{else}}bg-gray-50/50{{end}}">
-        <a href="/messages/{{.ID}}" class="flex items-start gap-4 px-4 py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500">
+      <li class="flex items-start transition-colors hover:bg-gray-50 has-[:checked]:bg-brand-50 {{if .Unread}}bg-white{{else}}bg-gray-50/50{{end}}">
+        <label class="flex shrink-0 cursor-pointer items-center self-stretch pl-4 pr-1">
+          <input type="checkbox" autocomplete="off" class="msg-check h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500" value="{{.ID}}"
+            aria-label="Select {{if .Subject}}{{.Subject}}{{else}}message{{end}}">
+        </label>
+        <a href="/{{.ID}}" class="flex min-w-0 flex-1 items-start gap-3 py-3 pl-2 pr-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500">
           <span class="w-2 shrink-0 pt-2" aria-hidden="true">{{if .Unread}}<span class="block w-2 h-2 rounded-full bg-brand-600"></span>{{end}}</span>
           <div class="min-w-0 flex-1">
             <div class="flex items-baseline justify-between gap-3">
@@ -48,7 +74,7 @@
             </div>
             <p class="truncate text-sm">
               {{if .Starred}}<span class="text-amber-500" title="Starred">&#9733;</span>{{end}}
-              {{range .UserLabels}}<span class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-600 border border-gray-200 mr-1">{{.}}</span>{{end}}
+              {{range .UserLabels}}<span class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-600 border border-gray-200 mr-1">{{labelTitle .}}</span>{{end}}
               <span class="{{if .Unread}}font-semibold text-gray-900{{else}}text-gray-800{{end}}">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</span>
               <span class="text-gray-500">&mdash; {{.Snippet}}</span>
             </p>
@@ -61,15 +87,9 @@
       </li>
       {{end}}
     </ul>
-    {{if or .Paged .NextAfter}}
-    <div class="border-t border-gray-200 bg-gray-50 px-6 py-3 flex items-center justify-between text-sm">
-      {{if .Paged}}<a href="/?{{.Query}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; Newest</a>{{else}}<span></span>{{end}}
-      {{if .NextAfter}}<a href="/?{{.Query}}&after={{.NextAfter}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Older &rarr;</a>{{else}}<span></span>{{end}}
-    </div>
-    {{end}}
     {{else if .Paged}}
     <div class="px-6 py-12 text-center text-gray-500">
-      <p>No more messages. <a href="/?{{.Query}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Back to newest</a></p>
+      <p>No messages on this page. <a href="{{.Base}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Back to newest</a></p>
     </div>
     {{else if not .Accounts}}
     <div class="px-6 py-12 text-center text-gray-500">
@@ -91,42 +111,55 @@
   </div>
 </div>
 
-{{if .Accounts}}
-<script>
-  const uploadInput = document.getElementById('upload-input');
-  const uploadButton = document.getElementById('upload-button');
-  const uploadStatus = document.getElementById('upload-status');
-  const accountFilter = document.getElementById('account-filter');
-
-  function showUploadStatus(text, isError) {
-    uploadStatus.textContent = text;
-    uploadStatus.className = 'mb-6 rounded-lg border px-4 py-3 text-sm ' +
-      (isError ? 'border-red-200 bg-red-50 text-red-800' : 'border-brand-200 bg-brand-50 text-brand-800');
+<style type="text/tailwindcss">
+  /* In the components layer, so utilities such as text-red-600 win. */
+  @layer components {
+    .tb { @apply inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:pointer-events-none disabled:opacity-40; }
   }
+</style>
 
-  uploadButton.addEventListener('click', () => {
-    if (!accountFilter.value) {
-      showUploadStatus('Choose an account first: the message is stored as delivered to it.', true);
-      accountFilter.focus();
-      return;
+<script>
+  const checks = [...document.querySelectorAll('.msg-check')];
+  const selectAll = document.getElementById('select-all');
+  const selectedCount = document.getElementById('selected-count');
+
+  function syncSelection() {
+    const n = checks.filter((c) => c.checked).length;
+    if (selectAll) {
+      selectAll.checked = n > 0 && n === checks.length;
+      selectAll.indeterminate = n > 0 && n < checks.length;
     }
-    uploadInput.click();
+    document.querySelectorAll('[data-bulk]').forEach((el) => el.disabled = n === 0);
+    if (selectedCount) selectedCount.textContent = n ? `${n} selected` : '';
+  }
+  checks.forEach((c) => c.addEventListener('change', syncSelection));
+  selectAll?.addEventListener('change', () => {
+    checks.forEach((c) => c.checked = selectAll.checked);
+    syncSelection();
   });
-  uploadInput.addEventListener('change', async () => {
-    const file = uploadInput.files[0];
-    uploadInput.value = '';
-    if (!file) return;
-    uploadButton.disabled = true;
-    showUploadStatus(`Uploading ${file.name}…`);
-    const resp = await fetch('/ui/messages?account=' + encodeURIComponent(accountFilter.value), { method: 'POST', body: file });
+  // A reload can restore checked boxes; match the toolbar to them.
+  syncSelection();
+
+  async function bulk(add, remove) {
+    const ids = checks.filter((c) => c.checked).map((c) => c.value);
+    if (!ids.length) return;
+    document.querySelectorAll('[data-bulk]').forEach((el) => el.disabled = true);
+    const resp = await fetch('/ui/messages/labels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, add_labels: add, remove_labels: remove }),
+    });
     if (resp.ok) {
-      const { id } = await resp.json();
-      location.href = '/messages/' + id;
+      location.reload();
       return;
     }
-    showUploadStatus(`Couldn't upload ${file.name}: ${(await resp.text()).trim() || 'status ' + resp.status}`, true);
-    uploadButton.disabled = false;
-  });
+    const status = document.getElementById('bulk-status');
+    status.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    status.classList.remove('hidden');
+    syncSelection();
+  }
 </script>
 {{end}}
-{{end}}
+
+{{define "chevron-left"}}<svg aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>{{end}}
+{{define "chevron-right"}}<svg aria-hidden="true" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>{{end}}

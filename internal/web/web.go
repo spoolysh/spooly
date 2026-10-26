@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +51,8 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, svc *service.Ser
 		"isSystem":   db.IsSystemLabel,
 		"formatSize": formatSize,
 		"labelTitle": labelTitle,
+		"listURL":    listURL,
+		"isWebURL":   isWebURL,
 	}
 	for _, p := range []string{"messages", "message", "accounts", "labels", "apikeys"} {
 		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(
@@ -63,8 +67,11 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, svc *service.Ser
 // RegisterRoutes registers the dashboard pages and the endpoints they call.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", h.MessagesPage)
-	mux.HandleFunc("GET /messages/{id}", h.MessagePage)
-	mux.HandleFunc("GET /messages/{id}/raw", h.rawMessage)
+	// Messages open at /{id}, and their source at /{id}?raw. Fixed paths
+	// such as /accounts are more specific, so they win, and anything that
+	// isn't a message ID is a 404. A second path segment would clash with
+	// the API's /v1/ and /boxy.v1.*Service/ subtrees.
+	mux.HandleFunc("GET /{id}", h.MessagePage)
 	mux.HandleFunc("GET /accounts", h.AccountsPage)
 	mux.HandleFunc("GET /labels", h.LabelsPage)
 	mux.HandleFunc("GET /keys", h.KeysPage)
@@ -78,8 +85,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /ui/accounts", csrf.Handler(http.HandlerFunc(h.createAccount)))
 	mux.Handle("POST /ui/labels", csrf.Handler(http.HandlerFunc(h.createLabel)))
 	mux.Handle("DELETE /ui/labels/{name}", csrf.Handler(http.HandlerFunc(h.deleteLabel)))
-	mux.Handle("POST /ui/messages", csrf.Handler(http.HandlerFunc(h.uploadMessage)))
 	mux.Handle("POST /ui/messages/{id}/labels", csrf.Handler(http.HandlerFunc(h.updateLabels)))
+	mux.Handle("POST /ui/messages/labels", csrf.Handler(http.HandlerFunc(h.updateManyLabels)))
 }
 
 type layoutData struct {
@@ -112,19 +119,26 @@ type labelLink struct {
 	Title  string
 	Unread int
 	Active bool
+	// FirstUser marks the first user label, which a divider separates from
+	// the system labels above it.
+	FirstUser bool
 }
 
 type messagesData struct {
 	layoutData
-	Messages  []messageRow
-	Labels    []labelLink
-	Accounts  []db.Account
-	AccountID string
-	Label     string // "" for all mail
-	Hostname  string
-	Paged     bool
-	NextAfter string
-	Query     template.URL // account and label, for pagination links
+	Messages   []messageRow
+	Labels     []labelLink
+	Accounts   []db.Account
+	Account    string     // the filtered account's address; "" for all
+	Label      string     // "" for all mail
+	UserLabels []db.Label // for the toolbar's label menu
+	Hostname   string
+	Base       template.URL // the list's URL without a page cursor
+	// The page shows messages Start to End of Total, newest first. Newer and
+	// Older link to the neighboring pages; they're empty at either end.
+	Start, End, Total int
+	Paged             bool
+	Newer, Older      template.URL
 }
 
 func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
@@ -138,15 +152,49 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 	if q.Has("label") {
 		label = q.Get("label")
 	}
-	accountID := q.Get("account")
-	after := q.Get("after")
+	// The account is filtered by address, so URLs read well:
+	// /?account=hello@boxy.sh.
+	addr := strings.ToLower(q.Get("account"))
+	var accountID string
+	if addr != "" {
+		a, err := h.db.ResolveAccount(r.Context(), addr)
+		if errors.Is(err, db.ErrAccountNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			h.internalError(w, "getting account", err)
+			return
+		}
+		accountID, addr = a.ID, a.Addr
+	}
+	// Pages are cursors: ?after=ID for older messages, ?before=ID for newer.
+	f := db.MessageFilter{AccountID: accountID, Label: label, Limit: messagesPerPage}
+	if after := q.Get("after"); isID(after) {
+		f.After = after
+	} else if before := q.Get("before"); isID(before) {
+		f.Before = before
+	}
 
-	messages, err := h.db.ListMessages(r.Context(), db.MessageFilter{
-		AccountID: accountID, Label: label, After: after, Limit: messagesPerPage + 1,
-	})
+	messages, err := h.db.ListMessages(r.Context(), f)
 	if err != nil {
 		h.internalError(w, "listing messages", err)
 		return
+	}
+	all := db.MessageFilter{AccountID: accountID, Label: label}
+	total, err := h.db.CountFiltered(r.Context(), all)
+	if err != nil {
+		h.internalError(w, "counting messages", err)
+		return
+	}
+	newer := 0
+	if len(messages) > 0 {
+		above := all
+		above.Before = messages[0].ID
+		if newer, err = h.db.CountFiltered(r.Context(), above); err != nil {
+			h.internalError(w, "counting messages", err)
+			return
+		}
 	}
 	accounts, err := h.db.ListAccounts(r.Context(), 1000, "")
 	if err != nil {
@@ -162,17 +210,34 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 	data := messagesData{
 		layoutData: layoutData{ActiveTab: "messages", Title: labelTitle(label), User: user},
 		Accounts:   accounts,
-		AccountID:  accountID,
+		Account:    addr,
 		Label:      label,
 		Hostname:   h.hostname,
-		Paged:      after != "",
-		Query:      template.URL(url.Values{"account": {accountID}, "label": {label}}.Encode()),
+		Base:       listURL(addr, label),
+		Paged:      f.After != "" || f.Before != "",
+		Total:      total,
 	}
+	if len(messages) > 0 {
+		data.Start, data.End = newer+1, newer+len(messages)
+		if newer > 0 {
+			data.Newer = data.Base + "&before=" + template.URL(messages[0].ID)
+		}
+		if data.End < total {
+			data.Older = data.Base + "&after=" + template.URL(messages[len(messages)-1].ID)
+		}
+	}
+	seenUser := false
 	for _, l := range append([]db.Label{{Name: ""}}, labels...) {
 		if l.Name == db.LabelUnread {
 			continue // shown as counts and bold rows instead
 		}
 		link := labelLink{Name: l.Name, Title: labelTitle(l.Name), Active: l.Name == label}
+		if l.Name != "" && !l.System {
+			data.UserLabels = append(data.UserLabels, l)
+			if !seenUser {
+				link.FirstUser, seenUser = true, true
+			}
+		}
 		if l.Name == db.LabelInbox {
 			// Unread in the inbox, like a mail client's badge.
 			if link.Unread, err = h.db.CountMessages(r.Context(), accountID, l.Name, db.LabelUnread); err != nil {
@@ -181,10 +246,6 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		data.Labels = append(data.Labels, link)
-	}
-	if len(messages) > messagesPerPage {
-		messages = messages[:messagesPerPage]
-		data.NextAfter = messages[len(messages)-1].ID
 	}
 	for _, m := range messages {
 		row := messageRow{
@@ -230,12 +291,27 @@ type messageData struct {
 }
 
 func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isID(id) {
+		http.NotFound(w, r)
+		return
+	}
+	// ?attachment=N[&download] serves an attachment; otherwise ?raw shows
+	// the source and ?download saves it as a .eml file.
+	q := r.URL.Query()
+	if q.Has("attachment") {
+		h.attachment(w, r)
+		return
+	}
+	if q.Has("raw") || q.Has("download") {
+		h.rawMessage(w, r)
+		return
+	}
 	user := h.requireUser(w, r)
 	if user == nil {
 		return
 	}
 
-	id := r.PathValue("id")
 	m, err := h.db.GetMessage(r.Context(), id, true)
 	if errors.Is(err, db.ErrMessageNotFound) {
 		http.NotFound(w, r)
@@ -268,7 +344,7 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := messageData{
-		layoutData: layoutData{ActiveTab: "messages", Title: subjectOrNone(m.Subject), User: user},
+		layoutData: layoutData{ActiveTab: "messages", Title: shorten(subjectOrNone(m.Subject), 80), User: user},
 		Message:    m,
 		Account:    account,
 		AllLabels:  labels,
@@ -296,6 +372,66 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "message", data)
 }
 
+// viewable are the attachment types the browser may show rather than
+// download: they can't run scripts. Everything else, HTML and SVG
+// included, downloads, so it never runs on the dashboard's origin.
+var viewable = map[string]bool{
+	"image/png":       true,
+	"image/jpeg":      true,
+	"image/gif":       true,
+	"image/webp":      true,
+	"application/pdf": true,
+	"text/plain":      true,
+}
+
+// attachment serves attachment N of message {id} for ?attachment=N: shown
+// in the browser if its type is viewable, else downloaded, as is any with
+// ?download.
+func (h *Handler) attachment(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.sessions.GetUserID(r); !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	index, err := strconv.Atoi(r.URL.Query().Get("attachment"))
+	if err != nil || index < 0 {
+		http.NotFound(w, r)
+		return
+	}
+	a, content, err := h.svc.OpenAttachment(r.Context(), r.PathValue("id"), index)
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.internalError(w, "getting attachment", err)
+		return
+	}
+
+	mediaType, _, _ := strings.Cut(a.ContentType, ";")
+	disposition := "attachment"
+	if viewable[mediaType] && !r.URL.Query().Has("download") {
+		disposition = "inline"
+	}
+	hdr := w.Header()
+	hdr.Set("Content-Type", a.ContentType)
+	hdr.Set("Content-Disposition", service.ContentDisposition(disposition, a.Filename))
+	hdr.Set("Content-Length", strconv.Itoa(len(content)))
+	hdr.Set("X-Content-Type-Options", "nosniff")
+	// Belt and braces: even a mislabeled file can't run scripts. Chrome
+	// won't show a sandboxed PDF, so PDFs go without.
+	if mediaType != "application/pdf" {
+		hdr.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
+	}
+	w.Write(content)
+}
+
+var idPattern = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
+
+// isID reports whether s is a lowercase ULID, as message IDs are.
+func isID(s string) bool {
+	return idPattern.MatchString(s)
+}
+
 func hasLabel(m *db.Message, label string) bool {
 	for _, l := range m.Labels {
 		if l == label {
@@ -305,15 +441,15 @@ func hasLabel(m *db.Message, label string) bool {
 	return false
 }
 
-// rawMessage serves a message's source as plain text, so the browser shows
-// it rather than downloading or rendering it.
+// rawMessage serves a message's source: as plain text, so the browser shows
+// it rather than rendering it, or with ?download, as a .eml file to save.
 func (h *Handler) rawMessage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.sessions.GetUserID(r); !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	id := r.PathValue("id")
-	rc, err := h.svc.OpenRaw(r.Context(), id)
+	m, rc, err := h.svc.OpenRaw(r.Context(), id)
 	if connect.CodeOf(err) == connect.CodeNotFound {
 		http.NotFound(w, r)
 		return
@@ -323,10 +459,14 @@ func (h *Handler) rawMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Inline or not, a saved copy is named after the subject.
 	if r.URL.Query().Has("download") {
-		w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.eml"`)
+		w.Header().Set("Content-Type", "message/rfc822")
+		w.Header().Set("Content-Disposition", service.ContentDisposition("attachment", service.EmlFilename(m)))
+	} else {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", service.ContentDisposition("inline", service.EmlFilename(m)))
 	}
 	if _, err := io.Copy(w, rc); err != nil {
 		log.Printf("sending raw message %s: %v", id, err)
@@ -519,17 +659,43 @@ func writeError(w http.ResponseWriter, op string, err error) {
 	http.Error(w, err.Error(), status)
 }
 
-// labelTitle is how a label is shown: system labels capitalized, "" as all
-// mail.
-func labelTitle(name string) string {
-	switch {
-	case name == "":
-		return "All mail"
-	case db.IsSystemLabel(name):
-		return strings.ToUpper(name[:1]) + name[1:]
-	default:
-		return name
+// listURL links to the message list for an account's address ("" for all)
+// and a label. It keeps "@" as is, so the URL reads like the address, as
+// /?account=hello@boxy.sh&label=inbox. Without a label, the list shows the
+// inbox.
+func listURL(addr string, label ...string) template.URL {
+	q := url.Values{}
+	if addr != "" {
+		q.Set("account", addr)
 	}
+	if len(label) > 0 {
+		q.Set("label", label[0])
+	}
+	if len(q) == 0 {
+		return "/"
+	}
+	return template.URL("/?" + strings.ReplaceAll(q.Encode(), "%40", "@"))
+}
+
+// isWebURL reports whether s is an http or https URL, which metadata
+// values link to.
+func isWebURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// labelTitle is how a label is shown: "customer-issues" as "Customer
+// Issues", and "" as all mail. Label names are lowercase ASCII words, so
+// each word's first byte is its first letter.
+func labelTitle(name string) string {
+	if name == "" {
+		return "All Mail"
+	}
+	words := strings.FieldsFunc(name, func(r rune) bool { return r == '-' || r == '_' })
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
 }
 
 func subjectOrNone(s string) string {
@@ -537,6 +703,15 @@ func subjectOrNone(s string) string {
 		return "(no subject)"
 	}
 	return s
+}
+
+// shorten cuts s to at most n characters, ending with an ellipsis if cut.
+func shorten(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n-1])) + "…"
 }
 
 // formatTime shows today's times as a clock time and older ones as a date.

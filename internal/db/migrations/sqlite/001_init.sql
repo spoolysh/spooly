@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS labels (
 );
 
 INSERT INTO labels (name, system) VALUES
-    ('inbox', TRUE), ('unread', TRUE), ('starred', TRUE), ('spam', TRUE), ('trash', TRUE);
+    ('inbox', TRUE), ('unread', TRUE), ('starred', TRUE), ('sent', TRUE), ('spam', TRUE), ('trash', TRUE);
 
 -- Raw messages are in object storage, keyed by message ID.
 CREATE TABLE IF NOT EXISTS messages (

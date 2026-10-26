@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	boxyv1 "github.com/boxysh/boxy/gen/boxy/v1"
 	"github.com/boxysh/boxy/internal/auth"
 	"github.com/boxysh/boxy/internal/db"
 	"github.com/boxysh/boxy/internal/service"
@@ -49,6 +51,10 @@ func newTestUI(t *testing.T) *testUI {
 	svc := service.New(database, memory.New())
 	mux := http.NewServeMux()
 	NewHandler(database, sessions, svc, "http://example.test", "dev").RegisterRoutes(mux)
+	// Mount the API too, as cmd/boxy does, so routes that clash with it panic.
+	if err := svc.Mount(mux); err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
 	return &testUI{t: t, db: database, svc: svc, mux: mux, cookie: rec.Result().Cookies()[0]}
 }
 
@@ -97,34 +103,38 @@ func TestPagesRender(t *testing.T) {
 		t.Fatalf("create label: %d %s", rec.Code, rec.Body)
 	}
 
-	a, err := u.db.GetAccountByAddr(t.Context(), "hello@boxy.sh")
+	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddr: "hello@boxy.sh", Raw: []byte(testMessage)})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Store: %v", err)
 	}
-	rec := u.do("POST", "/ui/messages?account="+a.ID, "message/rfc822", testMessage, true)
-	if rec.Code != 200 {
-		t.Fatalf("upload: %d %s", rec.Code, rec.Body)
-	}
-	m, err := u.db.ListMessages(t.Context(), db.MessageFilter{Limit: 1})
-	if err != nil || len(m) != 1 {
-		t.Fatalf("ListMessages: %v %v", m, err)
-	}
-	id := m[0].ID
+	id := m.ID
 
 	if body := u.get("/", 200); !strings.Contains(body, "Hello there") || !strings.Contains(body, "Unread: ") {
 		t.Errorf("inbox doesn't list the unread message")
 	}
-	u.get("/?label=&account="+a.ID, 200)
+	if body := u.get("/?label=&account=hello@boxy.sh", 200); !strings.Contains(body, "Hello there") {
+		t.Error("account filter by address doesn't list its message")
+	}
+	u.get("/?account=nobody@boxy.sh", 404)
 	u.get("/accounts", 200)
 	u.get("/labels", 200)
 	u.get("/keys", 200)
 
-	body := u.get("/messages/"+id, 200)
+	body := u.get("/"+id, 200)
 	if !strings.Contains(body, "sandbox=") || !strings.Contains(body, "img-src data:;") {
 		t.Errorf("message page doesn't sandbox the HTML body")
 	}
 	if strings.Contains(body, `<img src="https://tracker.example`) {
 		t.Errorf("HTML body is not escaped into srcdoc")
+	}
+	if _, err := u.db.UpdateMessage(t.Context(), id, db.MessageUpdate{Metadata: map[string]string{
+		"ticket_id": "T-123", "crm": "https://crm.example.com/c/1", "script": "javascript:alert(1)",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	body = u.get("/"+id, 200)
+	if !strings.Contains(body, "T-123") || !strings.Contains(body, `href="https://crm.example.com/c/1"`) || strings.Contains(body, `href="javascript:`) {
+		t.Errorf("message page doesn't show metadata, or links a non-web value")
 	}
 	// Opening a message marks it read.
 	got, err := u.db.GetMessage(t.Context(), id, false)
@@ -135,7 +145,7 @@ func TestPagesRender(t *testing.T) {
 		t.Errorf("labels after opening = %v", got.Labels)
 	}
 
-	rec = u.do("POST", "/ui/messages/"+id+"/labels", "application/json", `{"add_labels": ["billing"], "remove_labels": ["inbox"]}`, true)
+	rec := u.do("POST", "/ui/messages/"+id+"/labels", "application/json", `{"add_labels": ["billing"], "remove_labels": ["inbox"]}`, true)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "billing") {
 		t.Errorf("update labels: %d %s", rec.Code, rec.Body)
 	}
@@ -143,13 +153,22 @@ func TestPagesRender(t *testing.T) {
 		t.Errorf("unknown label: %d %s", rec.Code, rec.Body)
 	}
 
-	if raw := u.get("/messages/"+id+"/raw", 200); raw != testMessage {
+	if raw := u.get("/"+id+"?raw", 200); raw != testMessage {
 		t.Errorf("raw = %q", raw)
 	}
-	if rec := u.do("GET", "/messages/"+id+"/raw", "", "", false); rec.Code != 401 {
+	rec = u.do("GET", "/"+id+"?download", "", "", true)
+	if rec.Code != 200 || rec.Body.String() != testMessage || rec.Header().Get("Content-Disposition") != `attachment; filename="Hello there.eml"` {
+		t.Errorf("download: %d %q", rec.Code, rec.Header().Get("Content-Disposition"))
+	}
+	if rec := u.do("GET", "/"+id+"?raw", "", "", false); rec.Code != 401 {
 		t.Errorf("signed-out raw: %d", rec.Code)
 	}
-	u.get("/messages/01h0000000000000000000000z", 404)
+	u.get("/01h0000000000000000000000z", 404)
+	// Paths that aren't message IDs are 404s, even signed out.
+	if rec := u.do("GET", "/robots.txt", "", "", false); rec.Code != 404 {
+		t.Errorf("/robots.txt: %d", rec.Code)
+	}
+	u.get("/accounts", 200)
 
 	if rec := u.do("DELETE", "/ui/labels/billing", "", "", true); rec.Code != http.StatusNoContent {
 		t.Errorf("delete label: %d %s", rec.Code, rec.Body)
@@ -169,5 +188,113 @@ func TestActionsRejectCrossOrigin(t *testing.T) {
 	u.mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("cross-site POST: %d", rec.Code)
+	}
+}
+
+func TestLabelTitle(t *testing.T) {
+	for name, want := range map[string]string{
+		"":                 "All Mail",
+		"inbox":            "Inbox",
+		"billing":          "Billing",
+		"customer-issues":  "Customer Issues",
+		"q3_invoices-2026": "Q3 Invoices 2026",
+	} {
+		if got := labelTitle(name); got != want {
+			t.Errorf("labelTitle(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestAttachments(t *testing.T) {
+	u := newTestUI(t)
+	if _, err := u.svc.CreateAccount(t.Context(), &boxyv1.CreateAccountRequest{Addr: "hello@boxy.sh"}); err != nil {
+		t.Fatal(err)
+	}
+	raw := "Subject: files\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n" +
+		"--b\r\nContent-Type: text/plain\r\n\r\nbody\r\n" +
+		"--b\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=\"a.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n" +
+		"--b\r\nContent-Type: text/html\r\nContent-Disposition: attachment; filename=\"page.html\"\r\n\r\n<script>alert(1)</script>\r\n--b--\r\n"
+	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddr: "hello@boxy.sh", Raw: []byte(raw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if body := u.get("/"+m.ID, 200); !strings.Contains(body, "?attachment=1&amp;download") {
+		t.Error("message page doesn't link attachments")
+	}
+	for _, tc := range []struct {
+		query, disposition string
+	}{
+		{"attachment=0", `inline; filename=a.png`},
+		{"attachment=0&download", `attachment; filename=a.png`},
+		{"attachment=1", `attachment; filename=page.html`}, // HTML never shows inline
+	} {
+		rec := u.do("GET", "/"+m.ID+"?"+tc.query, "", "", true)
+		if rec.Code != 200 || rec.Header().Get("Content-Disposition") != tc.disposition {
+			t.Errorf("%s: %d, Content-Disposition %q, want %q", tc.query, rec.Code, rec.Header().Get("Content-Disposition"), tc.disposition)
+		}
+		if !strings.Contains(rec.Header().Get("Content-Security-Policy"), "sandbox") {
+			t.Errorf("%s: not sandboxed", tc.query)
+		}
+	}
+	if rec := u.do("GET", "/"+m.ID+"?attachment=2", "", "", true); rec.Code != 404 {
+		t.Errorf("missing attachment: %d", rec.Code)
+	}
+	if rec := u.do("GET", "/"+m.ID+"?attachment=0", "", "", false); rec.Code != 401 {
+		t.Errorf("signed out: %d", rec.Code)
+	}
+}
+
+func TestPagingAndBulkActions(t *testing.T) {
+	u := newTestUI(t)
+	if _, err := u.svc.CreateAccount(t.Context(), &boxyv1.CreateAccountRequest{Addr: "hello@boxy.sh"}); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string // oldest first
+	for i := range 120 {
+		raw := fmt.Sprintf("Subject: message %d\r\n\r\nbody\r\n", i)
+		m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddr: "hello@boxy.sh", Raw: []byte(raw)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, m.ID)
+	}
+
+	first := u.get("/", 200)
+	if !strings.Contains(first, "1&ndash;50 of 120") || !strings.Contains(first, "after="+ids[70]) || strings.Contains(first, "before=") {
+		t.Errorf("first page lacks its range or older link")
+	}
+	second := u.get("/?label=inbox&after="+ids[70], 200)
+	if !strings.Contains(second, "51&ndash;100 of 120") || !strings.Contains(second, "before="+ids[69]) || !strings.Contains(second, "after="+ids[20]) {
+		t.Errorf("second page lacks its range or links")
+	}
+	// Newer from the second page is the first page again.
+	back := u.get("/?label=inbox&before="+ids[69], 200)
+	if !strings.Contains(back, "1&ndash;50 of 120") || !strings.Contains(back, "message 119") || strings.Contains(back, "message 69<") {
+		t.Errorf("newer page isn't the first page")
+	}
+	last := u.get("/?label=inbox&after="+ids[20], 200)
+	if !strings.Contains(last, "101&ndash;120 of 120") || strings.Contains(last, "after=") {
+		t.Errorf("last page has an older link or wrong range")
+	}
+
+	body := fmt.Sprintf(`{"ids": [%q, %q], "remove_labels": ["inbox"], "add_labels": ["starred"]}`, ids[0], ids[1])
+	if rec := u.do("POST", "/ui/messages/labels", "application/json", body, true); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"updated":2`) {
+		t.Fatalf("bulk: %d %s", rec.Code, rec.Body)
+	}
+	for _, id := range ids[:2] {
+		m, err := u.db.GetMessage(t.Context(), id, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(m.Labels, ","); got != "unread,starred" {
+			t.Errorf("labels after bulk = %s", got)
+		}
+	}
+	if rec := u.do("POST", "/ui/messages/labels", "application/json", `{"ids": [], "add_labels": ["starred"]}`, true); rec.Code != 400 {
+		t.Errorf("empty bulk: %d", rec.Code)
+	}
+	if rec := u.do("POST", "/ui/messages/labels", "application/json", fmt.Sprintf(`{"ids": [%q], "add_labels": ["nope"]}`, ids[2]), true); rec.Code != 400 {
+		t.Errorf("unknown label: %d", rec.Code)
 	}
 }

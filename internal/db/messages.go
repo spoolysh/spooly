@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -213,46 +214,49 @@ func getMessage(ctx context.Context, d *DB, q querier, id string, withBody bool)
 	return m, nil
 }
 
-// MessageExists reports whether a message with id exists, as an error
-// wrapping ErrMessageNotFound if not.
-func (d *DB) MessageExists(ctx context.Context, id string) error {
-	var one int
-	err := d.sql.QueryRowContext(ctx, d.q(`SELECT 1 FROM messages WHERE id = ?`), id).Scan(&one)
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("%w: %s", ErrMessageNotFound, id)
-	}
-	if err != nil {
-		return fmt.Errorf("getting message: %w", err)
-	}
-	return nil
-}
-
-// MessageFilter selects messages for ListMessages. Empty fields match all.
+// MessageFilter selects messages for ListMessages and CountFiltered. Empty
+// fields match all.
 type MessageFilter struct {
 	AccountID string
 	Label     string
-	After     string // only messages with smaller IDs
+	After     string // only messages with smaller IDs: older ones
+	Before    string // only messages with larger IDs: newer ones
 	Limit     int
 }
 
-// ListMessages returns messages matching f, newest first by ID, without
-// their bodies.
-func (d *DB) ListMessages(ctx context.Context, f MessageFilter) ([]*Message, error) {
-	query := `SELECT ` + messageColumns + ` FROM messages WHERE 1 = 1`
+// where returns the WHERE clause and arguments that select f's messages.
+func (f MessageFilter) where() (string, []any) {
+	where := ` WHERE 1 = 1`
 	var args []any
 	if f.AccountID != "" {
-		query += ` AND account_id = ?`
+		where += ` AND account_id = ?`
 		args = append(args, f.AccountID)
 	}
 	if f.Label != "" {
-		query += ` AND id IN (SELECT message_id FROM messages_labels WHERE label = ?)`
+		where += ` AND id IN (SELECT message_id FROM messages_labels WHERE label = ?)`
 		args = append(args, f.Label)
 	}
 	if f.After != "" {
-		query += ` AND id < ?`
+		where += ` AND id < ?`
 		args = append(args, f.After)
 	}
-	query += ` ORDER BY id DESC LIMIT ?`
+	if f.Before != "" {
+		where += ` AND id > ?`
+		args = append(args, f.Before)
+	}
+	return where, args
+}
+
+// ListMessages returns messages matching f, newest first by ID, without
+// their bodies. With Before, it returns the f.Limit oldest of the newer
+// messages, so a page before the current one ends right above it.
+func (d *DB) ListMessages(ctx context.Context, f MessageFilter) ([]*Message, error) {
+	where, args := f.where()
+	order := ` ORDER BY id DESC`
+	if f.Before != "" {
+		order = ` ORDER BY id ASC`
+	}
+	query := `SELECT ` + messageColumns + ` FROM messages` + where + order + ` LIMIT ?`
 	args = append(args, f.Limit)
 
 	rows, err := d.sql.QueryContext(ctx, d.q(query), args...)
@@ -272,6 +276,9 @@ func (d *DB) ListMessages(ctx context.Context, f MessageFilter) ([]*Message, err
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing messages: %w", err)
+	}
+	if f.Before != "" {
+		slices.Reverse(messages)
 	}
 
 	if err := d.loadLabels(ctx, d.sql, messages); err != nil {
@@ -374,6 +381,16 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 	return d.GetMessage(ctx, id, false)
 }
 
+// CountFiltered returns how many messages match f, ignoring its limit.
+func (d *DB) CountFiltered(ctx context.Context, f MessageFilter) (int, error) {
+	where, args := f.where()
+	var n int
+	if err := d.sql.QueryRowContext(ctx, d.q(`SELECT COUNT(*) FROM messages`+where), args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting messages: %w", err)
+	}
+	return n, nil
+}
+
 // CountMessages returns how many messages have all the labels, in one
 // account if accountID is set.
 func (d *DB) CountMessages(ctx context.Context, accountID string, labels ...string) (int, error) {
@@ -392,4 +409,33 @@ func (d *DB) CountMessages(ctx context.Context, accountID string, labels ...stri
 		return 0, fmt.Errorf("counting messages: %w", err)
 	}
 	return n, nil
+}
+
+// MaildropEntry is a message as POP3 lists it.
+type MaildropEntry struct {
+	ID   string
+	Size int64
+}
+
+// ListMaildrop returns the IDs and sizes of the newest limit messages of an
+// account with label, oldest first, as POP3 numbers them.
+func (d *DB) ListMaildrop(ctx context.Context, accountID, label string, limit int) ([]MaildropEntry, error) {
+	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT id, size FROM messages
+		WHERE account_id = ? AND id IN (SELECT message_id FROM messages_labels WHERE label = ?)
+		ORDER BY id DESC LIMIT ?`), accountID, label, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing maildrop: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []MaildropEntry
+	for rows.Next() {
+		var e MaildropEntry
+		if err := rows.Scan(&e.ID, &e.Size); err != nil {
+			return nil, fmt.Errorf("scanning maildrop: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	slices.Reverse(entries)
+	return entries, rows.Err()
 }

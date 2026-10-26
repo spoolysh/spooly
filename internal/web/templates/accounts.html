@@ -35,7 +35,7 @@
       <tbody class="divide-y divide-gray-200">
         {{range .Accounts}}
         <tr class="hover:bg-gray-50 transition-colors">
-          <td class="px-6 py-3"><a href="/?account={{.ID}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Addr}}</a></td>
+          <td class="px-6 py-3"><a href="{{listURL .Addr}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Addr}}</a></td>
           <td class="px-6 py-3 text-gray-700">{{if .Name}}{{.Name}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</td>
           <td class="px-6 py-3 tabular-nums {{if .Unread}}font-semibold text-gray-900{{else}}text-gray-400{{end}}">{{.Unread}}</td>
           <td class="px-6 py-3"><code class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-xs border border-gray-200">{{.ID}}</code></td>

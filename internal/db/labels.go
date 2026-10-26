@@ -22,11 +22,14 @@ const (
 	LabelInbox   = "inbox"
 	LabelUnread  = "unread"
 	LabelStarred = "starred"
+	LabelSent    = "sent" // mail sent from an account; nothing sets it yet
 	LabelSpam    = "spam"
 	LabelTrash   = "trash"
 )
 
-var systemLabels = []string{LabelInbox, LabelUnread, LabelStarred, LabelSpam, LabelTrash}
+// systemLabels follows Gmail's folder order: Inbox, Starred, Sent, Spam,
+// Trash, with unread after inbox.
+var systemLabels = []string{LabelInbox, LabelUnread, LabelStarred, LabelSent, LabelSpam, LabelTrash}
 
 // IsSystemLabel reports whether name is one of the built-in labels.
 func IsSystemLabel(name string) bool {

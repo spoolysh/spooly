@@ -3,7 +3,8 @@
 Mail backend. Incoming mail is stored per account, raw and parsed, organized
 with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
 
-> Early prototype: receiving and reading mail works; POP3 and IMAP are next.
+> Early prototype: receiving mail, the API, the dashboard, and POP3 work;
+> IMAP is next.
 
 - **Accounts**: one per address, looked up by ID or address; plus addresses
   (`hello+news@`) reach `hello@`
@@ -13,6 +14,8 @@ with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
   bodies, and attachments are parsed from it
 - **Any inbound**: a Cloudflare Email Routing worker first; anything that can
   POST the raw message works
+- **POP3**: mail clients download an account's inbox, with an API key as
+  the password
 - **Dashboard**: read mail, change labels, and manage accounts, labels, and
   API keys, signed in with Google
 
@@ -23,8 +26,8 @@ export SESSION_SECRET="your-secret-here"
 export GOOGLE_CLIENT_ID="your-client-id"
 export GOOGLE_CLIENT_SECRET="your-client-secret"
 
-just run
-# or: go run ./cmd/boxy serve --migrate
+just serve
+# or: go run ./cmd/boxy serve --migrate --mail
 ```
 
 Visit `http://localhost:8080` to sign in, create an account, and generate an
@@ -70,16 +73,13 @@ export default {
 };
 ```
 
-From the dashboard, **Upload .eml** stores a file as if it had just been
-delivered to the selected account.
-
 ## Labels
 
 A label is just its name: up to 64 lowercase letters and digits, separated by
 single `_` or `-` (`billing`, `customer-issues`). Labels are shared by all
-accounts, so `billing` means the same across every address. The system labels
-`inbox`, `unread`, `starred`, `spam`, and `trash` always exist. Combine a
-label with an account to get, say, one address's inbox:
+accounts, so `billing` means the same across every address. The system
+labels `inbox`, `unread`, `starred`, `sent`, `spam`, and `trash` always
+exist. Combine a label with an account to get, say, one address's inbox:
 `GET /v1/accounts/support@boxy.sh/messages?label=inbox`.
 
 Common actions are label changes:
@@ -97,6 +97,46 @@ curl -X PATCH "https://boxy.example.com/v1/messages/$ID" \
   -d '{"remove_labels": ["unread", "inbox"]}'
 ```
 
+## POP3
+
+Mail clients log in with the account's address as the username and an API
+key as the password, over plain POP3 with STLS, or POP3S. The maildrop is the
+newest 250 messages of the account's inbox, and the unique ID (UIDL) of a
+message is its ID. Retrieving a message marks it read for everyone, as with
+WildDuck; set `POP3_MARK_READ=false` to have POP3 leave read status alone.
+
+What a client's delete does is set by `POP3_DELETE`, applied when it quits:
+
+| `POP3_DELETE` | Deleted messages |
+|---|---|
+| `keep` (default) | Stay in the inbox: `DELE` is accepted and ignored |
+| `archive` | Lose the `inbox` label |
+| `trash` | Lose `inbox`, get `trash` |
+
+`keep` matches a WildDuck patched to ignore `DELE`, so clients set to delete
+after downloading can't remove mail that others read through the API.
+
+Several people's clients can use the same account at once, as with WildDuck:
+unlike RFC 1939, a session doesn't lock the maildrop. Each client downloads
+every message once, tracking them by UIDL. With `archive` or `trash`, the
+first client to delete a message removes it from everyone else's maildrop. Any
+API key can log in to any account, as over the API. Without a TLS
+certificate, logins are plaintext; use that only on a trusted network.
+
+### Where the mail protocols run
+
+| Command | Runs | Where |
+|---|---|---|
+| `boxy serve` | API and dashboard | Anywhere, such as Cloud Run |
+| `boxy serve --mail` | API, dashboard, and mail protocols | A single server, or local development (`just serve`) |
+| `boxy mail` | Mail protocols only: POP3 now, IMAP later | A host that takes raw TCP, such as a small VM; no Google or session settings |
+
+Cloud Run takes only HTTP, so pair `boxy serve` there with `boxy mail` on a
+VM.
+
+Both need the same PostgreSQL database and S3 or GCS bucket, so mail
+delivered through the API shows up in POP3 at once.
+
 ## API
 
 | Method | Path | Description |
@@ -110,6 +150,7 @@ curl -X PATCH "https://boxy.example.com/v1/messages/$ID" \
 | `GET` | `/v1/accounts/{account_id_or_addr}/messages` | Same, for one account |
 | `GET` | `/v1/messages/{id}` | Get a message with its body |
 | `GET` | `/v1/messages/{id}/raw` | Get a message's raw source |
+| `GET` | `/v1/messages/{id}/attachments/{index}` | Get an attachment, decoded, by its position in `attachments` (from 0) |
 | `PATCH` | `/v1/messages/{id}` | Update a message: `add_labels`, `remove_labels`, `metadata` (merged; an empty value deletes a key) |
 | `GET` | `/v1/labels` | List labels |
 | `POST` | `/v1/labels` | Create a user label |
@@ -145,6 +186,12 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `LOCAL_STORAGE_DIR` | Directory for `local` storage | `./storage` |
 | `S3_BUCKET` | Bucket for `s3`: Amazon S3, Cloudflare R2, MinIO; credentials from the usual `AWS_*` variables | — |
 | `GCS_BUCKET` | Bucket for `gcs`; credentials from Application Default Credentials | — |
+| `POP3_ADDR` | POP3 listen address for `serve --mail` and `mail`, with STLS when a certificate is set; empty disables POP3 | `:1110` |
+| `POP3S_ADDR` | POP3 over TLS listen address, such as `:995` | — |
+| `MAIL_TLS_CERT`, `MAIL_TLS_KEY` | PEM certificate and key files for the mail protocols (STLS, POP3S); logins then need TLS | — |
+| `POP3_DELETE` | What a client's delete does: `keep`, `archive`, or `trash` | `keep` |
+| `POP3_MARK_READ` | Whether retrieving or deleting a message over POP3 marks it read | `true` |
+| `POP3_MAX_MESSAGES` | How many of the newest inbox messages POP3 lists | `250` |
 | `SESSION_SECRET` | HMAC key for signing session cookies | required |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID | required |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret | required |
@@ -153,7 +200,8 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 Dashboard users sign in with Google; each creates their own API keys. Every
 user and key sees all accounts. Migrations are managed by
 [goose](https://github.com/pressly/goose): run `boxy migrate`, or start with
-`boxy serve --migrate`.
+`boxy serve --migrate`. See [Where the mail protocols run](#where-the-mail-protocols-run)
+for `serve --mail` and `mail`.
 
 ## Development
 
@@ -169,10 +217,11 @@ just build      # build the boxy binary
 
 | Package | |
 |---|---|
-| [cmd/boxy](cmd/boxy) | Entry point: `serve` and `migrate` |
+| [cmd/boxy](cmd/boxy) | Entry point: `serve`, `mail`, and `migrate` |
 | [internal/service](internal/service) | The API: Account, Label, and Message services, mounted for Connect, gRPC, and REST |
 | [internal/mailparse](internal/mailparse) | Parses raw messages into headers, bodies, a snippet, and attachments |
 | [internal/db](internal/db) | SQLite and PostgreSQL storage, with migrations |
+| [internal/pop3](internal/pop3) | The POP3 server |
 | [internal/storage](internal/storage) | Raw message storage: local disk, S3-compatible, GCS, or memory |
 | [internal/web](internal/web) | The dashboard |
 | [internal/auth](internal/auth) | Google sign-in and session cookies |

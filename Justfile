@@ -1,9 +1,13 @@
 default:
     @just --list
 
-# Run the server
-run:
-    go run ./cmd/boxy serve --migrate
+# Run the API and dashboard, and the mail protocols (POP3)
+serve:
+    go run ./cmd/boxy serve --migrate --mail
+
+# Run only the mail protocols (POP3)
+mail:
+    go run ./cmd/boxy mail --migrate
 
 # Build the binary
 build:
