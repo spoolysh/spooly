@@ -21,7 +21,7 @@ service MessageService {
       body: "raw"
       response_body: "message"
       additional_bindings: {
-        post: "/v1/mailboxes/{mailbox_id_or_addr}/messages"
+        post: "/v1/accounts/{account_id_or_addr}/messages"
         body: "raw"
         response_body: "message"
       }
@@ -29,9 +29,9 @@ service MessageService {
     option (gnostic.openapi.v3.operation) = {
       parameters: {
         parameter: {
-          name: "mailbox_id_or_addr"
+          name: "account_id_or_addr"
           in: "query"
-          description: "Mailbox ID or address. Only for POST /v1/messages."
+          description: "Account ID or address. Only for POST /v1/messages."
           schema: {
             schema: {type: "string"}
           }
@@ -67,7 +67,7 @@ service MessageService {
         parameter: {
           name: "idempotency_key"
           in: "query"
-          description: "Unique per mailbox. A repeat returns the stored message."
+          description: "Unique per account. A repeat returns the stored message."
           schema: {
             schema: {
               type: "string"
@@ -104,9 +104,21 @@ service MessageService {
       get: "/v1/messages"
       response_body: "messages"
       additional_bindings: {
-        get: "/v1/mailboxes/{mailbox_id_or_addr}/messages"
+        get: "/v1/accounts/{account_id_or_addr}/messages"
         response_body: "messages"
       }
+    };
+  }
+
+  // Update a message's labels and metadata. Absent fields are left
+  // unchanged. Removing inbox archives a message, removing unread marks it
+  // read.
+  rpc UpdateMessage(UpdateMessageRequest) returns (UpdateMessageResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {
+      patch: "/v1/messages/{id}"
+      body: "*"
+      response_body: "message"
     };
   }
 
@@ -154,8 +166,8 @@ service MessageService {
   }
 }
 
-// A stored message. Everything but the delivery fields is parsed from the
-// raw source.
+// A stored message. Headers, snippet, size, attachments, and body are parsed
+// from the raw source.
 message Message {
   // Lowercase ULID.
   string id = 1 [
@@ -165,7 +177,7 @@ message Message {
       string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
     }
   ];
-  string mailbox_id = 2 [
+  string account_id = 2 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field) = {
       required: true
@@ -174,29 +186,54 @@ message Message {
   ];
 
   // SMTP envelope sender (MAIL FROM), not the From header. Empty for bounces.
-  string sender = 13 [(google.api.field_behavior) = REQUIRED];
+  string sender = 3 [(google.api.field_behavior) = REQUIRED];
+  // SMTP envelope recipient (RCPT TO) it was delivered to, e.g.
+  // "hello+news@boxy.sh". The account's address when created by account ID.
+  string recipient = 4 [(google.api.field_behavior) = REQUIRED];
 
-  // Absent when there's no From header.
-  optional Address from = 3;
-  repeated Address to = 4 [(google.api.field_behavior) = REQUIRED];
-  repeated Address cc = 5 [(google.api.field_behavior) = REQUIRED];
-  string subject = 6 [(google.api.field_behavior) = REQUIRED];
+  // First address of the From header. Empty when there's none.
+  Address from = 5 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+  repeated Address to = 6 [(google.api.field_behavior) = REQUIRED];
+  repeated Address cc = 7 [(google.api.field_behavior) = REQUIRED];
+  string subject = 8 [(google.api.field_behavior) = REQUIRED];
   // Date header, as claimed by the sender. Absent when missing or invalid.
-  optional google.protobuf.Timestamp date = 7;
+  optional google.protobuf.Timestamp date = 9;
 
   // Start of the text body, for list views.
-  string snippet = 8 [(google.api.field_behavior) = REQUIRED];
+  string snippet = 10 [(google.api.field_behavior) = REQUIRED];
   // Raw size in bytes.
-  int64 size = 9 [
+  int64 size = 11 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).int64.gte = 0
   ];
-  repeated Attachment attachments = 10 [(google.api.field_behavior) = REQUIRED];
+  repeated Attachment attachments = 12 [(google.api.field_behavior) = REQUIRED];
   // Only set by GetMessage.
-  optional MessageBody body = 11;
+  optional MessageBody body = 13;
+
+  // Label names. New messages get inbox and unread.
+  repeated string labels = 14 [(google.api.field_behavior) = REQUIRED];
+  // Your own key-value data, e.g. {"ticket_id": "T-123"}.
+  map<string, string> metadata = 15 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).map = {
+      max_pairs: 50
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 40
+        }
+      }
+      values: {
+        string: {max_len: 500}
+      }
+    }
+  ];
 
   // When the MTA accepted it.
-  google.protobuf.Timestamp received_at = 12 [
+  google.protobuf.Timestamp received_at = 16 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).required = true
   ];
@@ -225,12 +262,14 @@ message Attachment {
 // Over Connect/gRPC, the first message carries all fields, later ones
 // only raw chunks.
 message CreateMessageRequest {
-  // Treated as an address if it contains "@". Required in the first message.
-  string mailbox_id_or_addr = 1 [(buf.validate.field) = {
+  // Treated as an address if it contains "@"; "local+tag@domain" finds
+  // "local@domain". Stored as the message's recipient. Required in the first
+  // message.
+  string account_id_or_addr = 1 [(buf.validate.field) = {
     ignore: IGNORE_IF_ZERO_VALUE
     cel: {
-      id: "mailbox_id_or_addr"
-      message: "must be a mailbox ID or an email address"
+      id: "account_id_or_addr"
+      message: "must be an account ID or an email address"
       expression: "this.matches('^[0-7][0-9a-hjkmnp-tv-z]{25}$') || this.isEmail()"
     }
   }];
@@ -240,7 +279,7 @@ message CreateMessageRequest {
   string sender = 3 [(buf.validate.field).string.max_len = 254];
   // Absent means now.
   optional google.protobuf.Timestamp received_at = 4;
-  // Unique per mailbox. A repeat returns the stored message.
+  // Unique per account. A repeat returns the stored message.
   optional string idempotency_key = 5 [(buf.validate.field).string.max_len = 128];
 }
 
@@ -249,10 +288,10 @@ message CreateMessageResponse {
 }
 
 message ListMessagesRequest {
-  // Treated as an address if it contains "@". Absent means all mailboxes.
-  optional string mailbox_id_or_addr = 1 [(buf.validate.field).cel = {
-    id: "mailbox_id_or_addr"
-    message: "must be a mailbox ID or an email address"
+  // Treated as an address if it contains "@". Absent means all accounts.
+  optional string account_id_or_addr = 1 [(buf.validate.field).cel = {
+    id: "account_id_or_addr"
+    message: "must be an account ID or an email address"
     expression: "this.matches('^[0-7][0-9a-hjkmnp-tv-z]{25}$') || this.isEmail()"
   }];
   // Absent means 50.
@@ -262,10 +301,59 @@ message ListMessagesRequest {
   }];
   // ID of the last message from the previous page.
   optional string after = 3 [(buf.validate.field).string.pattern = "^[0-7][0-9a-hjkmnp-tv-z]{25}$"];
+  // Only list messages with this label.
+  optional string label = 4 [(buf.validate.field).string = {
+    pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+    max_len: 64
+  }];
 }
 
 message ListMessagesResponse {
   repeated Message messages = 1;
+}
+
+message UpdateMessageRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+  }];
+  repeated string add_labels = 2 [(buf.validate.field).repeated = {
+    max_items: 100
+    unique: true
+    items: {
+      string: {
+        pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+        max_len: 64
+      }
+    }
+  }];
+  repeated string remove_labels = 3 [(buf.validate.field).repeated = {
+    max_items: 100
+    unique: true
+    items: {
+      string: {
+        pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+        max_len: 64
+      }
+    }
+  }];
+  // Merged into the message's metadata. An empty value deletes the key.
+  map<string, string> metadata = 4 [(buf.validate.field).map = {
+    max_pairs: 50
+    keys: {
+      string: {
+        min_len: 1
+        max_len: 40
+      }
+    }
+    values: {
+      string: {max_len: 500}
+    }
+  }];
+}
+
+message UpdateMessageResponse {
+  Message message = 1 [(buf.validate.field).required = true];
 }
 
 message GetMessageRequest {

@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package boxy.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
+
+service LabelService {
+  // Create a user label.
+  rpc CreateLabel(CreateLabelRequest) returns (CreateLabelResponse) {
+    option (google.api.http) = {
+      post: "/v1/labels"
+      body: "*"
+      response_body: "label"
+    };
+  }
+
+  // List labels: system labels first, then user labels by name.
+  rpc ListLabels(ListLabelsRequest) returns (ListLabelsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/labels"
+      response_body: "labels"
+    };
+  }
+
+  // Delete a user label and remove it from its messages.
+  rpc DeleteLabel(DeleteLabelRequest) returns (DeleteLabelResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {delete: "/v1/labels/{name}"};
+  }
+}
+
+// A label tags messages; a message can have several. Labels are shared by
+// all accounts. System labels (inbox, unread, starred, spam, trash) always
+// exist and can't be deleted.
+message Label {
+  // Unique, e.g. "billing".
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field) = {
+      required: true
+      string: {
+        pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+        max_len: 64
+      }
+    }
+  ];
+  bool system = 2 [(google.api.field_behavior) = REQUIRED];
+  // Absent for system labels.
+  optional google.protobuf.Timestamp created_at = 3;
+}
+
+message CreateLabelRequest {
+  string name = 1 [(buf.validate.field) = {
+    required: true
+    string: {
+      pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+      max_len: 64
+    }
+  }];
+}
+
+message CreateLabelResponse {
+  Label label = 1 [(buf.validate.field).required = true];
+}
+
+message ListLabelsRequest {}
+
+message ListLabelsResponse {
+  repeated Label labels = 1;
+}
+
+message DeleteLabelRequest {
+  string name = 1 [(buf.validate.field) = {
+    required: true
+    string: {
+      pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+      max_len: 64
+    }
+  }];
+}
+
+message DeleteLabelResponse {}
