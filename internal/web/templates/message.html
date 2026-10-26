@@ -1,0 +1,168 @@
+{{define "content"}}
+{{$m := .Message}}
+<div class="mb-4">
+  <a href="/?account={{$m.AccountID}}" class="text-sm text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; {{.Account.Addr}}</a>
+</div>
+
+<div class="mb-6 flex flex-wrap items-start justify-between gap-4">
+  <div class="min-w-0">
+    <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance break-words">{{if $m.Subject}}{{$m.Subject}}{{else}}(no subject){{end}}</h2>
+    <div class="mt-2 flex flex-wrap items-center gap-1.5" id="label-chips">
+      {{range $m.Labels}}
+      <span class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium border {{if isSystem .}}bg-brand-50 text-brand-700 border-brand-200{{else}}bg-gray-100 text-gray-600 border-gray-200{{end}}">
+        {{labelTitle .}}
+        {{if not (isSystem .)}}<button type="button" onclick="changeLabels([], ['{{.}}'])" class="text-gray-400 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded" aria-label="Remove label {{.}}">&times;</button>{{end}}
+      </span>
+      {{end}}
+    </div>
+  </div>
+  <div class="flex flex-wrap items-center gap-2">
+    {{if .Has.inbox}}
+    <button type="button" onclick="changeLabels([], ['inbox'])" class="btn">Archive</button>
+    {{else}}
+    <button type="button" onclick="changeLabels(['inbox'], ['trash', 'spam'])" class="btn">Move to inbox</button>
+    {{end}}
+    <button type="button" onclick="changeLabels(['unread'], [], '/?account={{$m.AccountID}}')" class="btn">Mark unread</button>
+    {{if .Has.starred}}
+    <button type="button" onclick="changeLabels([], ['starred'])" class="btn"><span class="text-amber-500">&#9733;</span> Unstar</button>
+    {{else}}
+    <button type="button" onclick="changeLabels(['starred'], [])" class="btn">&#9734; Star</button>
+    {{end}}
+    {{if not .Has.spam}}<button type="button" onclick="changeLabels(['spam'], ['inbox'])" class="btn">Spam</button>{{end}}
+    {{if .Has.trash}}
+    <button type="button" onclick="changeLabels(['inbox'], ['trash'])" class="btn">Restore</button>
+    {{else}}
+    <button type="button" onclick="changeLabels(['trash'], ['inbox'])" class="btn btn-danger">Trash</button>
+    {{end}}
+    <label for="add-label" class="sr-only">Add label</label>
+    <select id="add-label" onchange="if (this.value) changeLabels([this.value], [])"
+      class="select !py-1.5">
+      <option value="">Add label&hellip;</option>
+      {{range .AllLabels}}{{if and (not .System) (not (index $.Has .Name))}}<option value="{{.Name}}">{{.Name}}</option>{{end}}{{end}}
+    </select>
+  </div>
+</div>
+<div id="action-status" role="status" class="hidden mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"></div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-6">
+  <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 px-6 py-4 text-sm">
+    <dt class="text-gray-500">From</dt>
+    <dd class="min-w-0 break-words">{{if $m.From.Addr}}{{if $m.From.Name}}<span class="font-medium text-gray-900">{{$m.From.Name}}</span> {{end}}<span class="text-gray-600">&lt;{{$m.From.Addr}}&gt;</span>{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</dd>
+    <dt class="text-gray-500">To</dt>
+    <dd class="min-w-0 break-words text-gray-700">{{range $i, $a := $m.To}}{{if $i}}, {{end}}{{if $a.Name}}{{$a.Name}} {{end}}&lt;{{$a.Addr}}&gt;{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</dd>
+    {{if $m.Cc}}
+    <dt class="text-gray-500">Cc</dt>
+    <dd class="min-w-0 break-words text-gray-700">{{range $i, $a := $m.Cc}}{{if $i}}, {{end}}{{if $a.Name}}{{$a.Name}} {{end}}&lt;{{$a.Addr}}&gt;{{end}}</dd>
+    {{end}}
+    <dt class="text-gray-500">Date</dt>
+    <dd class="tabular-nums text-gray-700">{{if .Date}}{{.Date}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</dd>
+  </dl>
+  <details class="border-t border-gray-200 px-6 py-3 text-sm">
+    <summary class="cursor-pointer text-gray-500 hover:text-gray-900">Delivery details</summary>
+    <dl class="mt-3 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2">
+      <dt class="text-gray-500">Envelope sender</dt>
+      <dd class="min-w-0 break-words font-mono text-xs text-gray-700">{{if $m.Sender}}{{$m.Sender}}{{else}}<span class="text-gray-400">(empty: a bounce)</span>{{end}}</dd>
+      <dt class="text-gray-500">Envelope recipient</dt>
+      <dd class="min-w-0 break-words font-mono text-xs text-gray-700">{{$m.Recipient}}</dd>
+      <dt class="text-gray-500">Received</dt>
+      <dd class="tabular-nums text-gray-700">{{.ReceivedAt}}</dd>
+      <dt class="text-gray-500">Size</dt>
+      <dd class="tabular-nums text-gray-700">{{formatSize $m.Size}}</dd>
+      <dt class="text-gray-500">ID</dt>
+      <dd class="font-mono text-xs text-gray-700">{{$m.ID}}</dd>
+      {{range $k, $v := $m.Metadata}}
+      <dt class="text-gray-500 font-mono text-xs">{{$k}}</dt>
+      <dd class="min-w-0 break-words font-mono text-xs text-gray-700">{{$v}}</dd>
+      {{end}}
+    </dl>
+  </details>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+  <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-gray-50 px-4 py-2" role="tablist">
+    <div class="flex gap-1">
+      {{if $m.HTML}}<button type="button" role="tab" data-tab="html" class="tab">HTML</button>{{end}}
+      {{if $m.Text}}<button type="button" role="tab" data-tab="text" class="tab">Text</button>{{end}}
+    </div>
+    <div class="flex items-center gap-3 text-sm">
+      {{if $m.HTML}}<button type="button" id="load-images" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Load remote images</button>{{end}}
+      <a href="/messages/{{$m.ID}}/raw" target="_blank" rel="noopener" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Source</a>
+      <a href="/messages/{{$m.ID}}/raw?download" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Download .eml</a>
+    </div>
+  </div>
+  {{if $m.HTML}}
+  <div data-panel="html" class="hidden">
+    <iframe id="html-body" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" title="Message body" srcdoc="{{.HTMLDoc}}" data-all="{{.HTMLDocAll}}" class="w-full min-h-[8rem] border-0"></iframe>
+  </div>
+  {{end}}
+  {{if $m.Text}}
+  <div data-panel="text" class="hidden">
+    <pre class="whitespace-pre-wrap break-words px-6 py-4 text-sm text-gray-800 font-sans">{{$m.Text}}</pre>
+  </div>
+  {{end}}
+  {{if and (not $m.HTML) (not $m.Text)}}
+  <p class="px-6 py-8 text-center text-sm text-gray-500">This message has no text body.</p>
+  {{end}}
+  {{if $m.Attachments}}
+  <div class="border-t border-gray-200 px-6 py-4">
+    <h3 class="text-xs font-medium uppercase tracking-wider text-gray-500 mb-2">Attachments</h3>
+    <ul class="flex flex-wrap gap-2">
+      {{range $m.Attachments}}
+      <li class="inline-flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs">
+        <span class="font-medium text-gray-800">{{if .Filename}}{{.Filename}}{{else}}(unnamed){{end}}</span>
+        <span class="text-gray-500">{{.ContentType}} &middot; {{formatSize .Size}}</span>
+      </li>
+      {{end}}
+    </ul>
+  </div>
+  {{end}}
+</div>
+
+<style type="text/tailwindcss">
+  .btn { @apply rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50; }
+  .btn-danger { @apply text-red-600 border-red-200 hover:border-red-300 hover:bg-red-50; }
+  .tab { @apply rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500; }
+  .tab[aria-selected="true"] { @apply bg-white text-gray-900 shadow-sm ring-1 ring-gray-200; }
+</style>
+
+<script>
+  async function changeLabels(add, remove, next) {
+    document.querySelectorAll('.btn').forEach((b) => b.disabled = true);
+    const resp = await fetch('/ui/messages/{{$m.ID}}/labels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add_labels: add, remove_labels: remove }),
+    });
+    if (resp.ok) {
+      // Leaving the inbox (archive, trash, spam) goes back to it.
+      location.href = next || (remove.includes('inbox') ? '/?account={{$m.AccountID}}' : location.pathname);
+      return;
+    }
+    const status = document.getElementById('action-status');
+    status.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    status.classList.remove('hidden');
+    document.querySelectorAll('.btn').forEach((b) => b.disabled = false);
+  }
+
+  const tabs = document.querySelectorAll('[data-tab]');
+  function showTab(name) {
+    tabs.forEach((t) => t.setAttribute('aria-selected', t.dataset.tab === name));
+    document.querySelectorAll('[data-panel]').forEach((p) => p.classList.toggle('hidden', p.dataset.panel !== name));
+  }
+  tabs.forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
+  if (tabs.length) showTab(tabs[0].dataset.tab);
+
+  // Size the body to its content. The frame may run no scripts (sandbox and
+  // CSP), so it is measured from here once it loads.
+  const frame = document.getElementById('html-body');
+  if (frame) {
+    frame.addEventListener('load', () => {
+      try { frame.style.height = frame.contentDocument.documentElement.scrollHeight + 32 + 'px'; } catch {}
+    });
+    document.getElementById('load-images').addEventListener('click', (e) => {
+      frame.srcdoc = frame.dataset.all;
+      e.target.remove();
+    });
+  }
+</script>
+{{end}}

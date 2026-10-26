@@ -1,0 +1,71 @@
+{{define "content"}}
+<div class="mb-8">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Labels</h2>
+  <p class="mt-1 text-sm text-gray-500">Labels are shared by all accounts. A message can have several.</p>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+  <h3 class="text-sm font-semibold text-gray-900 mb-4">Create label</h3>
+  <form id="create-form" class="flex gap-3">
+    <label for="name" class="sr-only">Name</label>
+    <input type="text" id="name" name="name" placeholder="customer-issues" required maxlength="64"
+      pattern="[a-z0-9]+([_\-][a-z0-9]+)*" title="Lowercase letters and digits, separated by single _ or -"
+      class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+    <button type="submit"
+      class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Create</button>
+  </form>
+  <p id="create-error" role="alert" class="hidden mt-3 text-sm text-red-700"></p>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-sm whitespace-nowrap">
+      <thead class="bg-gray-50 text-gray-500 uppercase tracking-wider text-xs font-medium border-b border-gray-200">
+        <tr>
+          <th class="px-6 py-4">Name</th>
+          <th class="px-6 py-4">Messages</th>
+          <th class="px-6 py-4">Created</th>
+          <th class="px-6 py-4"><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200">
+        {{range .Labels}}
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-6 py-3">
+            <a href="/?label={{.Name}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Name}}</a>
+            {{if .System}}<span class="ml-2 inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-500/10">System</span>{{end}}
+          </td>
+          <td class="px-6 py-3 tabular-nums text-gray-700">{{.Count}}</td>
+          <td class="px-6 py-3 text-gray-500 tabular-nums">{{if .CreatedAt}}{{.CreatedAt}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</td>
+          <td class="px-6 py-3 text-right">
+            {{if not .System}}
+            <button type="button" data-name="{{.Name}}" data-count="{{.Count}}" onclick="deleteLabel(this)"
+              class="text-xs font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">Delete</button>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  document.getElementById('create-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const resp = await fetch('/ui/labels', { method: 'POST', body: new FormData(e.target) });
+    if (resp.ok) { location.reload(); return; }
+    const error = document.getElementById('create-error');
+    error.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    error.classList.remove('hidden');
+  });
+
+  async function deleteLabel(btn) {
+    const { name, count } = btn.dataset;
+    if (!confirm(`Delete label "${name}"? It is removed from ${count} message(s); the messages stay.`)) return;
+    const resp = await fetch('/ui/labels/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (resp.ok) location.reload();
+    else alert((await resp.text()).trim() || 'Failed to delete label');
+  }
+</script>
+{{end}}

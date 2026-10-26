@@ -1,0 +1,65 @@
+{{define "content"}}
+<div class="mb-8">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Accounts</h2>
+  <p class="mt-1 text-sm text-gray-500">An account receives all mail sent to its address. Plus addresses reach it too: <code>hello+news@</code> lands in <code>hello@</code>.</p>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+  <h3 class="text-sm font-semibold text-gray-900 mb-4">Create account</h3>
+  <form id="create-form" class="flex flex-wrap gap-3">
+    <label for="addr" class="sr-only">Address</label>
+    <input type="email" id="addr" name="addr" placeholder="hello@example.com" required maxlength="254"
+      class="flex-1 min-w-[14rem] rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+    <label for="name" class="sr-only">Name</label>
+    <input type="text" id="name" name="name" placeholder="Name (optional)" maxlength="128"
+      class="flex-1 min-w-[10rem] rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+    <button type="submit"
+      class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Create</button>
+  </form>
+  <p id="create-error" role="alert" class="hidden mt-3 text-sm text-red-700"></p>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+  {{if .Accounts}}
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-sm whitespace-nowrap">
+      <thead class="bg-gray-50 text-gray-500 uppercase tracking-wider text-xs font-medium border-b border-gray-200">
+        <tr>
+          <th class="px-6 py-4">Address</th>
+          <th class="px-6 py-4">Name</th>
+          <th class="px-6 py-4">Unread</th>
+          <th class="px-6 py-4">ID</th>
+          <th class="px-6 py-4">Created</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200">
+        {{range .Accounts}}
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-6 py-3"><a href="/?account={{.ID}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Addr}}</a></td>
+          <td class="px-6 py-3 text-gray-700">{{if .Name}}{{.Name}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</td>
+          <td class="px-6 py-3 tabular-nums {{if .Unread}}font-semibold text-gray-900{{else}}text-gray-400{{end}}">{{.Unread}}</td>
+          <td class="px-6 py-3"><code class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-xs border border-gray-200">{{.ID}}</code></td>
+          <td class="px-6 py-3 text-gray-500 tabular-nums">{{.CreatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="px-6 py-12 text-center text-gray-500">
+    <p>No accounts yet. Create one above.</p>
+  </div>
+  {{end}}
+</div>
+
+<script>
+  document.getElementById('create-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const resp = await fetch('/ui/accounts', { method: 'POST', body: new FormData(e.target) });
+    if (resp.ok) { location.reload(); return; }
+    const error = document.getElementById('create-error');
+    error.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    error.classList.remove('hidden');
+  });
+</script>
+{{end}}
