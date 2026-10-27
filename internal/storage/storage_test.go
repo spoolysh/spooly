@@ -28,7 +28,7 @@ func TestPutReportsChecksum(t *testing.T) {
 		t.Fatalf("local.New: %v", err)
 	}
 	for name, store := range map[string]storage.Storage{"memory": memory.New(), "local": disk} {
-		stored, err := store.Put(t.Context(), "01m5w32mczebq4dpgdjy8p8twa", "text/plain", strings.NewReader("hello"))
+		stored, err := store.Put(t.Context(), "V1StGXR8_Z5jdHi6B-myT", "text/plain", strings.NewReader("hello"))
 		if err != nil {
 			t.Fatalf("%s: Put: %v", name, err)
 		}
@@ -44,10 +44,10 @@ func TestMissingFileIsErrNotFound(t *testing.T) {
 		t.Fatalf("local.New: %v", err)
 	}
 	for name, store := range map[string]storage.Storage{"memory": memory.New(), "local": disk} {
-		if _, err := store.Get(t.Context(), "01m5w32mczebq4dpgdjy8p8twb"); !errors.Is(err, storage.ErrNotFound) {
+		if _, err := store.Get(t.Context(), "V1StGXR8_Z5jdHi6B-myU"); !errors.Is(err, storage.ErrNotFound) {
 			t.Errorf("%s: Get = %v, want ErrNotFound", name, err)
 		}
-		if _, err := store.GetRange(t.Context(), "01m5w32mczebq4dpgdjy8p8twb", 0, 1); !errors.Is(err, storage.ErrNotFound) {
+		if _, err := store.GetRange(t.Context(), "V1StGXR8_Z5jdHi6B-myU", 0, 1); !errors.Is(err, storage.ErrNotFound) {
 			t.Errorf("%s: GetRange = %v, want ErrNotFound", name, err)
 		}
 	}
@@ -59,10 +59,10 @@ func TestGetRange(t *testing.T) {
 		t.Fatalf("local.New: %v", err)
 	}
 	for name, store := range map[string]storage.Storage{"memory": memory.New(), "local": disk} {
-		if _, err := store.Put(t.Context(), "01m5w32mczebq4dpgdjy8p8twa", "", strings.NewReader("hello world")); err != nil {
+		if _, err := store.Put(t.Context(), "V1StGXR8_Z5jdHi6B-myT", "", strings.NewReader("hello world")); err != nil {
 			t.Fatalf("%s: Put: %v", name, err)
 		}
-		rc, err := store.GetRange(t.Context(), "01m5w32mczebq4dpgdjy8p8twa", 6, 3)
+		rc, err := store.GetRange(t.Context(), "V1StGXR8_Z5jdHi6B-myT", 6, 3)
 		if err != nil {
 			t.Fatalf("%s: GetRange: %v", name, err)
 		}

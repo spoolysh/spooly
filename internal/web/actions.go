@@ -40,7 +40,7 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
-	req := &boxyv1.CreateAccountRequest{Addr: r.FormValue("addr")}
+	req := &boxyv1.CreateAccountRequest{Addresses: []string{r.FormValue("address")}}
 	if name := r.FormValue("name"); name != "" {
 		req.Name = &name
 	}
@@ -53,7 +53,62 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "createAccount", err)
 		return
 	}
-	writeJSON(w, map[string]string{"id": resp.Account.Id})
+	writeJSON(w, map[string]string{"id": resp.Account.Id, "address": resp.Account.Addresses[0]})
+}
+
+// updateAccount changes an account's name and addresses: the body is
+// {"name": ..., "addresses": [...]}, as in PATCH /v1/accounts/{id}.
+func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
+	if !h.signedIn(w, r) {
+		return
+	}
+	var body struct {
+		Name      *string  `json:"name"`
+		Addresses []string `json:"addresses"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	req := &boxyv1.UpdateAccountRequest{
+		IdOrAddress: r.PathValue("id"),
+		Name:        body.Name,
+		Addresses:   body.Addresses,
+	}
+	if err := validate(req); err != nil {
+		writeError(w, "updateAccount", err)
+		return
+	}
+	resp, err := h.svc.UpdateAccount(r.Context(), req)
+	if err != nil {
+		writeError(w, "updateAccount", err)
+		return
+	}
+	writeJSON(w, map[string]string{"address": resp.Account.Addresses[0]})
+}
+
+// share gives a user access to an account: the form has their sign-in
+// email.
+func (h *Handler) share(w http.ResponseWriter, r *http.Request) {
+	if !h.signedIn(w, r) {
+		return
+	}
+	if err := h.svc.Share(r.Context(), r.PathValue("id"), r.FormValue("email")); err != nil {
+		writeError(w, "share", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) unshare(w http.ResponseWriter, r *http.Request) {
+	if !h.signedIn(w, r) {
+		return
+	}
+	if err := h.svc.Unshare(r.Context(), r.PathValue("id"), r.PathValue("user")); err != nil {
+		writeError(w, "unshare", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) createLabel(w http.ResponseWriter, r *http.Request) {
@@ -159,4 +214,65 @@ func (h *Handler) updateManyLabels(w http.ResponseWriter, r *http.Request) {
 		updated++
 	}
 	writeJSON(w, map[string]int{"updated": updated})
+}
+
+// deleteMessages deletes several messages for good: the body is
+// {"ids": [...]}.
+func (h *Handler) deleteMessages(w http.ResponseWriter, r *http.Request) {
+	if !h.signedIn(w, r) {
+		return
+	}
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if len(body.IDs) == 0 || len(body.IDs) > maxBulk {
+		http.Error(w, fmt.Sprintf("select 1 to %d messages", maxBulk), http.StatusBadRequest)
+		return
+	}
+	reqs := make([]*boxyv1.DeleteMessageRequest, len(body.IDs))
+	for i, id := range body.IDs {
+		reqs[i] = &boxyv1.DeleteMessageRequest{Id: id}
+		if err := validate(reqs[i]); err != nil {
+			writeError(w, "deleteMessages", err)
+			return
+		}
+	}
+	deleted := 0
+	for _, req := range reqs {
+		_, err := h.svc.DeleteMessage(r.Context(), req)
+		if connect.CodeOf(err) == connect.CodeNotFound && strings.Contains(err.Error(), "message not found") {
+			continue // deleted meanwhile
+		}
+		if err != nil {
+			writeError(w, "deleteMessages", err)
+			return
+		}
+		deleted++
+	}
+	writeJSON(w, map[string]int{"deleted": deleted})
+}
+
+// emptyLabel deletes for good all of an account's mail in the trash or
+// spam: the body is {"label": "trash"}.
+func (h *Handler) emptyLabel(w http.ResponseWriter, r *http.Request) {
+	if !h.signedIn(w, r) {
+		return
+	}
+	var body struct {
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	deleted, err := h.svc.EmptyLabel(r.Context(), r.PathValue("id"), body.Label)
+	if err != nil {
+		writeError(w, "emptyLabel", err)
+		return
+	}
+	writeJSON(w, map[string]int{"deleted": deleted})
 }

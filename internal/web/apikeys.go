@@ -16,7 +16,6 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	if label == "" {
 		label = "default"
 	}
-
 	plaintext, key, err := h.db.CreateAPIKey(r.Context(), userID, label)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

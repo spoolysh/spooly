@@ -3,19 +3,20 @@
 Mail backend. Incoming mail is stored per account, raw and parsed, organized
 with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
 
-> Early prototype: receiving mail, the API, the dashboard, and POP3 work;
-> IMAP is next.
+> Early prototype: receiving mail, the API, the dashboard, POP3, and IMAP
+> work; sending mail is next.
 
-- **Accounts**: one per address, looked up by ID or address; plus addresses
-  (`hello+news@`) reach `hello@`
+- **Accounts**: receive mail for any of their addresses, looked up by ID or
+  address; plus addresses (`hello+news@`) reach `hello@`. Shared with the
+  people who work them
 - **Labels**: like Gmail, a message can have several; inbox, unread, and
   trash are labels too. Shared by all accounts
 - **Raw first**: every message is kept as received (RFC 5322); headers,
   bodies, and attachments are parsed from it
 - **Any inbound**: a Cloudflare Email Routing worker first; anything that can
   POST the raw message works
-- **POP3**: mail clients download an account's inbox, with an API key as
-  the password
+- **POP3 and IMAP**: mail clients read an account, with an API key as the
+  password; over IMAP, labels are folders
 - **Dashboard**: read mail, change labels, and manage accounts, labels, and
   API keys, signed in with Google
 
@@ -55,6 +56,13 @@ can reject the mail. Pass
 `idempotency_key` to make retries safe: a repeat returns the stored message.
 New messages get the `inbox` and `unread` labels.
 
+To mirror an existing mailbox, such as Gmail, pass each message's own
+`labels` instead, repeated: `?labels=sent` stores sent mail,
+`?labels=inbox&labels=starred` a read, starred inbox message. Labels must
+exist; create your own first. Use the source's message ID as
+`idempotency_key`, so syncing again never duplicates, and its date as
+`received_at`, so mail sorts by when it really arrived.
+
 A Cloudflare Email Routing worker that delivers to Boxy:
 
 ```js
@@ -78,9 +86,12 @@ export default {
 A label is just its name: up to 64 lowercase letters and digits, separated by
 single `_` or `-` (`billing`, `customer-issues`). Labels are shared by all
 accounts, so `billing` means the same across every address. The system
-labels `inbox`, `unread`, `starred`, `sent`, `spam`, and `trash` always
-exist. Combine a label with an account to get, say, one address's inbox:
-`GET /v1/accounts/support@boxy.sh/messages?label=inbox`.
+labels `inbox`, `unread`, `starred`, `answered`, `sent`, `draft`,
+`spam`, and `trash` always exist. Combine a label with an account to get,
+say, one address's inbox:
+`GET /v1/accounts/support@boxy.sh/messages?label=inbox`. As in Gmail, spam
+and trash are listed only under `label=spam` and `label=trash`, so a trashed
+message drops out of `starred` and `billing` until it's restored.
 
 Common actions are label changes:
 
@@ -96,6 +107,12 @@ curl -X PATCH "https://boxy.example.com/v1/messages/$ID" \
   -H "Authorization: Bearer $KEY" \
   -d '{"remove_labels": ["unread", "inbox"]}'
 ```
+
+Trash is only a label: Boxy keeps trashed mail until it's deleted for good,
+with `DELETE /v1/messages/{id}`, from a mail client, or with the dashboard's
+**Delete forever**, and **Empty Trash** or **Delete all spam** for one
+account. Deleting removes the raw source too, for everyone
+with access to the account, and can't be undone.
 
 ## POP3
 
@@ -123,42 +140,93 @@ first client to delete a message removes it from everyone else's maildrop. Any
 API key can log in to any account, as over the API. Without a TLS
 certificate, logins are plaintext; use that only on a trusted network.
 
+## IMAP
+
+Mail clients log in as for POP3: the account's address and an API key.
+Folders are labels, as in Gmail, so a message with two labels is in both:
+
+| Folder | Holds | Special use |
+|---|---|---|
+| `INBOX` | `inbox` | |
+| `Starred` | `starred` | `\Flagged` |
+| `Sent` | `sent` | `\Sent` |
+| `Drafts` | `draft` | `\Drafts` |
+| `Spam` | `spam` | `\Junk` |
+| `Trash` | `trash` | `\Trash` |
+| `All Mail` | Everything but spam and trash | `\All` |
+| `billing`, ... | Each of your labels, under its name | |
+
+Clients find the special folders by their special-use attributes (RFC 6154),
+whatever the names. `\Seen` is the absence of `unread`, and `\Flagged`,
+`\Answered`, and `\Draft` are `starred`, `answered`, and `draft`, so reading,
+flagging, or replying in a mail client shows in the dashboard and for
+everyone else, and the other way around. Like `unread`, `answered` is a
+state rather than a folder: mail clients set it when you reply, and the
+dashboard shows it as ↩ on the message.
+
+- **Spam and trash** show only in their own folders, as in Gmail. A trashed
+  message keeps its other labels, so it's back in Starred or `billing` once
+  restored, with a new UID there. The dashboard works the same way.
+- **Copying** to a folder adds its label; **moving** also removes the
+  source's. Moving to Trash or Spam takes the message out of the inbox.
+- **Deleting** (`\Deleted`) works as in Gmail. It takes effect at once,
+  without waiting for an expunge: the message loses that folder's label, or
+  from All Mail goes to the trash. In Trash and Drafts, it's deleted for
+  good, raw source included.
+- **Drafts** a client saves go to the Drafts folder with `\Draft`;
+  discarding one deletes it.
+- **Creating** a folder creates a label, which every account then has.
+  Folders can't be deleted or renamed from a mail client, since labels are
+  shared by all accounts; use the dashboard.
+- **Saving** a message (`APPEND`), such as a copy of sent mail, stores it with
+  the folder's label.
+- **New mail and changes** reach clients that have a folder open within a few
+  seconds (IDLE).
+
+Messages are numbered per folder (IMAP UIDs) from a per-account sequence:
+a message gets the next number whenever it joins a label, so every folder's
+numbers only grow, as IMAP requires.
+
 ### Where the mail protocols run
 
 | Command | Runs | Where |
 |---|---|---|
 | `boxy serve` | API and dashboard | Anywhere, such as Cloud Run |
 | `boxy serve --mail` | API, dashboard, and mail protocols | A single server, or local development (`just serve`) |
-| `boxy mail` | Mail protocols only: POP3 now, IMAP later | A host that takes raw TCP, such as a small VM; no Google or session settings |
+| `boxy mail` | Mail protocols only: POP3 and IMAP | A host that takes raw TCP, such as a small VM; no Google or session settings |
 
 Cloud Run takes only HTTP, so pair `boxy serve` there with `boxy mail` on a
 VM.
 
 Both need the same PostgreSQL database and S3 or GCS bucket, so mail
-delivered through the API shows up in POP3 at once.
+delivered through the API shows up in POP3 and IMAP at once.
 
 ## API
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/accounts` | Create an account |
+| `POST` | `/v1/accounts` | Create an account (admins only): `addresses` (the first is primary), `name` |
 | `GET` | `/v1/accounts` | List accounts, newest first. Query: `limit` (1–100, default 50), `after` (last ID of the previous page) |
-| `GET` | `/v1/accounts/{id_or_addr}` | Get an account by ID or address |
-| `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_addr`, `sender`, `received_at`, `idempotency_key` |
-| `POST` | `/v1/accounts/{account_id_or_addr}/messages` | Same, for one account |
-| `GET` | `/v1/messages` | List messages, newest first. Query: `account_id_or_addr`, `label`, `limit`, `after` |
-| `GET` | `/v1/accounts/{account_id_or_addr}/messages` | Same, for one account |
+| `GET` | `/v1/accounts/{id_or_address}` | Get an account by ID or any of its addresses |
+| `PATCH` | `/v1/accounts/{id_or_address}` | Update an account: `name`, `addresses` (replaces them, in order) |
+| `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_address`, `sender`, `received_at`, `idempotency_key`, `labels` |
+| `POST` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
+| `GET` | `/v1/messages` | List messages, newest received first. Query: `account_id_or_address`, `label`, `limit`, `after` |
+| `GET` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
 | `GET` | `/v1/messages/{id}` | Get a message with its body |
 | `GET` | `/v1/messages/{id}/raw` | Get a message's raw source |
 | `GET` | `/v1/messages/{id}/attachments/{index}` | Get an attachment, decoded, by its position in `attachments` (from 0) |
 | `PATCH` | `/v1/messages/{id}` | Update a message: `add_labels`, `remove_labels`, `metadata` (merged; an empty value deletes a key) |
 | `GET` | `/v1/labels` | List labels |
-| `POST` | `/v1/labels` | Create a user label |
-| `DELETE` | `/v1/labels/{name}` | Delete a user label |
+| `POST` | `/v1/labels` | Create a user label (admins only) |
+| `DELETE` | `/v1/labels/{name}` | Delete a user label (admins only) |
 
-IDs are lowercase [ULIDs](https://github.com/ulid/spec), so they sort by the
-time an account or message was created. Lists page by ID: pass the
-last ID as `after`; a page shorter than `limit` is the last one.
+Accounts are numbered in order from 1, and messages have 21-character
+[nanoid](https://github.com/ai/nanoid) IDs. Accounts are listed newest
+created first, and messages newest received first: by
+`received_at`, which the relay can set, so imported old mail sorts by its
+real date. Lists page by ID: pass the last ID as `after`; a page shorter
+than `limit` is the last one.
 
 Messages carry `metadata`, your own key-value data such as
 `{"ticket_id": "T-123"}`: up to 50 keys of 1–40 characters, values up to 500.
@@ -188,20 +256,43 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `GCS_BUCKET` | Bucket for `gcs`; credentials from Application Default Credentials | — |
 | `POP3_ADDR` | POP3 listen address for `serve --mail` and `mail`, with STLS when a certificate is set; empty disables POP3 | `:1110` |
 | `POP3S_ADDR` | POP3 over TLS listen address, such as `:995` | — |
-| `MAIL_TLS_CERT`, `MAIL_TLS_KEY` | PEM certificate and key files for the mail protocols (STLS, POP3S); logins then need TLS | — |
+| `MAIL_TLS_CERT`, `MAIL_TLS_KEY` | PEM certificate and key files for the mail protocols (STARTTLS, POP3S, IMAPS); logins then need TLS | — |
 | `POP3_DELETE` | What a client's delete does: `keep`, `archive`, or `trash` | `keep` |
 | `POP3_MARK_READ` | Whether retrieving or deleting a message over POP3 marks it read | `true` |
 | `POP3_MAX_MESSAGES` | How many of the newest inbox messages POP3 lists | `250` |
+| `IMAP_ADDR` | IMAP listen address for `serve --mail` and `mail`, with STARTTLS when a certificate is set; empty disables IMAP | `:1143` |
+| `IMAPS_ADDR` | IMAP over TLS listen address, such as `:993` | — |
+| `ADMIN_EMAILS` | Comma-separated sign-in emails of admins, who create accounts and reach every account | — (no admins) |
 | `SESSION_SECRET` | HMAC key for signing session cookies | required |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID | required |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret | required |
 | `ALLOWED_DOMAINS` | Comma-separated list of email domains that can sign in | — (all allowed) |
 
-Dashboard users sign in with Google; each creates their own API keys. Every
-user and key sees all accounts. Migrations are managed by
-[goose](https://github.com/pressly/goose): run `boxy migrate`, or start with
-`boxy serve --migrate`. See [Where the mail protocols run](#where-the-mail-protocols-run)
-for `serve --mail` and `mail`.
+Migrations are managed by [goose](https://github.com/pressly/goose): run
+`boxy migrate`, or start with `boxy serve --migrate`. See
+[Where the mail protocols run](#where-the-mail-protocols-run) for
+`serve --mail` and `mail`.
+
+## Access
+
+Users sign in to the dashboard with Google, and each creates their own API
+keys, which act as them. Admins, listed in `ADMIN_EMAILS`, create accounts and
+reach every account. Everyone else reaches the accounts shared with them: on
+an account's page, anyone with access can share it by the email someone signs
+in with (they sign in once first), change its addresses, and stop sharing it.
+Without access, an account and its mail don't exist for a user: lists leave
+them out and lookups answer 404. Labels are shared by every account, so
+admins create and delete them; everyone applies them.
+
+An account receives mail for every one of its addresses, which are in
+order: the first is primary, shown for the account. Each address belongs to
+one account. A relay that forwards a whole domain to Boxy, such as a
+Cloudflare catch-all rule, works:
+mail to an address no account has is rejected before it's read. The relay
+uses an admin's API key, so it can deliver to every account.
+
+Mail clients log in to an account with one of its addresses and the API key
+of someone with access.
 
 ## Development
 
@@ -222,6 +313,7 @@ just build      # build the boxy binary
 | [internal/mailparse](internal/mailparse) | Parses raw messages into headers, bodies, a snippet, and attachments |
 | [internal/db](internal/db) | SQLite and PostgreSQL storage, with migrations |
 | [internal/pop3](internal/pop3) | The POP3 server |
+| [internal/imap](internal/imap) | The IMAP server, on [go-imap](https://github.com/emersion/go-imap) |
 | [internal/storage](internal/storage) | Raw message storage: local disk, S3-compatible, GCS, or memory |
 | [internal/web](internal/web) | The dashboard |
 | [internal/auth](internal/auth) | Google sign-in and session cookies |

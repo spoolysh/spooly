@@ -61,19 +61,19 @@ func newTestEnv(t *testing.T, opts Options) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateAccount(ctx, db.Account{ID: db.NewID(), Addr: "hello@boxy.sh"}); err != nil {
+	if _, err := database.CreateAccount(ctx, db.Account{ID: db.NewID(), Addresses: []string{"hello@boxy.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	svc := service.New(database, memory.New())
+	svc := service.New(database, memory.New(), service.Options{Admins: []string{"vh@example.com"}})
 	env := &testEnv{t: t, db: database, key: key}
 	for _, raw := range []string{message1, message2, message3} {
-		m, err := svc.Store(ctx, service.Incoming{AccountIDOrAddr: "hello@boxy.sh", Raw: []byte(raw)})
+		m, err := svc.Store(ctx, service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)})
 		if err != nil {
 			t.Fatalf("Store: %v", err)
 		}
 		env.ids = append(env.ids, m.ID)
-		time.Sleep(2 * time.Millisecond) // distinct ULID times, so IDs sort by delivery
+		time.Sleep(2 * time.Millisecond) // distinct received times, so the maildrop keeps delivery order
 	}
 
 	env.server, err = New(database, svc, opts)

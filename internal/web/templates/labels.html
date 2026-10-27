@@ -38,7 +38,7 @@
           <td class="px-6 py-3 tabular-nums text-gray-700">{{.Count}}</td>
           <td class="px-6 py-3 text-gray-500 tabular-nums">{{if .CreatedAt}}{{.CreatedAt}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</td>
           <td class="px-6 py-3 text-right">
-            {{if not .System}}
+            {{if and $.Admin (not .System)}}
             <button type="button" data-name="{{.Name}}" data-count="{{.Count}}" onclick="deleteLabel(this)"
               class="text-xs font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">Delete</button>
             {{end}}

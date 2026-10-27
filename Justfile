@@ -1,11 +1,11 @@
 default:
     @just --list
 
-# Run the API and dashboard, and the mail protocols (POP3)
+# Run the API and dashboard, and the mail protocols (POP3, IMAP)
 serve:
     go run ./cmd/boxy serve --migrate --mail
 
-# Run only the mail protocols (POP3)
+# Run only the mail protocols (POP3, IMAP)
 mail:
     go run ./cmd/boxy mail --migrate
 

@@ -10,7 +10,7 @@ import "google/protobuf/timestamp.proto";
 option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
 
 service LabelService {
-  // Create a user label.
+  // Create a user label. Admins only: labels are shared by every account.
   rpc CreateLabel(CreateLabelRequest) returns (CreateLabelResponse) {
     option (google.api.http) = {
       post: "/v1/labels"
@@ -28,7 +28,7 @@ service LabelService {
     };
   }
 
-  // Delete a user label and remove it from its messages.
+  // Delete a user label and remove it from its messages. Admins only.
   rpc DeleteLabel(DeleteLabelRequest) returns (DeleteLabelResponse) {
     option idempotency_level = IDEMPOTENT;
     option (google.api.http) = {delete: "/v1/labels/{name}"};
@@ -36,8 +36,8 @@ service LabelService {
 }
 
 // A label tags messages; a message can have several. Labels are shared by
-// all accounts. System labels (inbox, unread, starred, sent, spam, trash)
-// always exist and can't be deleted.
+// all accounts. System labels (inbox, unread, starred, answered, sent, draft,
+// spam, trash) always exist and can't be deleted.
 message Label {
   // Unique, e.g. "billing".
   string name = 1 [

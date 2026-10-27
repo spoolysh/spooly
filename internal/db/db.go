@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oklog/ulid/v2"
+	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/pressly/goose/v3"
 
 	"github.com/boxysh/boxy/internal/db/migrations"
@@ -33,9 +33,11 @@ type APIKey struct {
 	CreatedAt time.Time
 }
 
-// NewID returns a new ID: a lowercase ULID, so IDs sort by creation time.
+// NewID returns a new message ID: a nanoid of 21 random characters, as
+// stashy's file IDs. Users, API keys, and accounts are numbered by the
+// database instead.
 func NewID() string {
-	return strings.ToLower(ulid.Make().String())
+	return gonanoid.Must()
 }
 
 type DB struct {
@@ -86,13 +88,12 @@ func (d *DB) Close(_ context.Context) error {
 }
 
 func (d *DB) UpsertUser(ctx context.Context, googleID, email, name string) (*User, error) {
-	// The new ID is used only when the user doesn't exist yet.
-	query := d.q(`INSERT INTO users (id, google_id, email, name, created_at)
-		VALUES (?, ?, ?, ?, ?)
+	query := d.q(`INSERT INTO users (google_id, email, name, created_at)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(google_id) DO UPDATE SET email = excluded.email, name = excluded.name
 		RETURNING id, google_id, email, name, created_at`)
 	var user User
-	err := d.sql.QueryRowContext(ctx, query, NewID(), googleID, email, name, time.Now().UTC()).
+	err := d.sql.QueryRowContext(ctx, query, googleID, email, name, time.Now().UTC()).
 		Scan(&user.ID, &user.GoogleID, &user.Email, &user.Name, &user.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("upserting user: %w", err)
@@ -126,11 +127,11 @@ func (d *DB) CreateAPIKey(ctx context.Context, userID, label string) (string, *A
 	keyHash := base64.URLEncoding.EncodeToString(hash[:])
 	keyPrefix := plaintext[:8]
 
-	id := NewID()
+	var id string
 	var createdAt time.Time
-	query := d.q(`INSERT INTO api_keys (id, user_id, key_hash, key_prefix, label, created_at)
-		VALUES (?, ?, ?, ?, ?, ?) RETURNING created_at`)
-	err := d.sql.QueryRowContext(ctx, query, id, userID, keyHash, keyPrefix, label, time.Now().UTC()).Scan(&createdAt)
+	query := d.q(`INSERT INTO api_keys (user_id, key_hash, key_prefix, label, created_at)
+		VALUES (?, ?, ?, ?, ?) RETURNING id, created_at`)
+	err := d.sql.QueryRowContext(ctx, query, userID, keyHash, keyPrefix, label, time.Now().UTC()).Scan(&id, &createdAt)
 	if err != nil {
 		return "", nil, fmt.Errorf("inserting api key: %w", err)
 	}

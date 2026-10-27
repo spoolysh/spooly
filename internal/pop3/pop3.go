@@ -369,14 +369,10 @@ func (c *session) auth(arg string) (quit bool) {
 	return c.login(string(parts[1]), string(parts[2]))
 }
 
-// login authenticates addr with an API key and opens its maildrop.
-func (c *session) login(addr, key string) (quit bool) {
+// login authenticates address with an API key and opens its maildrop.
+func (c *session) login(address, key string) (quit bool) {
 	ctx := context.Background()
-	var account *db.Account
-	_, err := c.s.db.LookupAPIKey(ctx, key)
-	if err == nil {
-		account, err = c.s.db.ResolveAccount(ctx, strings.ToLower(strings.TrimSpace(addr)))
-	}
+	account, _, err := c.s.svc.LoginMail(ctx, address, key)
 	if err != nil {
 		c.failures++
 		time.Sleep(c.s.authDelay)
@@ -387,13 +383,13 @@ func (c *session) login(addr, key string) (quit bool) {
 
 	c.messages, err = c.s.db.ListMaildrop(ctx, account.ID, db.LabelInbox, c.s.opts.MaxMessages)
 	if err != nil {
-		log.Printf("pop3: listing %s: %v", account.Addr, err)
+		log.Printf("pop3: listing %s: %v", account.Address(), err)
 		c.reply("-ERR [SYS/TEMP] can't open the maildrop")
 		return true
 	}
 	c.deleted = make([]bool, len(c.messages))
 	c.retrieved = make([]bool, len(c.messages))
-	c.reply("+OK %s has %d messages", account.Addr, len(c.messages))
+	c.reply("+OK %s has %d messages", account.Address(), len(c.messages))
 	return false
 }
 

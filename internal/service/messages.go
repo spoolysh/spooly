@@ -30,7 +30,7 @@ const (
 )
 
 func addressProto(a db.Address) *boxyv1.Address {
-	return &boxyv1.Address{Name: a.Name, Addr: a.Addr}
+	return &boxyv1.Address{Name: a.Name, Address: a.Address}
 }
 
 func addressesProto(list []db.Address) []*boxyv1.Address {
@@ -73,24 +73,28 @@ func messageProto(m *db.Message, withBody bool) *boxyv1.Message {
 
 // Incoming is a message to store, as CreateMessage receives it.
 type Incoming struct {
-	AccountIDOrAddr string
-	Sender          string
-	ReceivedAt      time.Time // zero means now
-	IdempotencyKey  string
-	Raw             []byte
+	AccountIDOrAddress string
+	Sender             string
+	ReceivedAt         time.Time // zero means now
+	IdempotencyKey     string
+	Raw                []byte
+	// Labels replaces the inbox and unread labels new mail gets, as when a
+	// mail client saves a message to a folder. Nil means the defaults.
+	Labels []string
 }
 
 // Store parses and stores an incoming message in the account it was sent
-// to, with the inbox and unread labels. A repeated idempotency key returns
-// the stored message. Errors are connect errors.
+// to, with the inbox and unread labels unless in.Labels says otherwise. A
+// repeated idempotency key returns the stored message. Callers check access
+// first. Errors are connect errors.
 func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
-	if in.AccountIDOrAddr == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "account_id_or_addr is required")
+	if in.AccountIDOrAddress == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "account_id_or_address is required")
 	}
 	if len(in.Raw) == 0 {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "raw: the message is empty")
 	}
-	account, recipient, err := s.resolveAccount(ctx, in.AccountIDOrAddr)
+	account, recipient, err := s.resolveAccount(ctx, in.AccountIDOrAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +102,17 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	parsed, err := mailparse.Parse(in.Raw)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+	}
+	labels := in.Labels
+	if labels == nil {
+		labels = []string{db.LabelInbox, db.LabelUnread}
+	}
+	for _, label := range labels {
+		if _, err := s.db.GetLabel(ctx, label); errors.Is(err, db.ErrLabelNotFound) {
+			return nil, connect.Errorf(connect.CodeInvalidArgument, "labels: no label %q; create it first", label)
+		} else if err != nil {
+			return nil, dbError(err)
+		}
 	}
 	receivedAt := in.ReceivedAt
 	if receivedAt.IsZero() {
@@ -127,7 +142,7 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 		HTML:           parsed.HTML,
 		IdempotencyKey: in.IdempotencyKey,
 		ReceivedAt:     receivedAt,
-	}, []string{db.LabelInbox, db.LabelUnread})
+	}, labels)
 	if err != nil || !created {
 		if derr := s.store.Delete(ctx, id); derr != nil {
 			log.Printf("removing raw message %s: %v", id, derr)
@@ -152,13 +167,21 @@ func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.Messag
 			return nil, err
 		}
 		if first {
-			in.AccountIDOrAddr = msg.AccountIdOrAddr
+			in.AccountIDOrAddress = msg.AccountIdOrAddress
 			in.Sender = msg.Sender
 			in.IdempotencyKey = msg.GetIdempotencyKey()
+			if len(msg.Labels) > 0 {
+				in.Labels = msg.Labels
+			}
 			if msg.ReceivedAt != nil {
 				in.ReceivedAt = msg.ReceivedAt.AsTime()
 			}
 			first = false
+			// Reject unknown addresses before reading the message: a relay
+			// may forward every address of a domain, spam included.
+			if err := s.requireDelivery(ctx, in.AccountIDOrAddress); err != nil {
+				return nil, err
+			}
 		}
 		if raw.Len()+len(msg.GetRaw().GetData()) > MaxMessageSize {
 			return nil, connect.Errorf(connect.CodeResourceExhausted, "raw: the message is larger than %d bytes", MaxMessageSize)
@@ -174,14 +197,58 @@ func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.Messag
 	return &boxyv1.CreateMessageResponse{Message: messageProto(m, false)}, nil
 }
 
+// requireDelivery checks that ctx's user may deliver mail to an account:
+// they have access to it.
+func (s *Service) requireDelivery(ctx context.Context, idOrAddress string) error {
+	if idOrAddress == "" {
+		return connect.Errorf(connect.CodeInvalidArgument, "account_id_or_address is required")
+	}
+	a, _, err := s.resolveAccount(ctx, idOrAddress)
+	if err != nil {
+		return err
+	}
+	return s.Require(ctx, a.ID)
+}
+
+// requireMessage checks that ctx's user has access to a message's account,
+// and returns the message. A message they can't see is reported as not
+// found.
+func (s *Service) requireMessage(ctx context.Context, id string) (*db.Message, error) {
+	if _, _, err := s.caller(ctx); err != nil {
+		return nil, err
+	}
+	m, err := s.db.GetMessage(ctx, id, false)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	if err := s.Require(ctx, m.AccountID); err != nil {
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return nil, connect.Errorf(connect.CodeNotFound, "%s: %s", db.ErrMessageNotFound, id)
+		}
+		return nil, err
+	}
+	return m, nil
+}
+
 func (s *Service) ListMessages(ctx context.Context, req *boxyv1.ListMessagesRequest) (*boxyv1.ListMessagesResponse, error) {
-	f := db.MessageFilter{Label: req.GetLabel(), After: req.GetAfter(), Limit: listLimit(req.Limit)}
-	if req.AccountIdOrAddr != nil {
-		a, _, err := s.resolveAccount(ctx, *req.AccountIdOrAddr)
+	// As in the dashboard and IMAP, spam and trash show only under their
+	// own labels.
+	f := db.MessageFilter{Label: req.GetLabel(), NotLabels: db.HiddenFrom(req.GetLabel()), After: req.GetAfter(), Limit: listLimit(req.Limit)}
+	if req.AccountIdOrAddress != nil {
+		a, _, err := s.resolveAccount(ctx, *req.AccountIdOrAddress)
 		if err != nil {
 			return nil, err
 		}
+		if err := s.Require(ctx, a.ID); err != nil {
+			return nil, err
+		}
 		f.AccountID = a.ID
+	} else {
+		ids, err := s.VisibleAccounts(ctx)
+		if err != nil {
+			return nil, err
+		}
+		f.AccountIDs = ids
 	}
 	messages, err := s.db.ListMessages(ctx, f)
 	if err != nil {
@@ -200,6 +267,9 @@ func (s *Service) UpdateMessage(ctx context.Context, req *boxyv1.UpdateMessageRe
 			return nil, connect.Errorf(connect.CodeInvalidArgument, "label %q is both added and removed", l)
 		}
 	}
+	if _, err := s.requireMessage(ctx, req.Id); err != nil {
+		return nil, err
+	}
 	m, err := s.db.UpdateMessage(ctx, req.Id, db.MessageUpdate{
 		AddLabels:    req.AddLabels,
 		RemoveLabels: req.RemoveLabels,
@@ -212,6 +282,9 @@ func (s *Service) UpdateMessage(ctx context.Context, req *boxyv1.UpdateMessageRe
 }
 
 func (s *Service) GetMessage(ctx context.Context, req *boxyv1.GetMessageRequest) (*boxyv1.GetMessageResponse, error) {
+	if _, err := s.requireMessage(ctx, req.Id); err != nil {
+		return nil, err
+	}
 	m, err := s.db.GetMessage(ctx, req.Id, true)
 	if err != nil {
 		return nil, dbError(err)
@@ -220,7 +293,8 @@ func (s *Service) GetMessage(ctx context.Context, req *boxyv1.GetMessageRequest)
 }
 
 // OpenRaw returns a message, without its bodies, and its raw source. The
-// caller must close the source. Errors are connect errors.
+// caller must close the source and check access first. Errors are connect
+// errors.
 func (s *Service) OpenRaw(ctx context.Context, id string) (*db.Message, io.ReadCloser, error) {
 	m, err := s.db.GetMessage(ctx, id, false)
 	if err != nil {
@@ -264,6 +338,9 @@ func EmlFilename(m *db.Message) string {
 }
 
 func (s *Service) GetRawMessage(ctx context.Context, req *boxyv1.GetRawMessageRequest, stream boxyv1connect.MessageServiceGetRawMessageServerStream) error {
+	if _, err := s.requireMessage(ctx, req.Id); err != nil {
+		return err
+	}
 	m, rc, err := s.OpenRaw(ctx, req.Id)
 	if err != nil {
 		return err
@@ -299,7 +376,8 @@ func (s *Service) GetRawMessage(ctx context.Context, req *boxyv1.GetRawMessageRe
 
 // OpenAttachment returns attachment index of message id, decoded, with its
 // filename and a content type to serve it as: text attachments are decoded
-// to UTF-8, so they say so. Errors are connect errors.
+// to UTF-8, so they say so. Callers check access first. Errors are connect
+// errors.
 func (s *Service) OpenAttachment(ctx context.Context, id string, index int) (db.Attachment, []byte, error) {
 	_, rc, err := s.OpenRaw(ctx, id)
 	if err != nil {
@@ -339,6 +417,9 @@ func ContentDisposition(disposition, filename string) string {
 }
 
 func (s *Service) GetAttachment(ctx context.Context, req *boxyv1.GetAttachmentRequest, stream boxyv1connect.MessageServiceGetAttachmentServerStream) error {
+	if _, err := s.requireMessage(ctx, req.Id); err != nil {
+		return err
+	}
 	a, content, err := s.OpenAttachment(ctx, req.Id, int(req.Index))
 	if err != nil {
 		return err
@@ -356,6 +437,58 @@ func (s *Service) GetAttachment(ctx context.Context, req *boxyv1.GetAttachmentRe
 		if err := stream.Send(&boxyv1.GetAttachmentResponse{Content: chunk}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *Service) DeleteMessage(ctx context.Context, req *boxyv1.DeleteMessageRequest) (*boxyv1.DeleteMessageResponse, error) {
+	if _, err := s.requireMessage(ctx, req.Id); err != nil {
+		return nil, err
+	}
+	if err := s.PurgeMessage(ctx, req.Id); err != nil {
+		return nil, err
+	}
+	return &boxyv1.DeleteMessageResponse{}, nil
+}
+
+// EmptyLabel deletes for good every message of an account in the view of
+// label, which must be trash or spam, and returns how many it deleted.
+func (s *Service) EmptyLabel(ctx context.Context, accountID, label string) (int, error) {
+	if label != db.LabelTrash && label != db.LabelSpam {
+		return 0, connect.Errorf(connect.CodeInvalidArgument, "only trash and spam can be emptied, not %q", label)
+	}
+	if err := s.Require(ctx, accountID); err != nil {
+		return 0, err
+	}
+	f := db.MessageFilter{AccountID: accountID, Label: label, NotLabels: db.HiddenFrom(label), Limit: 500}
+	deleted := 0
+	for {
+		messages, err := s.db.ListMessages(ctx, f)
+		if err != nil {
+			return deleted, dbError(err)
+		}
+		if len(messages) == 0 {
+			return deleted, nil
+		}
+		for _, m := range messages {
+			if err := s.PurgeMessage(ctx, m.ID); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+	}
+}
+
+// PurgeMessage deletes a message for good: its row, labels, and raw
+// source. Callers check access first.
+func (s *Service) PurgeMessage(ctx context.Context, id string) error {
+	if err := s.db.DeleteMessage(ctx, id); err != nil {
+		return dbError(err)
+	}
+	// The row is gone, so the message is already unreachable; leftover
+	// bytes from a failed delete are orphans, not corruption.
+	if err := s.store.Delete(ctx, id); err != nil {
+		log.Printf("deleting raw message %s: %v", id, err)
 	}
 	return nil
 }

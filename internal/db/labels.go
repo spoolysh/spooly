@@ -22,14 +22,18 @@ const (
 	LabelInbox   = "inbox"
 	LabelUnread  = "unread"
 	LabelStarred = "starred"
-	LabelSent    = "sent" // mail sent from an account; nothing sets it yet
-	LabelSpam    = "spam"
-	LabelTrash   = "trash"
+	// LabelAnswered marks mail someone replied to, set by mail clients as
+	// \Answered. Like unread, it's a state rather than a folder.
+	LabelAnswered = "answered"
+	LabelSent     = "sent" // mail sent from an account
+	LabelDraft    = "draft"
+	LabelSpam     = "spam"
+	LabelTrash    = "trash"
 )
 
-// systemLabels follows Gmail's folder order: Inbox, Starred, Sent, Spam,
-// Trash, with unread after inbox.
-var systemLabels = []string{LabelInbox, LabelUnread, LabelStarred, LabelSent, LabelSpam, LabelTrash}
+// systemLabels follows Gmail's folder order: Inbox, Starred, Sent, Drafts,
+// Spam, Trash, with unread after inbox and answered after starred.
+var systemLabels = []string{LabelInbox, LabelUnread, LabelStarred, LabelAnswered, LabelSent, LabelDraft, LabelSpam, LabelTrash}
 
 // IsSystemLabel reports whether name is one of the built-in labels.
 func IsSystemLabel(name string) bool {
@@ -148,7 +152,7 @@ func (d *DB) DeleteLabel(ctx context.Context, name string) error {
 		return fmt.Errorf("deleting label: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM messages_labels WHERE label = ?`), name); err != nil {
+	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM message_labels WHERE label = ?`), name); err != nil {
 		return fmt.Errorf("deleting label: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM labels WHERE name = ?`), name); err != nil {

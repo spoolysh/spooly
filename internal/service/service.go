@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"connectrpc.com/connect/v2"
@@ -21,8 +22,9 @@ const defaultListLimit = 50
 // Service implements all three Boxy services. The database holds everything
 // but raw messages, which are in store.
 type Service struct {
-	db    *db.DB
-	store storage.Storage
+	db     *db.DB
+	store  storage.Storage
+	admins []string // lowercased emails
 }
 
 var (
@@ -31,8 +33,21 @@ var (
 	_ boxyv1connect.MessageServiceHandler = (*Service)(nil)
 )
 
-func New(database *db.DB, store storage.Storage) *Service {
-	return &Service{db: database, store: store}
+// Options configure a Service.
+type Options struct {
+	// Admins are the emails of users who can see and manage every account,
+	// and create accounts.
+	Admins []string
+}
+
+func New(database *db.DB, store storage.Storage, opts Options) *Service {
+	s := &Service{db: database, store: store}
+	for _, email := range opts.Admins {
+		if email = strings.ToLower(strings.TrimSpace(email)); email != "" {
+			s.admins = append(s.admins, email)
+		}
+	}
+	return s
 }
 
 // dbError maps a db-layer error to the matching connect code.
@@ -40,10 +55,12 @@ func dbError(err error) error {
 	code := connect.CodeInternal
 	switch {
 	case errors.Is(err, db.ErrAccountNotFound), errors.Is(err, db.ErrMessageNotFound), errors.Is(err, db.ErrLabelNotFound),
-		errors.Is(err, storage.ErrNotFound):
+		errors.Is(err, db.ErrUserNotFound), errors.Is(err, storage.ErrNotFound):
 		code = connect.CodeNotFound
-	case errors.Is(err, db.ErrAccountExists), errors.Is(err, db.ErrLabelExists):
+	case errors.Is(err, db.ErrAddressTaken), errors.Is(err, db.ErrLabelExists):
 		code = connect.CodeAlreadyExists
+	case errors.Is(err, db.ErrNoAddresses):
+		code = connect.CodeInvalidArgument
 	case errors.Is(err, db.ErrSystemLabel):
 		code = connect.CodeFailedPrecondition
 	case errors.Is(err, db.ErrUnknownLabel), errors.Is(err, db.ErrMetadataLimit):
@@ -62,17 +79,36 @@ func listLimit(limit *int32) int {
 // Accounts
 
 func accountProto(a *db.Account) *boxyv1.Account {
-	return &boxyv1.Account{Id: a.ID, Addr: a.Addr, Name: a.Name, CreatedAt: timestamppb.New(a.CreatedAt)}
+	return &boxyv1.Account{Id: a.ID, Addresses: a.Addresses, Name: a.Name, CreatedAt: timestamppb.New(a.CreatedAt)}
+}
+
+// checkAddresses lowercases an account's addresses and rejects
+// duplicates, and a "+", which separates a tag from the address it reaches,
+// so it can't be part of an account's own address.
+func checkAddresses(addresses []string) ([]string, error) {
+	out := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		address = strings.ToLower(address)
+		if local, _, _ := strings.Cut(address, "@"); strings.Contains(local, "+") {
+			return nil, connect.Errorf(connect.CodeInvalidArgument, `addresses: %s must not contain "+", which starts a tag`, address)
+		}
+		if slices.Contains(out, address) {
+			return nil, connect.Errorf(connect.CodeInvalidArgument, "addresses: %s is listed twice", address)
+		}
+		out = append(out, address)
+	}
+	return out, nil
 }
 
 func (s *Service) CreateAccount(ctx context.Context, req *boxyv1.CreateAccountRequest) (*boxyv1.CreateAccountResponse, error) {
-	addr := strings.ToLower(req.Addr)
-	// "+" separates a tag from the address it reaches, so it can't be part
-	// of an account's own address.
-	if local, _, _ := strings.Cut(addr, "@"); strings.Contains(local, "+") {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, `addr: must not contain "+", which starts a tag`)
+	if err := s.requireAdmin(ctx); err != nil {
+		return nil, err
 	}
-	a, err := s.db.CreateAccount(ctx, db.Account{ID: db.NewID(), Addr: addr, Name: req.GetName()})
+	addresses, err := checkAddresses(req.Addresses)
+	if err != nil {
+		return nil, err
+	}
+	a, err := s.db.CreateAccount(ctx, db.Account{Addresses: addresses, Name: req.GetName()})
 	if err != nil {
 		return nil, dbError(err)
 	}
@@ -80,7 +116,15 @@ func (s *Service) CreateAccount(ctx context.Context, req *boxyv1.CreateAccountRe
 }
 
 func (s *Service) ListAccounts(ctx context.Context, req *boxyv1.ListAccountsRequest) (*boxyv1.ListAccountsResponse, error) {
-	accounts, err := s.db.ListAccounts(ctx, listLimit(req.Limit), req.GetAfter())
+	userID, admin, err := s.caller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f := db.AccountFilter{After: req.GetAfter(), Limit: listLimit(req.Limit)}
+	if !admin {
+		f.UserID = userID
+	}
+	accounts, err := s.db.ListAccounts(ctx, f)
 	if err != nil {
 		return nil, dbError(err)
 	}
@@ -92,26 +136,50 @@ func (s *Service) ListAccounts(ctx context.Context, req *boxyv1.ListAccountsRequ
 }
 
 func (s *Service) GetAccount(ctx context.Context, req *boxyv1.GetAccountRequest) (*boxyv1.GetAccountResponse, error) {
-	a, _, err := s.resolveAccount(ctx, req.IdOrAddr)
+	a, _, err := s.resolveAccount(ctx, req.IdOrAddress)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.Require(ctx, a.ID); err != nil {
 		return nil, err
 	}
 	return &boxyv1.GetAccountResponse{Account: accountProto(a)}, nil
 }
 
-// resolveAccount finds an account by ID, or by address if idOrAddr contains
+func (s *Service) UpdateAccount(ctx context.Context, req *boxyv1.UpdateAccountRequest) (*boxyv1.UpdateAccountResponse, error) {
+	a, _, err := s.resolveAccount(ctx, req.IdOrAddress)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Require(ctx, a.ID); err != nil {
+		return nil, err
+	}
+	u := db.AccountUpdate{Name: req.Name}
+	if len(req.Addresses) > 0 {
+		if u.Addresses, err = checkAddresses(req.Addresses); err != nil {
+			return nil, err
+		}
+	}
+	a, err = s.db.UpdateAccount(ctx, a.ID, u)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	return &boxyv1.UpdateAccountResponse{Account: accountProto(a)}, nil
+}
+
+// resolveAccount finds an account by ID, or by address if idOrAddress contains
 // "@", and returns it with the address mail to it was sent to: the given
-// address, lowercased, or the account's own address for an ID.
-func (s *Service) resolveAccount(ctx context.Context, idOrAddr string) (*db.Account, string, error) {
+// address, lowercased, or the account's first address for an ID.
+func (s *Service) resolveAccount(ctx context.Context, idOrAddress string) (*db.Account, string, error) {
 	var a *db.Account
 	var err error
-	recipient := strings.ToLower(idOrAddr)
-	if strings.Contains(idOrAddr, "@") {
+	recipient := strings.ToLower(idOrAddress)
+	if strings.Contains(idOrAddress, "@") {
 		a, err = s.db.ResolveAccount(ctx, recipient)
 	} else {
-		a, err = s.db.GetAccount(ctx, idOrAddr)
+		a, err = s.db.GetAccount(ctx, idOrAddress)
 		if err == nil {
-			recipient = a.Addr
+			recipient = a.Address()
 		}
 	}
 	if err != nil {
@@ -130,7 +198,11 @@ func labelProto(l *db.Label) *boxyv1.Label {
 	return p
 }
 
+// CreateLabel is for admins only: a label is shared by every account.
 func (s *Service) CreateLabel(ctx context.Context, req *boxyv1.CreateLabelRequest) (*boxyv1.CreateLabelResponse, error) {
+	if err := s.requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	l, err := s.db.CreateLabel(ctx, req.Name)
 	if err != nil {
 		return nil, dbError(err)
@@ -139,6 +211,9 @@ func (s *Service) CreateLabel(ctx context.Context, req *boxyv1.CreateLabelReques
 }
 
 func (s *Service) ListLabels(ctx context.Context, _ *boxyv1.ListLabelsRequest) (*boxyv1.ListLabelsResponse, error) {
+	if _, _, err := s.caller(ctx); err != nil {
+		return nil, err
+	}
 	labels, err := s.db.ListLabels(ctx)
 	if err != nil {
 		return nil, dbError(err)
@@ -150,7 +225,12 @@ func (s *Service) ListLabels(ctx context.Context, _ *boxyv1.ListLabelsRequest) (
 	return resp, nil
 }
 
+// DeleteLabel is for admins only: a label is shared by all accounts, so
+// deleting it takes it off messages in accounts others can't see.
 func (s *Service) DeleteLabel(ctx context.Context, req *boxyv1.DeleteLabelRequest) (*boxyv1.DeleteLabelResponse, error) {
+	if err := s.requireAdmin(ctx); err != nil {
+		return nil, err
+	}
 	if err := s.db.DeleteLabel(ctx, req.Name); err != nil {
 		return nil, dbError(err)
 	}

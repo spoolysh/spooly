@@ -44,10 +44,10 @@ JVBERi0xLjQ=
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if p.From.Name != "Ann Lee" || p.From.Addr != "ann@example.com" {
+	if p.From.Name != "Ann Lee" || p.From.Address != "ann@example.com" {
 		t.Errorf("From = %+v", p.From)
 	}
-	if len(p.To) != 2 || p.To[1].Addr != "bob@example.com" {
+	if len(p.To) != 2 || p.To[1].Address != "bob@example.com" {
 		t.Errorf("To = %+v", p.To)
 	}
 	if len(p.Cc) != 1 || p.Cc[0].Name != "Маша" {
@@ -85,7 +85,7 @@ Content-Type: text/html
 	if p.Snippet != "Only HTML" {
 		t.Errorf("Snippet = %q", p.Snippet)
 	}
-	if p.From.Addr != "" || len(p.To) != 0 || p.Date != nil {
+	if p.From.Address != "" || len(p.To) != 0 || p.Date != nil {
 		t.Errorf("missing headers parsed as %+v %+v %v", p.From, p.To, p.Date)
 	}
 }

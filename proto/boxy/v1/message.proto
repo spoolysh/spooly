@@ -21,7 +21,7 @@ service MessageService {
       body: "raw"
       response_body: "message"
       additional_bindings: {
-        post: "/v1/accounts/{account_id_or_addr}/messages"
+        post: "/v1/accounts/{account_id_or_address}/messages"
         body: "raw"
         response_body: "message"
       }
@@ -29,7 +29,7 @@ service MessageService {
     option (gnostic.openapi.v3.operation) = {
       parameters: {
         parameter: {
-          name: "account_id_or_addr"
+          name: "account_id_or_address"
           in: "query"
           description: "Account ID or address. Only for POST /v1/messages."
           schema: {
@@ -76,6 +76,24 @@ service MessageService {
           }
         }
       }
+      parameters: {
+        parameter: {
+          name: "labels"
+          in: "query"
+          description: "The message's labels, repeated for each, such as labels=sent. Absent means inbox and unread."
+          explode: true
+          schema: {
+            schema: {
+              type: "array"
+              items: {
+                schema_or_reference: {
+                  schema: {type: "string"}
+                }
+              }
+            }
+          }
+        }
+      }
       request_body: {
         request_body: {
           required: true
@@ -97,14 +115,15 @@ service MessageService {
     };
   }
 
-  // List messages, newest first by ID. A page shorter than limit is the last one.
+  // List messages, newest received first. A page shorter than limit is the
+  // last one.
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
     option (google.api.http) = {
       get: "/v1/messages"
       response_body: "messages"
       additional_bindings: {
-        get: "/v1/accounts/{account_id_or_addr}/messages"
+        get: "/v1/accounts/{account_id_or_address}/messages"
         response_body: "messages"
       }
     };
@@ -120,6 +139,14 @@ service MessageService {
       body: "*"
       response_body: "message"
     };
+  }
+
+  // Delete a message for good, with its raw source, for everyone with access
+  // to its account. This can't be undone; to move a message to the trash,
+  // add the trash label instead.
+  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse) {
+    option idempotency_level = IDEMPOTENT;
+    option (google.api.http) = {delete: "/v1/messages/{id}"};
   }
 
   // Get a message with its body.
@@ -204,19 +231,19 @@ service MessageService {
 // A stored message. Headers, snippet, size, attachments, and body are parsed
 // from the raw source.
 message Message {
-  // Lowercase ULID.
+  // 21 random characters (a nanoid).
   string id = 1 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field) = {
       required: true
-      string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+      string: {pattern: "^[A-Za-z0-9_-]{21}$"}
     }
   ];
   string account_id = 2 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field) = {
       required: true
-      string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+      string: {pattern: "^[1-9][0-9]{0,18}$"}
     }
   ];
 
@@ -300,12 +327,12 @@ message CreateMessageRequest {
   // Treated as an address if it contains "@"; "local+tag@domain" finds
   // "local@domain". Stored as the message's recipient. Required in the first
   // message.
-  string account_id_or_addr = 1 [(buf.validate.field) = {
+  string account_id_or_address = 1 [(buf.validate.field) = {
     ignore: IGNORE_IF_ZERO_VALUE
     cel: {
-      id: "account_id_or_addr"
+      id: "account_id_or_address"
       message: "must be an account ID or an email address"
-      expression: "this.matches('^[0-7][0-9a-hjkmnp-tv-z]{25}$') || this.isEmail()"
+      expression: "this.matches('^[1-9][0-9]{0,18}$') || this.isEmail()"
     }
   }];
   // Raw RFC 5322 source.
@@ -316,6 +343,18 @@ message CreateMessageRequest {
   optional google.protobuf.Timestamp received_at = 4;
   // Unique per account. A repeat returns the stored message.
   optional string idempotency_key = 5 [(buf.validate.field).string.max_len = 128];
+  // The message's labels, such as ["sent"] for mirrored sent mail. Empty
+  // means inbox and unread, as for new mail. Each must exist.
+  repeated string labels = 6 [(buf.validate.field).repeated = {
+    max_items: 100
+    unique: true
+    items: {
+      string: {
+        pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+        max_len: 64
+      }
+    }
+  }];
 }
 
 message CreateMessageResponse {
@@ -324,10 +363,10 @@ message CreateMessageResponse {
 
 message ListMessagesRequest {
   // Treated as an address if it contains "@". Absent means all accounts.
-  optional string account_id_or_addr = 1 [(buf.validate.field).cel = {
-    id: "account_id_or_addr"
+  optional string account_id_or_address = 1 [(buf.validate.field).cel = {
+    id: "account_id_or_address"
     message: "must be an account ID or an email address"
-    expression: "this.matches('^[0-7][0-9a-hjkmnp-tv-z]{25}$') || this.isEmail()"
+    expression: "this.matches('^[1-9][0-9]{0,18}$') || this.isEmail()"
   }];
   // Absent means 50.
   optional int32 limit = 2 [(buf.validate.field).int32 = {
@@ -335,8 +374,10 @@ message ListMessagesRequest {
     lte: 100
   }];
   // ID of the last message from the previous page.
-  optional string after = 3 [(buf.validate.field).string.pattern = "^[0-7][0-9a-hjkmnp-tv-z]{25}$"];
-  // Only list messages with this label.
+  optional string after = 3 [(buf.validate.field).string.pattern = "^[A-Za-z0-9_-]{21}$"];
+  // Only list messages with this label. Spam and trash are listed only
+  // under their own labels, spam and trash, as in Gmail: absent means all
+  // mail but those.
   optional string label = 4 [(buf.validate.field).string = {
     pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
     max_len: 64
@@ -350,7 +391,7 @@ message ListMessagesResponse {
 message UpdateMessageRequest {
   string id = 1 [(buf.validate.field) = {
     required: true
-    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+    string: {pattern: "^[A-Za-z0-9_-]{21}$"}
   }];
   repeated string add_labels = 2 [(buf.validate.field).repeated = {
     max_items: 100
@@ -391,10 +432,19 @@ message UpdateMessageResponse {
   Message message = 1 [(buf.validate.field).required = true];
 }
 
+message DeleteMessageRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[A-Za-z0-9_-]{21}$"}
+  }];
+}
+
+message DeleteMessageResponse {}
+
 message GetMessageRequest {
   string id = 1 [(buf.validate.field) = {
     required: true
-    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+    string: {pattern: "^[A-Za-z0-9_-]{21}$"}
   }];
 }
 
@@ -405,7 +455,7 @@ message GetMessageResponse {
 message GetRawMessageRequest {
   string id = 1 [(buf.validate.field) = {
     required: true
-    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+    string: {pattern: "^[A-Za-z0-9_-]{21}$"}
   }];
 }
 
@@ -416,7 +466,7 @@ message GetRawMessageResponse {
 message GetAttachmentRequest {
   string id = 1 [(buf.validate.field) = {
     required: true
-    string: {pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"}
+    string: {pattern: "^[A-Za-z0-9_-]{21}$"}
   }];
   // Position in the message's attachments, from 0.
   int32 index = 2 [(buf.validate.field).int32 = {

@@ -21,6 +21,7 @@ import (
 
 	"github.com/boxysh/boxy/internal/auth"
 	"github.com/boxysh/boxy/internal/db"
+	"github.com/boxysh/boxy/internal/imap"
 	"github.com/boxysh/boxy/internal/pop3"
 	"github.com/boxysh/boxy/internal/service"
 	"github.com/boxysh/boxy/internal/storage"
@@ -89,40 +90,31 @@ func mailTLS() (*tls.Config, error) {
 }
 
 // startMail starts the mail protocols, for serve --mail and mail, and exits
-// if none is enabled. POP3 listens on POP3_ADDR (default :1110; empty
-// disables it), and with TLS also on POP3S_ADDR, if set. With a certificate,
-// the plain port offers STLS and logins need TLS; without one, logins are
+// if none is enabled. Each listens on its plain address (POP3_ADDR, default
+// :1110; IMAP_ADDR, default :1143; empty disables it), and with TLS also on
+// its TLS address (POP3S_ADDR, IMAPS_ADDR), if set. With a certificate, the
+// plain ports offer STARTTLS and logins need TLS; without one, logins are
 // plaintext.
 func startMail(database *db.DB, svc *service.Service) {
-	started, err := startProtocols(database, svc)
+	tlsConfig, err := mailTLS()
 	if err != nil {
 		log.Fatalf("failed to start mail protocols: %v", err)
 	}
-	if !started {
-		log.Fatal("no mail protocol is enabled: set POP3_ADDR or POP3S_ADDR")
+	pop3Started, err := startPOP3(database, svc, tlsConfig)
+	if err != nil {
+		log.Fatalf("failed to start POP3: %v", err)
+	}
+	imapStarted, err := listenMail("IMAP", "IMAP_ADDR", ":1143", "IMAPS_ADDR", tlsConfig,
+		imap.New(database, svc, imap.Options{TLS: tlsConfig}).Serve)
+	if err != nil {
+		log.Fatalf("failed to start IMAP: %v", err)
+	}
+	if !pop3Started && !imapStarted {
+		log.Fatal("no mail protocol is enabled: set POP3_ADDR, POP3S_ADDR, IMAP_ADDR, or IMAPS_ADDR")
 	}
 }
 
-// startProtocols starts the mail protocols that are configured, and reports
-// whether any is.
-func startProtocols(database *db.DB, svc *service.Service) (bool, error) {
-	tlsConfig, err := mailTLS()
-	if err != nil {
-		return false, err
-	}
-
-	addr, ok := os.LookupEnv("POP3_ADDR")
-	if !ok {
-		addr = ":1110"
-	}
-	tlsAddr := os.Getenv("POP3S_ADDR")
-	if addr == "" && tlsAddr == "" {
-		return false, nil
-	}
-	if tlsAddr != "" && tlsConfig == nil {
-		return false, fmt.Errorf("POP3S_ADDR needs MAIL_TLS_CERT and MAIL_TLS_KEY")
-	}
-
+func startPOP3(database *db.DB, svc *service.Service, tlsConfig *tls.Config) (bool, error) {
 	opts := pop3.Options{TLS: tlsConfig, Delete: os.Getenv("POP3_DELETE")}
 	if v := os.Getenv("POP3_MARK_READ"); v != "" {
 		markRead, err := strconv.ParseBool(v)
@@ -142,17 +134,35 @@ func startProtocols(database *db.DB, svc *service.Service) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return listenMail("POP3", "POP3_ADDR", ":1110", "POP3S_ADDR", tlsConfig, server.Serve)
+}
+
+// listenMail serves a mail protocol on the address in plainVar (fallback if
+// unset; empty disables it) and with TLS on the one in tlsVar, if set, and
+// reports whether it listens at all.
+func listenMail(name, plainVar, fallback, tlsVar string, tlsConfig *tls.Config, serve func(net.Listener) error) (bool, error) {
+	addr, ok := os.LookupEnv(plainVar)
+	if !ok {
+		addr = fallback
+	}
+	tlsAddr := os.Getenv(tlsVar)
+	if addr == "" && tlsAddr == "" {
+		return false, nil
+	}
+	if tlsAddr != "" && tlsConfig == nil {
+		return false, fmt.Errorf("%s needs MAIL_TLS_CERT and MAIL_TLS_KEY", tlsVar)
+	}
 	listen := func(addr string, secure bool) error {
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
-			return fmt.Errorf("POP3: %w", err)
+			return err
 		}
 		if secure {
 			l = tls.NewListener(l, tlsConfig)
 		}
 		go func() {
-			if err := server.Serve(l); err != nil {
-				log.Fatalf("POP3 server error: %v", err)
+			if err := serve(l); err != nil {
+				log.Fatalf("%s server error: %v", name, err)
 			}
 		}()
 		return nil
@@ -162,16 +172,16 @@ func startProtocols(database *db.DB, svc *service.Service) (bool, error) {
 			return false, err
 		}
 		if tlsConfig == nil {
-			log.Printf("POP3 listening on %s without TLS: passwords are sent in plaintext", addr)
+			log.Printf("%s listening on %s without TLS: passwords are sent in plaintext", name, addr)
 		} else {
-			log.Printf("POP3 listening on %s (STLS)", addr)
+			log.Printf("%s listening on %s (STARTTLS)", name, addr)
 		}
 	}
 	if tlsAddr != "" {
 		if err := listen(tlsAddr, true); err != nil {
 			return false, err
 		}
-		log.Printf("POP3S listening on %s", tlsAddr)
+		log.Printf("%s over TLS listening on %s", name, tlsAddr)
 	}
 	return true, nil
 }
@@ -195,7 +205,7 @@ var usage = "Usage: boxy " + Version + ` <command>
 Commands:
   serve [--migrate] [--mail]   Start the API and dashboard (default);
                                --mail also starts the mail protocols
-  mail [--migrate]             Start only the mail protocols: POP3
+  mail [--migrate]             Start only the mail protocols: POP3, IMAP
   migrate                      Run database migrations and exit
 `
 
@@ -247,6 +257,19 @@ func cmdMigrate() {
 	log.Println("migrations complete")
 }
 
+// newService builds the service, with the admins from ADMIN_EMAILS: a
+// comma-separated list of the emails they sign in with.
+func newService(database *db.DB, store storage.Storage) *service.Service {
+	var admins []string
+	if v := os.Getenv("ADMIN_EMAILS"); v != "" {
+		admins = strings.Split(v, ",")
+	}
+	if len(admins) == 0 {
+		log.Printf("ADMIN_EMAILS is empty: no one can create accounts")
+	}
+	return service.New(database, store, service.Options{Admins: admins})
+}
+
 // openBackend opens the database, migrating it if asked, and raw message
 // storage.
 func openBackend(migrate bool) (*db.DB, storage.Storage) {
@@ -275,7 +298,7 @@ func cmdMail(migrate bool) {
 	database, store := openBackend(migrate)
 	defer database.Close(context.Background())
 
-	startMail(database, service.New(database, store))
+	startMail(database, newService(database, store))
 	select {}
 }
 
@@ -304,7 +327,7 @@ func cmdServe(migrate, mail bool) {
 		allowedDomains,
 	)
 
-	svc := service.New(database, store)
+	svc := newService(database, store)
 
 	if mail {
 		startMail(database, svc)

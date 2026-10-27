@@ -47,14 +47,16 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, svc *service.Ser
 		pages:    map[string]*template.Template{},
 	}
 	funcs := template.FuncMap{
-		"version":    func() string { return h.version },
-		"isSystem":   db.IsSystemLabel,
-		"formatSize": formatSize,
-		"labelTitle": labelTitle,
-		"listURL":    listURL,
-		"isWebURL":   isWebURL,
+		"version":     func() string { return h.version },
+		"isSystem":    db.IsSystemLabel,
+		"formatSize":  formatSize,
+		"labelTitle":  labelTitle,
+		"folderTitle": folderTitle,
+		"listURL":     listURL,
+		"isWebURL":    isWebURL,
+		"sub":         func(a, b int) int { return a - b },
 	}
-	for _, p := range []string{"messages", "message", "accounts", "labels", "apikeys"} {
+	for _, p := range []string{"messages", "message", "accounts", "account", "labels", "apikeys"} {
 		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(
 			templateFS,
 			"templates/layout.html",
@@ -65,34 +67,72 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, svc *service.Ser
 }
 
 // RegisterRoutes registers the dashboard pages and the endpoints they call.
+// Each runs as the signed-in user, so the service checks their access.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /{$}", h.MessagesPage)
+	page := func(pattern string, f http.HandlerFunc) { mux.Handle(pattern, h.withUser(f)) }
+	page("GET /{$}", h.MessagesPage)
 	// Messages open at /{id}, and their source at /{id}?raw. Fixed paths
 	// such as /accounts are more specific, so they win, and anything that
 	// isn't a message ID is a 404. A second path segment would clash with
 	// the API's /v1/ and /boxy.v1.*Service/ subtrees.
-	mux.HandleFunc("GET /{id}", h.MessagePage)
-	mux.HandleFunc("GET /accounts", h.AccountsPage)
-	mux.HandleFunc("GET /labels", h.LabelsPage)
-	mux.HandleFunc("GET /keys", h.KeysPage)
-	mux.HandleFunc("GET /auth/keys", h.listKeys)
+	page("GET /{id}", h.MessagePage)
+	page("GET /accounts", h.AccountsPage)
+	page("GET /accounts/{address}", h.AccountPage)
+	page("GET /labels", h.LabelsPage)
+	page("GET /keys", h.KeysPage)
+	page("GET /auth/keys", h.listKeys)
 
 	// Endpoints that change state are signed in with the session cookie, so
 	// they reject cross-site requests: other sites can't act as the user.
 	csrf := http.NewCrossOriginProtection()
-	mux.Handle("POST /auth/keys", csrf.Handler(http.HandlerFunc(h.createKey)))
-	mux.Handle("DELETE /auth/keys/{id}", csrf.Handler(http.HandlerFunc(h.deleteKey)))
-	mux.Handle("POST /ui/accounts", csrf.Handler(http.HandlerFunc(h.createAccount)))
-	mux.Handle("POST /ui/labels", csrf.Handler(http.HandlerFunc(h.createLabel)))
-	mux.Handle("DELETE /ui/labels/{name}", csrf.Handler(http.HandlerFunc(h.deleteLabel)))
-	mux.Handle("POST /ui/messages/{id}/labels", csrf.Handler(http.HandlerFunc(h.updateLabels)))
-	mux.Handle("POST /ui/messages/labels", csrf.Handler(http.HandlerFunc(h.updateManyLabels)))
+	action := func(pattern string, f http.HandlerFunc) { mux.Handle(pattern, csrf.Handler(h.withUser(f))) }
+	action("POST /auth/keys", h.createKey)
+	action("DELETE /auth/keys/{id}", h.deleteKey)
+	action("POST /ui/accounts", h.createAccount)
+	action("POST /ui/accounts/{id}", h.updateAccount)
+	action("POST /ui/accounts/{id}/access", h.share)
+	action("DELETE /ui/accounts/{id}/access/{user}", h.unshare)
+	action("POST /ui/labels", h.createLabel)
+	action("DELETE /ui/labels/{name}", h.deleteLabel)
+	action("POST /ui/messages/{id}/labels", h.updateLabels)
+	action("POST /ui/messages/labels", h.updateManyLabels)
+	action("POST /ui/messages/delete", h.deleteMessages)
+	action("POST /ui/accounts/{id}/empty", h.emptyLabel)
+}
+
+// withUser runs next as the signed-in user, if there is one.
+func (h *Handler) withUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if userID, ok := h.sessions.GetUserID(r); ok {
+			r = r.WithContext(auth.ContextWithUserID(r.Context(), userID))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// visibleAccounts lists the accounts the signed-in user has access to.
+func (h *Handler) visibleAccounts(r *http.Request, user *db.User) ([]db.Account, error) {
+	f := db.AccountFilter{Limit: 1000}
+	if !h.svc.IsAdmin(user.Email) {
+		f.UserID = user.ID
+	}
+	return h.db.ListAccounts(r.Context(), f)
+}
+
+// canAccess reports whether the signed-in user has access to an account.
+func (h *Handler) canAccess(r *http.Request, accountID string) (bool, error) {
+	err := h.svc.Require(r.Context(), accountID)
+	if connect.CodeOf(err) == connect.CodeNotFound || connect.CodeOf(err) == connect.CodeUnauthenticated {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 type layoutData struct {
 	ActiveTab string
 	Title     string
 	User      *db.User
+	Admin     bool
 }
 
 // Messages
@@ -102,13 +142,14 @@ const messagesPerPage = 50
 type messageRow struct {
 	ID          string
 	From        string
-	FromAddr    string
+	FromAddress string
 	Subject     string
 	Snippet     string
 	Recipient   string
-	UserLabels  []string
+	UserLabels  []string // labels shown as tags: inbox and user labels
 	Unread      bool
 	Starred     bool
+	Answered    bool
 	Attachments int
 	ReceivedAt  string
 	ReceivedISO string
@@ -130,6 +171,7 @@ type messagesData struct {
 	Labels     []labelLink
 	Accounts   []db.Account
 	Account    string     // the filtered account's address; "" for all
+	AccountID  string     // the filtered account's ID; "" for all
 	Label      string     // "" for all mail
 	UserLabels []db.Label // for the toolbar's label menu
 	Hostname   string
@@ -154,11 +196,14 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// The account is filtered by address, so URLs read well:
 	// /?account=hello@boxy.sh.
-	addr := strings.ToLower(q.Get("account"))
+	address := strings.ToLower(q.Get("account"))
 	var accountID string
-	if addr != "" {
-		a, err := h.db.ResolveAccount(r.Context(), addr)
-		if errors.Is(err, db.ErrAccountNotFound) {
+	if address != "" {
+		a, err := h.db.ResolveAccount(r.Context(), address)
+		if err == nil {
+			err = h.svc.Require(r.Context(), a.ID)
+		}
+		if errors.Is(err, db.ErrAccountNotFound) || connect.CodeOf(err) == connect.CodeNotFound {
 			http.NotFound(w, r)
 			return
 		}
@@ -166,10 +211,16 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			h.internalError(w, "getting account", err)
 			return
 		}
-		accountID, addr = a.ID, a.Addr
+		accountID, address = a.ID, a.Address()
+	}
+	visible, err := h.svc.VisibleAccounts(r.Context())
+	if err != nil {
+		h.internalError(w, "listing accounts", err)
+		return
 	}
 	// Pages are cursors: ?after=ID for older messages, ?before=ID for newer.
-	f := db.MessageFilter{AccountID: accountID, Label: label, Limit: messagesPerPage}
+	// As in Gmail and IMAP, spam and trash show only in their own views.
+	f := db.MessageFilter{AccountID: accountID, AccountIDs: visible, Label: label, NotLabels: db.HiddenFrom(label), Limit: messagesPerPage}
 	if after := q.Get("after"); isID(after) {
 		f.After = after
 	} else if before := q.Get("before"); isID(before) {
@@ -181,7 +232,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "listing messages", err)
 		return
 	}
-	all := db.MessageFilter{AccountID: accountID, Label: label}
+	all := db.MessageFilter{AccountID: accountID, AccountIDs: visible, Label: label, NotLabels: f.NotLabels}
 	total, err := h.db.CountFiltered(r.Context(), all)
 	if err != nil {
 		h.internalError(w, "counting messages", err)
@@ -196,7 +247,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	accounts, err := h.db.ListAccounts(r.Context(), 1000, "")
+	accounts, err := h.visibleAccounts(r, user)
 	if err != nil {
 		h.internalError(w, "listing accounts", err)
 		return
@@ -208,12 +259,13 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := messagesData{
-		layoutData: layoutData{ActiveTab: "messages", Title: labelTitle(label), User: user},
+		layoutData: layoutData{ActiveTab: "messages", Title: folderTitle(label), User: user, Admin: h.svc.IsAdmin(user.Email)},
 		Accounts:   accounts,
-		Account:    addr,
+		Account:    address,
+		AccountID:  accountID,
 		Label:      label,
 		Hostname:   h.hostname,
-		Base:       listURL(addr, label),
+		Base:       listURL(address, label),
 		Paged:      f.After != "" || f.Before != "",
 		Total:      total,
 	}
@@ -228,19 +280,21 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	seenUser := false
 	for _, l := range append([]db.Label{{Name: ""}}, labels...) {
-		if l.Name == db.LabelUnread {
-			continue // shown as counts and bold rows instead
+		if l.Name == db.LabelUnread || l.Name == db.LabelAnswered {
+			continue // states, not folders: shown on rows instead
 		}
-		link := labelLink{Name: l.Name, Title: labelTitle(l.Name), Active: l.Name == label}
+		link := labelLink{Name: l.Name, Title: folderTitle(l.Name), Active: l.Name == label}
 		if l.Name != "" && !l.System {
 			data.UserLabels = append(data.UserLabels, l)
 			if !seenUser {
 				link.FirstUser, seenUser = true, true
 			}
 		}
-		if l.Name == db.LabelInbox {
-			// Unread in the inbox, like a mail client's badge.
-			if link.Unread, err = h.db.CountMessages(r.Context(), accountID, l.Name, db.LabelUnread); err != nil {
+		if l.Name == db.LabelInbox || (l.Name != "" && !l.System) {
+			// Unread in the inbox and in each user label, like a mail
+			// client's badges.
+			unread := db.MessageFilter{AccountID: accountID, AccountIDs: visible, Label: l.Name, Labels: []string{db.LabelUnread}, NotLabels: db.HiddenFrom(l.Name)}
+			if link.Unread, err = h.db.CountFiltered(r.Context(), unread); err != nil {
 				h.internalError(w, "counting messages", err)
 				return
 			}
@@ -251,7 +305,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 		row := messageRow{
 			ID:          m.ID,
 			From:        m.From.Name,
-			FromAddr:    m.From.Addr,
+			FromAddress: m.From.Address,
 			Subject:     m.Subject,
 			Snippet:     m.Snippet,
 			Recipient:   m.Recipient,
@@ -260,7 +314,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			ReceivedISO: m.ReceivedAt.Local().Format(time.DateTime),
 		}
 		if row.From == "" {
-			row.From = m.From.Addr
+			row.From = m.From.Address
 		}
 		for _, l := range m.Labels {
 			switch {
@@ -268,7 +322,12 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 				row.Unread = true
 			case l == db.LabelStarred:
 				row.Starred = true
-			case !db.IsSystemLabel(l):
+			case l == db.LabelAnswered:
+				row.Answered = true
+			case l == label:
+				// Every row in this view has it.
+			case l == db.LabelInbox || !db.IsSystemLabel(l):
+				// Inbox tells, outside the inbox, what isn't archived.
 				row.UserLabels = append(row.UserLabels, l)
 			}
 		}
@@ -321,6 +380,14 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "getting message", err)
 		return
 	}
+	if ok, err := h.canAccess(r, m.AccountID); err != nil || !ok {
+		if err != nil {
+			h.internalError(w, "checking access", err)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
 	// Opening a message reads it, as in a mail client. The API leaves
 	// unread alone; clients remove it themselves.
 	if hasLabel(m, db.LabelUnread) {
@@ -344,7 +411,7 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := messageData{
-		layoutData: layoutData{ActiveTab: "messages", Title: shorten(subjectOrNone(m.Subject), 80), User: user},
+		layoutData: layoutData{ActiveTab: "messages", Title: shorten(subjectOrNone(m.Subject), 80), User: user, Admin: h.svc.IsAdmin(user.Email)},
 		Message:    m,
 		Account:    account,
 		AllLabels:  labels,
@@ -388,8 +455,7 @@ var viewable = map[string]bool{
 // in the browser if its type is viewable, else downloaded, as is any with
 // ?download.
 func (h *Handler) attachment(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.sessions.GetUserID(r); !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if !h.canRead(w, r) {
 		return
 	}
 	index, err := strconv.Atoi(r.URL.Query().Get("attachment"))
@@ -425,9 +491,36 @@ func (h *Handler) attachment(w http.ResponseWriter, r *http.Request) {
 	w.Write(content)
 }
 
-var idPattern = regexp.MustCompile(`^[0-7][0-9a-hjkmnp-tv-z]{25}$`)
+// canRead checks that the signed-in user can read message {id}, answering
+// the request if not.
+func (h *Handler) canRead(w http.ResponseWriter, r *http.Request) bool {
+	if _, ok := auth.UserIDFromContext(r.Context()); !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	m, err := h.db.GetMessage(r.Context(), r.PathValue("id"), false)
+	if errors.Is(err, db.ErrMessageNotFound) {
+		http.NotFound(w, r)
+		return false
+	}
+	if err != nil {
+		h.internalError(w, "getting message", err)
+		return false
+	}
+	ok, err := h.canAccess(r, m.AccountID)
+	if err != nil {
+		h.internalError(w, "checking access", err)
+		return false
+	}
+	if !ok {
+		http.NotFound(w, r)
+	}
+	return ok
+}
 
-// isID reports whether s is a lowercase ULID, as message IDs are.
+var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{21}$`)
+
+// isID reports whether s looks like a message ID: a nanoid.
 func isID(s string) bool {
 	return idPattern.MatchString(s)
 }
@@ -444,8 +537,7 @@ func hasLabel(m *db.Message, label string) bool {
 // rawMessage serves a message's source: as plain text, so the browser shows
 // it rather than rendering it, or with ?download, as a .eml file to save.
 func (h *Handler) rawMessage(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.sessions.GetUserID(r); !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if !h.canRead(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -492,14 +584,14 @@ func (h *Handler) AccountsPage(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		return
 	}
-	accounts, err := h.db.ListAccounts(r.Context(), 1000, "")
+	accounts, err := h.visibleAccounts(r, user)
 	if err != nil {
 		h.internalError(w, "listing accounts", err)
 		return
 	}
-	data := accountsData{layoutData: layoutData{ActiveTab: "accounts", Title: "Accounts", User: user}, Hostname: h.hostname}
+	data := accountsData{layoutData: layoutData{ActiveTab: "accounts", Title: "Accounts", User: user, Admin: h.svc.IsAdmin(user.Email)}, Hostname: h.hostname}
 	for _, a := range accounts {
-		n, err := h.db.CountMessages(r.Context(), a.ID, db.LabelInbox, db.LabelUnread)
+		n, err := h.db.CountFiltered(r.Context(), db.MessageFilter{AccountID: a.ID, Label: db.LabelInbox, Labels: []string{db.LabelUnread}, NotLabels: db.HiddenFrom(db.LabelInbox)})
 		if err != nil {
 			h.internalError(w, "counting messages", err)
 			return
@@ -507,6 +599,48 @@ func (h *Handler) AccountsPage(w http.ResponseWriter, r *http.Request) {
 		data.Accounts = append(data.Accounts, accountRow{Account: a, Unread: n, CreatedAt: a.CreatedAt.Local().Format(time.DateTime)})
 	}
 	h.render(w, "accounts", data)
+}
+
+type accountData struct {
+	layoutData
+	Account *db.Account
+	Users   []db.User // who it's shared with
+}
+
+// AccountPage shows an account's addresses and who it's shared with, and
+// lets anyone with access change them.
+func (h *Handler) AccountPage(w http.ResponseWriter, r *http.Request) {
+	user := h.requireUser(w, r)
+	if user == nil {
+		return
+	}
+	a, err := h.db.ResolveAccount(r.Context(), strings.ToLower(r.PathValue("address")))
+	if errors.Is(err, db.ErrAccountNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.internalError(w, "getting account", err)
+		return
+	}
+	if ok, err := h.canAccess(r, a.ID); err != nil || !ok {
+		if err != nil {
+			h.internalError(w, "checking access", err)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
+	users, err := h.svc.AccountUsers(r.Context(), a.ID)
+	if err != nil {
+		h.internalError(w, "listing access", err)
+		return
+	}
+	h.render(w, "account", accountData{
+		layoutData: layoutData{ActiveTab: "accounts", Title: a.Address(), User: user, Admin: h.svc.IsAdmin(user.Email)},
+		Account:    a,
+		Users:      users,
+	})
 }
 
 // Labels
@@ -523,9 +657,15 @@ type labelsData struct {
 	Labels []labelRow
 }
 
+// LabelsPage manages labels. It's for admins: labels are shared by every
+// account.
 func (h *Handler) LabelsPage(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
+		return
+	}
+	if !h.svc.IsAdmin(user.Email) {
+		http.NotFound(w, r)
 		return
 	}
 	labels, err := h.db.ListLabels(r.Context())
@@ -533,9 +673,15 @@ func (h *Handler) LabelsPage(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "listing labels", err)
 		return
 	}
-	data := labelsData{layoutData: layoutData{ActiveTab: "labels", Title: "Labels", User: user}}
+	visible, err := h.svc.VisibleAccounts(r.Context())
+	if err != nil {
+		h.internalError(w, "listing accounts", err)
+		return
+	}
+	data := labelsData{layoutData: layoutData{ActiveTab: "labels", Title: "Labels", User: user, Admin: h.svc.IsAdmin(user.Email)}}
 	for _, l := range labels {
-		n, err := h.db.CountMessages(r.Context(), "", l.Name)
+		// Counted in the accounts the user can see only.
+		n, err := h.db.CountFiltered(r.Context(), db.MessageFilter{AccountIDs: visible, Label: l.Name})
 		if err != nil {
 			h.internalError(w, "counting messages", err)
 			return
@@ -576,7 +722,7 @@ func (h *Handler) KeysPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := keysData{layoutData: layoutData{ActiveTab: "keys", Title: "API Keys", User: user}, Hostname: h.hostname}
+	data := keysData{layoutData: layoutData{ActiveTab: "keys", Title: "API Keys", User: user, Admin: h.svc.IsAdmin(user.Email)}, Hostname: h.hostname}
 	for _, k := range keys {
 		data.Keys = append(data.Keys, keyRow{
 			ID:        k.ID,
@@ -643,6 +789,10 @@ func writeError(w http.ResponseWriter, op string, err error) {
 		status = http.StatusNotFound
 	case connect.CodeAlreadyExists, connect.CodeFailedPrecondition:
 		status = http.StatusConflict
+	case connect.CodePermissionDenied:
+		status = http.StatusForbidden
+	case connect.CodeUnauthenticated:
+		status = http.StatusUnauthorized
 	case connect.CodeResourceExhausted:
 		status = http.StatusRequestEntityTooLarge
 	}
@@ -663,10 +813,10 @@ func writeError(w http.ResponseWriter, op string, err error) {
 // and a label. It keeps "@" as is, so the URL reads like the address, as
 // /?account=hello@boxy.sh&label=inbox. Without a label, the list shows the
 // inbox.
-func listURL(addr string, label ...string) template.URL {
+func listURL(address string, label ...string) template.URL {
 	q := url.Values{}
-	if addr != "" {
-		q.Set("account", addr)
+	if address != "" {
+		q.Set("account", address)
 	}
 	if len(label) > 0 {
 		q.Set("label", label[0])
@@ -696,6 +846,15 @@ func labelTitle(name string) string {
 		words[i] = strings.ToUpper(w[:1]) + w[1:]
 	}
 	return strings.Join(words, " ")
+}
+
+// folderTitle is how a label is shown as a list of messages: like
+// labelTitle, but drafts are plural there, as in mail clients.
+func folderTitle(name string) string {
+	if name == db.LabelDraft {
+		return "Drafts"
+	}
+	return labelTitle(name)
 }
 
 func subjectOrNone(s string) string {

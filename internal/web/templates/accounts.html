@@ -1,14 +1,15 @@
 {{define "content"}}
 <div class="mb-8">
   <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Accounts</h2>
-  <p class="mt-1 text-sm text-gray-500">An account receives all mail sent to its address. Plus addresses reach it too: <code>hello+news@</code> lands in <code>hello@</code>.</p>
+  <p class="mt-1 text-sm text-gray-500">An account receives all mail sent to any of its addresses. Plus addresses reach it too: <code>hello+news@</code> lands in <code>hello@</code>.{{if not .Admin}} You see the accounts shared with you.{{end}}</p>
 </div>
 
+{{if .Admin}}
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
   <h3 class="text-sm font-semibold text-gray-900 mb-4">Create account</h3>
   <form id="create-form" class="flex flex-wrap gap-3">
-    <label for="addr" class="sr-only">Address</label>
-    <input type="email" id="addr" name="addr" placeholder="hello@example.com" required maxlength="254"
+    <label for="address" class="sr-only">Address</label>
+    <input type="email" id="address" name="address" placeholder="hello@example.com" required maxlength="254"
       class="flex-1 min-w-[14rem] rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
     <label for="name" class="sr-only">Name</label>
     <input type="text" id="name" name="name" placeholder="Name (optional)" maxlength="128"
@@ -18,6 +19,7 @@
   </form>
   <p id="create-error" role="alert" class="hidden mt-3 text-sm text-red-700"></p>
 </div>
+{{end}}
 
 <div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
   {{if .Accounts}}
@@ -28,17 +30,18 @@
           <th class="px-6 py-4">Address</th>
           <th class="px-6 py-4">Name</th>
           <th class="px-6 py-4">Unread</th>
-          <th class="px-6 py-4">ID</th>
           <th class="px-6 py-4">Created</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-200">
         {{range .Accounts}}
         <tr class="hover:bg-gray-50 transition-colors">
-          <td class="px-6 py-3"><a href="{{listURL .Addr}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Addr}}</a></td>
+          <td class="px-6 py-3">
+            <a href="/accounts/{{.Address}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Address}}</a>
+            {{with len .Addresses}}{{if gt . 1}}<span class="ml-1 text-xs text-gray-400" title="More addresses reach this account">+{{sub . 1}}</span>{{end}}{{end}}
+          </td>
           <td class="px-6 py-3 text-gray-700">{{if .Name}}{{.Name}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</td>
-          <td class="px-6 py-3 tabular-nums {{if .Unread}}font-semibold text-gray-900{{else}}text-gray-400{{end}}">{{.Unread}}</td>
-          <td class="px-6 py-3"><code class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-xs border border-gray-200">{{.ID}}</code></td>
+          <td class="px-6 py-3 tabular-nums"><a href="{{listURL .Address}}" title="Open the inbox" class="hover:underline {{if .Unread}}font-semibold text-gray-900{{else}}text-gray-400{{end}}">{{.Unread}}</a></td>
           <td class="px-6 py-3 text-gray-500 tabular-nums">{{.CreatedAt}}</td>
         </tr>
         {{end}}
@@ -47,16 +50,16 @@
   </div>
   {{else}}
   <div class="px-6 py-12 text-center text-gray-500">
-    <p>No accounts yet. Create one above.</p>
+    <p>{{if .Admin}}No accounts yet. Create one above.{{else}}No accounts are shared with you yet. Ask an admin, or someone with access, to share one.{{end}}</p>
   </div>
   {{end}}
 </div>
 
 <script>
-  document.getElementById('create-form').addEventListener('submit', async (e) => {
+  document.getElementById('create-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const resp = await fetch('/ui/accounts', { method: 'POST', body: new FormData(e.target) });
-    if (resp.ok) { location.reload(); return; }
+    if (resp.ok) { location.href = '/accounts/' + (await resp.json()).address; return; }
     const error = document.getElementById('create-error');
     error.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
     error.classList.remove('hidden');

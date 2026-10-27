@@ -213,11 +213,11 @@ func addressList(h mail.Header, key string) []db.Address {
 		if derr != nil || strings.TrimSpace(v) == "" {
 			return []db.Address{}
 		}
-		return []db.Address{{Addr: strings.TrimSpace(v)}}
+		return []db.Address{{Address: strings.TrimSpace(v)}}
 	}
 	addrs := make([]db.Address, 0, len(list))
 	for _, a := range list {
-		addrs = append(addrs, db.Address{Name: a.Name, Addr: strings.ToLower(a.Address)})
+		addrs = append(addrs, db.Address{Name: a.Name, Address: strings.ToLower(a.Address)})
 	}
 	return addrs
 }

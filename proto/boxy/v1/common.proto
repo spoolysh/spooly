@@ -10,5 +10,5 @@ option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
 message Address {
   // Empty when not set.
   string name = 1 [(google.api.field_behavior) = REQUIRED];
-  string addr = 2 [(google.api.field_behavior) = REQUIRED];
+  string address = 2 [(google.api.field_behavior) = REQUIRED];
 }

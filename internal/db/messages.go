@@ -12,8 +12,8 @@ import (
 
 // Address is a name and address from a From/To/Cc header.
 type Address struct {
-	Name string `json:"name"`
-	Addr string `json:"addr"`
+	Name    string `json:"name"`
+	Address string `json:"address"`
 }
 
 // Attachment describes one attached file; its bytes stay in the raw message.
@@ -59,7 +59,7 @@ var (
 )
 
 // messageColumns are the columns of a message without its bodies and raw source.
-const messageColumns = `id, account_id, sender, recipient, from_name, from_addr, to_addrs, cc_addrs,
+const messageColumns = `id, account_id, sender, recipient, from_name, from_address, to_addresses, cc_addresses,
 	subject, date, snippet, size, attachments, metadata, idempotency_key, received_at`
 
 func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, error) {
@@ -67,7 +67,7 @@ func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, e
 	var to, cc, attachments, metadata string
 	var date sql.NullTime
 	var key sql.NullString
-	dest := []any{&m.ID, &m.AccountID, &m.Sender, &m.Recipient, &m.From.Name, &m.From.Addr, &to, &cc,
+	dest := []any{&m.ID, &m.AccountID, &m.Sender, &m.Recipient, &m.From.Name, &m.From.Address, &to, &cc,
 		&m.Subject, &date, &m.Snippet, &m.Size, &attachments, &metadata, &key, &m.ReceivedAt}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
@@ -136,12 +136,16 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 	}
 	defer tx.Rollback()
 
-	query := d.q(`INSERT INTO messages (` + messageColumns + `, text_body, html_body)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	seq, err := d.nextSeq(ctx, tx, m.AccountID)
+	if err != nil {
+		return nil, false, err
+	}
+	query := d.q(`INSERT INTO messages (` + messageColumns + `, text_body, html_body, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err = tx.ExecContext(ctx, query,
-		m.ID, m.AccountID, m.Sender, m.Recipient, m.From.Name, m.From.Addr, marshalJSON(m.To), marshalJSON(m.Cc),
+		m.ID, m.AccountID, m.Sender, m.Recipient, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
 		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Attachments), marshalJSON(m.Metadata), key, m.ReceivedAt.UTC(),
-		m.Text, m.HTML)
+		m.Text, m.HTML, seq)
 	if err != nil {
 		tx.Rollback()
 		// Lost a race with a retry using the same idempotency key.
@@ -153,8 +157,8 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 		return nil, false, fmt.Errorf("inserting message: %w", err)
 	}
 	for _, label := range labels {
-		if _, err := tx.ExecContext(ctx, d.q(`INSERT INTO messages_labels (message_id, label) VALUES (?, ?)`), m.ID, label); err != nil {
-			return nil, false, fmt.Errorf("labeling message: %w", err)
+		if err := d.addLabel(ctx, tx, m.AccountID, m.ID, label); err != nil {
+			return nil, false, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -218,10 +222,18 @@ func getMessage(ctx context.Context, d *DB, q querier, id string, withBody bool)
 // fields match all.
 type MessageFilter struct {
 	AccountID string
-	Label     string
-	After     string // only messages with smaller IDs: older ones
-	Before    string // only messages with larger IDs: newer ones
-	Limit     int
+	// AccountIDs, if not nil, limits messages to these accounts, such as
+	// the ones shared with a user. Empty matches nothing.
+	AccountIDs []string
+	Label      string
+	Labels     []string // more labels messages must all have
+	NotLabels  []string // labels messages must not have
+	// After and Before are message IDs, page cursors in list order: newest
+	// received first, ties broken by ID. After selects the messages that
+	// come after that one (older), Before the ones before it (newer).
+	After  string
+	Before string
+	Limit  int
 }
 
 // where returns the WHERE clause and arguments that select f's messages.
@@ -232,29 +244,50 @@ func (f MessageFilter) where() (string, []any) {
 		where += ` AND account_id = ?`
 		args = append(args, f.AccountID)
 	}
-	if f.Label != "" {
-		where += ` AND id IN (SELECT message_id FROM messages_labels WHERE label = ?)`
-		args = append(args, f.Label)
+	if f.AccountIDs != nil {
+		if len(f.AccountIDs) == 0 {
+			where += ` AND 1 = 0`
+		} else {
+			where += ` AND account_id IN (` + placeholders(len(f.AccountIDs)) + `)`
+			for _, id := range f.AccountIDs {
+				args = append(args, id)
+			}
+		}
 	}
+	for _, label := range append([]string{f.Label}, f.Labels...) {
+		if label == "" {
+			continue
+		}
+		where += ` AND id IN (SELECT message_id FROM message_labels WHERE label = ?)`
+		args = append(args, label)
+	}
+	if len(f.NotLabels) > 0 {
+		where += ` AND id NOT IN (SELECT message_id FROM message_labels WHERE label IN (` + placeholders(len(f.NotLabels)) + `))`
+		for _, label := range f.NotLabels {
+			args = append(args, label)
+		}
+	}
+	// A cursor that names no message matches nothing.
 	if f.After != "" {
-		where += ` AND id < ?`
+		where += ` AND (received_at, id) < (SELECT received_at, id FROM messages WHERE id = ?)`
 		args = append(args, f.After)
 	}
 	if f.Before != "" {
-		where += ` AND id > ?`
+		where += ` AND (received_at, id) > (SELECT received_at, id FROM messages WHERE id = ?)`
 		args = append(args, f.Before)
 	}
 	return where, args
 }
 
-// ListMessages returns messages matching f, newest first by ID, without
-// their bodies. With Before, it returns the f.Limit oldest of the newer
-// messages, so a page before the current one ends right above it.
+// ListMessages returns messages matching f, newest received first, ties
+// broken by ID, without their bodies. With Before, it returns the f.Limit
+// oldest of the newer messages, so a page before the current one ends right
+// above it.
 func (d *DB) ListMessages(ctx context.Context, f MessageFilter) ([]*Message, error) {
 	where, args := f.where()
-	order := ` ORDER BY id DESC`
+	order := ` ORDER BY received_at DESC, id DESC`
 	if f.Before != "" {
-		order = ` ORDER BY id ASC`
+		order = ` ORDER BY received_at ASC, id ASC`
 	}
 	query := `SELECT ` + messageColumns + ` FROM messages` + where + order + ` LIMIT ?`
 	args = append(args, f.Limit)
@@ -300,7 +333,7 @@ func (d *DB) loadLabels(ctx context.Context, q querier, messages []*Message) err
 		args[i] = m.ID
 	}
 
-	rows, err := q.QueryContext(ctx, d.q(`SELECT message_id, label FROM messages_labels WHERE message_id IN (`+placeholders(len(args))+`)`), args...)
+	rows, err := q.QueryContext(ctx, d.q(`SELECT message_id, label FROM message_labels WHERE message_id IN (`+placeholders(len(args))+`)`), args...)
 	if err != nil {
 		return fmt.Errorf("loading labels: %w", err)
 	}
@@ -338,6 +371,10 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 	if err != nil {
 		return nil, err
 	}
+	before, err := d.labelsOf(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, label := range u.AddLabels {
 		var exists int
@@ -348,14 +385,29 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 		if err != nil {
 			return nil, fmt.Errorf("checking label: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, d.q(`INSERT INTO messages_labels (message_id, label) VALUES (?, ?)
-			ON CONFLICT DO NOTHING`), id, label); err != nil {
-			return nil, fmt.Errorf("adding label: %w", err)
+		if err := d.addLabel(ctx, tx, m.AccountID, id, label); err != nil {
+			return nil, err
 		}
 	}
 	for _, label := range u.RemoveLabels {
-		if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM messages_labels WHERE message_id = ? AND label = ?`), id, label); err != nil {
+		if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM message_labels WHERE message_id = ? AND label = ?`), id, label); err != nil {
 			return nil, fmt.Errorf("removing label: %w", err)
+		}
+	}
+	// Back from spam or trash, the message rejoins All Mail and its other
+	// labels' views, so it needs new sequence numbers there. Labels just
+	// added have new ones already.
+	after, err := d.labelsOf(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	wasIn := views(before)
+	for _, v := range views(after) {
+		if slices.Contains(wasIn, v) || (v != AllMail && !slices.Contains(before, v)) {
+			continue
+		}
+		if err := d.renumber(ctx, tx, m.AccountID, id, v); err != nil {
+			return nil, err
 		}
 	}
 
@@ -391,38 +443,18 @@ func (d *DB) CountFiltered(ctx context.Context, f MessageFilter) (int, error) {
 	return n, nil
 }
 
-// CountMessages returns how many messages have all the labels, in one
-// account if accountID is set.
-func (d *DB) CountMessages(ctx context.Context, accountID string, labels ...string) (int, error) {
-	query := `SELECT COUNT(*) FROM messages WHERE 1 = 1`
-	var args []any
-	if accountID != "" {
-		query += ` AND account_id = ?`
-		args = append(args, accountID)
-	}
-	for _, label := range labels {
-		query += ` AND id IN (SELECT message_id FROM messages_labels WHERE label = ?)`
-		args = append(args, label)
-	}
-	var n int
-	if err := d.sql.QueryRowContext(ctx, d.q(query), args...).Scan(&n); err != nil {
-		return 0, fmt.Errorf("counting messages: %w", err)
-	}
-	return n, nil
-}
-
 // MaildropEntry is a message as POP3 lists it.
 type MaildropEntry struct {
 	ID   string
 	Size int64
 }
 
-// ListMaildrop returns the IDs and sizes of the newest limit messages of an
-// account with label, oldest first, as POP3 numbers them.
+// ListMaildrop returns the IDs and sizes of the newest received limit
+// messages of an account with label, oldest first, as POP3 numbers them.
 func (d *DB) ListMaildrop(ctx context.Context, accountID, label string, limit int) ([]MaildropEntry, error) {
 	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT id, size FROM messages
-		WHERE account_id = ? AND id IN (SELECT message_id FROM messages_labels WHERE label = ?)
-		ORDER BY id DESC LIMIT ?`), accountID, label, limit)
+		WHERE account_id = ? AND id IN (SELECT message_id FROM message_labels WHERE label = ?)
+		ORDER BY received_at DESC, id DESC LIMIT ?`), accountID, label, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing maildrop: %w", err)
 	}
@@ -438,4 +470,20 @@ func (d *DB) ListMaildrop(ctx context.Context, accountID, label string, limit in
 	}
 	slices.Reverse(entries)
 	return entries, rows.Err()
+}
+
+// DeleteMessage deletes a message's row and labels for good. Its raw source
+// is the caller's to remove. Deleting a missing message is not an error.
+func (d *DB) DeleteMessage(ctx context.Context, id string) error {
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("deleting message: %w", err)
+	}
+	defer tx.Rollback()
+	for _, query := range []string{`DELETE FROM message_labels WHERE message_id = ?`, `DELETE FROM messages WHERE id = ?`} {
+		if _, err := tx.ExecContext(ctx, d.q(query), id); err != nil {
+			return fmt.Errorf("deleting message: %w", err)
+		}
+	}
+	return tx.Commit()
 }

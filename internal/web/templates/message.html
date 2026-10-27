@@ -1,14 +1,14 @@
 {{define "content"}}
 {{$m := .Message}}
 <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-  <a href="{{listURL .Account.Addr}}" class="text-sm text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; {{.Account.Addr}}</a>
+  <a href="{{listURL .Account.Address}}" class="text-sm text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; {{.Account.Address}}</a>
   <div class="flex flex-wrap items-center gap-2" role="toolbar" aria-label="Message actions">
     {{if .Has.inbox}}
     <button type="button" onclick="changeLabels([], ['inbox'])" class="btn">Archive</button>
     {{else}}
     <button type="button" onclick="changeLabels(['inbox'], ['trash', 'spam'])" class="btn">Move to inbox</button>
     {{end}}
-    <button type="button" onclick="changeLabels(['unread'], [], '{{listURL .Account.Addr}}')" class="btn">Mark unread</button>
+    <button type="button" onclick="changeLabels(['unread'], [], '{{listURL .Account.Address}}')" class="btn">Mark unread</button>
     {{if .Has.starred}}
     <button type="button" onclick="changeLabels([], ['starred'])" class="btn"><span class="text-amber-500">&#9733;</span> Unstar</button>
     {{else}}
@@ -45,12 +45,12 @@
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-6">
   <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 px-6 py-4 text-sm">
     <dt class="text-gray-500">From</dt>
-    <dd class="min-w-0 break-words">{{if $m.From.Addr}}{{if $m.From.Name}}<span class="font-medium text-gray-900">{{$m.From.Name}}</span> {{end}}<span class="text-gray-600">&lt;{{$m.From.Addr}}&gt;</span>{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</dd>
+    <dd class="min-w-0 break-words">{{if $m.From.Address}}{{if $m.From.Name}}<span class="font-medium text-gray-900">{{$m.From.Name}}</span> {{end}}<span class="text-gray-600">&lt;{{$m.From.Address}}&gt;</span>{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</dd>
     <dt class="text-gray-500">To</dt>
-    <dd class="min-w-0 break-words text-gray-700">{{range $i, $a := $m.To}}{{if $i}}, {{end}}{{if $a.Name}}{{$a.Name}} {{end}}&lt;{{$a.Addr}}&gt;{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</dd>
+    <dd class="min-w-0 break-words text-gray-700">{{range $i, $a := $m.To}}{{if $i}}, {{end}}{{if $a.Name}}{{$a.Name}} {{end}}&lt;{{$a.Address}}&gt;{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</dd>
     {{if $m.Cc}}
     <dt class="text-gray-500">Cc</dt>
-    <dd class="min-w-0 break-words text-gray-700">{{range $i, $a := $m.Cc}}{{if $i}}, {{end}}{{if $a.Name}}{{$a.Name}} {{end}}&lt;{{$a.Addr}}&gt;{{end}}</dd>
+    <dd class="min-w-0 break-words text-gray-700">{{range $i, $a := $m.Cc}}{{if $i}}, {{end}}{{if $a.Name}}{{$a.Name}} {{end}}&lt;{{$a.Address}}&gt;{{end}}</dd>
     {{end}}
     <dt class="text-gray-500">Date</dt>
     <dd class="tabular-nums text-gray-700">{{if .Date}}{{.Date}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</dd>
@@ -145,7 +145,7 @@
     });
     if (resp.ok) {
       // Leaving the inbox (archive, trash, spam) goes back to it.
-      location.href = next || (remove.includes('inbox') ? '{{listURL .Account.Addr}}' : location.pathname);
+      location.href = next || (remove.includes('inbox') ? '{{listURL .Account.Address}}' : location.pathname);
       return;
     }
     const status = document.getElementById('action-status');

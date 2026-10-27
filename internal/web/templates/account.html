@@ -1,0 +1,149 @@
+{{define "content"}}
+{{$a := .Account}}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+  <a href="/accounts" class="text-sm text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; Accounts</a>
+  <a href="{{listURL $a.Address}}" class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Open inbox</a>
+</div>
+
+<div class="mb-8">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight break-words">{{$a.Address}}</h2>
+  <p class="mt-1 text-sm text-gray-500">
+    {{if $a.Name}}{{$a.Name}}{{else}}No name{{end}}{{if .Admin}} &middot; You're an admin: you reach every account{{end}}
+  </p>
+  <p class="mt-2 flex items-center gap-2 text-xs text-gray-500">
+    <span title="Never changes, unlike addresses: store this in integrations">ID</span>
+    <code class="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border border-gray-200">{{$a.ID}}</code>
+  </p>
+</div>
+<div id="status" role="alert" class="hidden mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"></div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-6">
+  <div class="px-6 py-4 border-b border-gray-200">
+    <h3 class="text-sm font-semibold text-gray-900">Addresses</h3>
+    <p class="mt-1 text-sm text-gray-500">Mail to any of them reaches this account, plus addresses included. The first is its primary address, shown for the account.</p>
+  </div>
+  <ul class="divide-y divide-gray-200">
+    {{range $i, $address := $a.Addresses}}
+    <li class="flex flex-wrap items-center justify-between gap-3 px-6 py-3 text-sm">
+      <span class="min-w-0 break-all text-gray-900">
+        {{$address}}
+        {{if eq $i 0}}<span title="Shown for the account, and recorded as the recipient of mail delivered by account ID" class="ml-2 inline-flex items-center rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-600/20">Primary</span>{{end}}
+      </span>
+      <span class="flex gap-2">
+        {{if ne $i 0}}
+        <button type="button" data-address="{{$address}}" onclick="makePrimary(this.dataset.address)"
+          class="text-xs font-medium text-gray-600 hover:text-gray-900 border border-gray-300 hover:border-gray-400 rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Make primary</button>
+        {{end}}
+        {{if gt (len $a.Addresses) 1}}
+        <button type="button" data-address="{{$address}}" onclick="removeAddress(this.dataset.address)"
+          class="text-xs font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">Remove</button>
+        {{end}}
+      </span>
+    </li>
+    {{end}}
+  </ul>
+  <form id="address-form" class="flex flex-wrap gap-3 border-t border-gray-200 px-6 py-4">
+    <label for="new-address" class="sr-only">New address</label>
+    <input type="email" id="new-address" placeholder="contact@example.com" required maxlength="254"
+      class="flex-1 min-w-[14rem] rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+    <button type="submit" class="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Add address</button>
+  </form>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+  <h3 class="text-sm font-semibold text-gray-900 mb-4">Name</h3>
+  <form id="name-form" class="flex flex-wrap gap-3">
+    <label for="name" class="sr-only">Name</label>
+    <input type="text" id="name" value="{{$a.Name}}" placeholder="Name (optional)" maxlength="128"
+      class="flex-1 min-w-[12rem] rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+    <button type="submit" class="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">Save</button>
+  </form>
+</div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+  <div class="px-6 py-4 border-b border-gray-200">
+    <h3 class="text-sm font-semibold text-gray-900">Shared with</h3>
+    <p class="mt-1 text-sm text-gray-500">They see this account's mail and can change it, its addresses, and who it's shared with. Admins reach every account.</p>
+  </div>
+  {{if .Users}}
+  <ul class="divide-y divide-gray-200">
+    {{range .Users}}
+    <li class="flex flex-wrap items-center justify-between gap-3 px-6 py-3 text-sm">
+      <span class="min-w-0">
+        <span class="font-medium text-gray-900">{{.Email}}</span>
+        {{if .Name}}<span class="text-gray-500">&middot; {{.Name}}</span>{{end}}
+      </span>
+      <button type="button" data-user="{{.ID}}" data-email="{{.Email}}" onclick="unshare(this.dataset.user, this.dataset.email)"
+        class="text-xs font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">Remove</button>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="px-6 py-4 text-sm text-gray-500">Not shared with anyone yet.</p>
+  {{end}}
+  <form id="share-form" class="flex flex-wrap gap-3 border-t border-gray-200 px-6 py-4">
+    <label for="share-email" class="sr-only">Email</label>
+    <input type="email" id="share-email" name="email" placeholder="Their sign-in email" required
+      class="flex-1 min-w-[14rem] rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+    <button type="submit" class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500">Share</button>
+  </form>
+</div>
+
+<script>
+  const id = '{{$a.ID}}';
+  const addresses = {{$a.Addresses}};
+
+  async function done(resp, next) {
+    if (resp.ok) {
+      location.href = next || location.pathname;
+      return;
+    }
+    const status = document.getElementById('status');
+    status.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    status.classList.remove('hidden');
+    window.scrollTo({ top: 0 });
+  }
+
+  async function update(body) {
+    const resp = await fetch('/ui/accounts/' + id, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    // The page lives at the first address, which may have changed.
+    done(resp, resp.ok ? '/accounts/' + (await resp.clone().json()).address : null);
+  }
+
+  // The primary address is the first.
+  function makePrimary(address) {
+    update({ addresses: [address, ...addresses.filter((a) => a !== address)] });
+  }
+
+  function removeAddress(address) {
+    if (!confirm(`Remove ${address}? Mail to it will be rejected.`)) return;
+    update({ addresses: addresses.filter((a) => a !== address) });
+  }
+
+  async function share(email) {
+    done(await fetch('/ui/accounts/' + id + '/access', { method: 'POST', body: new URLSearchParams({ email }) }));
+  }
+
+  async function unshare(user, email) {
+    if (!confirm(`Stop sharing with ${email}?`)) return;
+    done(await fetch('/ui/accounts/' + id + '/access/' + user, { method: 'DELETE' }));
+  }
+
+  document.getElementById('address-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    update({ addresses: [...addresses, document.getElementById('new-address').value] });
+  });
+  document.getElementById('name-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    update({ name: document.getElementById('name').value });
+  });
+  document.getElementById('share-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    share(document.getElementById('share-email').value);
+  });
+</script>
+{{end}}
