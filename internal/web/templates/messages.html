@@ -108,7 +108,11 @@
     </div>
     {{else if not .Accounts}}
     <div class="px-6 py-12 text-center text-gray-500">
+      {{if .Admin}}
       <p>No accounts yet. <a href="/accounts" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Create one</a> to start receiving mail.</p>
+      {{else}}
+      <p>No accounts are shared with you yet. Ask an admin to share one.</p>
+      {{end}}
     </div>
     {{else}}
     <div class="px-6 py-12 text-center text-gray-500">

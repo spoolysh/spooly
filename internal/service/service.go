@@ -151,7 +151,7 @@ func (s *Service) UpdateAccount(ctx context.Context, req *boxyv1.UpdateAccountRe
 	if err != nil {
 		return nil, err
 	}
-	if err := s.Require(ctx, a.ID); err != nil {
+	if err := s.requireManage(ctx, a.ID); err != nil {
 		return nil, err
 	}
 	u := db.AccountUpdate{Name: req.Name}

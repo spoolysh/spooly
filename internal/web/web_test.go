@@ -120,6 +120,7 @@ func TestPagesRender(t *testing.T) {
 	u.get("/?account=nobody@boxy.sh", 404)
 	u.get("/accounts", 200)
 	u.get("/labels", 200)
+	u.get("/users", 200)
 	u.get("/keys", 200)
 
 	body := u.get("/"+id, 200)
@@ -452,17 +453,23 @@ func TestSharing(t *testing.T) {
 	if code := asMaria("GET", "/?account=vh@boxy.sh", "").Code; code != 404 {
 		t.Errorf("Maria filtering by vh@: %d", code)
 	}
-	if code := asMaria("GET", "/accounts/vh@boxy.sh", "").Code; code != 404 {
-		t.Errorf("Maria opening vh@'s page: %d", code)
+	// Accounts, labels, and users are managed by admins only: Maria works
+	// with support@'s mail, but can't change the account or share it.
+	for _, path := range []string{"/accounts", "/accounts/support@boxy.sh", "/accounts/vh@boxy.sh", "/labels", "/users"} {
+		if code := asMaria("GET", path, "").Code; code != 404 {
+			t.Errorf("Maria opening %s: %d", path, code)
+		}
 	}
-	accounts := asMaria("GET", "/accounts", "").Body.String()
-	if !strings.Contains(accounts, "support@boxy.sh") || strings.Contains(accounts, "vh@boxy.sh") || strings.Contains(accounts, "Create account") {
-		t.Error("Maria's accounts page is wrong")
+	for _, link := range []string{`href="/accounts"`, `href="/labels"`, `href="/users"`} {
+		if strings.Contains(inbox, link) {
+			t.Errorf("Maria's navigation has %s", link)
+		}
 	}
-	// Access is full access: Maria can rename support@, but not create
-	// accounts.
-	if code := asMaria("POST", "/ui/accounts/"+support.ID, `{"name": "Support"}`).Code; code != 200 {
+	if code := asMaria("POST", "/ui/accounts/"+support.ID, `{"name": "Support"}`).Code; code != 403 {
 		t.Errorf("Maria renaming support@: %d", code)
+	}
+	if code := asMaria("DELETE", "/ui/users/"+u.userID+"/keys", "").Code; code != 403 {
+		t.Errorf("Maria revoking keys: %d", code)
 	}
 	req := httptest.NewRequest("POST", "/ui/accounts", strings.NewReader("address=maria@boxy.sh"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -472,14 +479,29 @@ func TestSharing(t *testing.T) {
 	if created.Code != 403 {
 		t.Errorf("Maria creating an account: %d %s", created.Code, created.Body)
 	}
-	// Labels are managed by admins only.
-	if code := asMaria("GET", "/labels", "").Code; code != 404 {
-		t.Errorf("Maria opening Labels: %d", code)
+
+	// The admin sees Maria on Users, and offboards her: her keys and her
+	// access go.
+	if _, _, err := u.db.CreateAPIKey(ctx, maria.ID, "laptop"); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(inbox, `href="/labels"`) {
-		t.Error("Maria's navigation links to Labels")
+	users := u.get("/users", 200)
+	if !strings.Contains(users, "maria@example.com") || !strings.Contains(users, `href="/accounts/support@boxy.sh"`) || !strings.Contains(users, "Revoke keys") {
+		t.Error("Users lacks Maria, her account, or Revoke keys")
 	}
-	if code := asMaria("GET", "/accounts/support@boxy.sh", "").Code; code != 200 {
-		t.Errorf("Maria opening support@'s page: %d", code)
+	if rec := u.do("DELETE", "/ui/users/"+maria.ID+"/keys", "", "", true); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"revoked":1`) {
+		t.Errorf("revoke keys: %d %s", rec.Code, rec.Body)
+	}
+	if rec := u.do("DELETE", "/ui/users/"+maria.ID+"/access", "", "", true); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"removed":1`) {
+		t.Errorf("remove access: %d %s", rec.Code, rec.Body)
+	}
+	if rec := u.do("DELETE", "/ui/users/999/keys", "", "", true); rec.Code != 404 {
+		t.Errorf("revoking an unknown user's keys: %d", rec.Code)
+	}
+	if keys, err := u.db.ListAPIKeys(ctx, maria.ID); err != nil || len(keys) != 0 {
+		t.Errorf("Maria's keys after revoking: %d, %v", len(keys), err)
+	}
+	if strings.Contains(asMaria("GET", "/", "").Body.String(), "to support@boxy.sh") {
+		t.Error("Maria still sees support@ after removing her access")
 	}
 }

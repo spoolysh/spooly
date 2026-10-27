@@ -109,7 +109,7 @@ func (d *DB) GetUserByID(ctx context.Context, id string) (*User, error) {
 		Scan(&user.ID, &user.GoogleID, &user.Email, &user.Name, &user.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("user not found")
+			return nil, fmt.Errorf("%w: %s", ErrUserNotFound, id)
 		}
 		return nil, fmt.Errorf("getting user: %w", err)
 	}
@@ -199,6 +199,36 @@ func (d *DB) DeleteAPIKey(ctx context.Context, keyID, userID string) error {
 		return fmt.Errorf("api key not found")
 	}
 	return nil
+}
+
+// CountAPIKeys returns how many API keys each user has, by user ID.
+func (d *DB) CountAPIKeys(ctx context.Context) (map[string]int, error) {
+	rows, err := d.sql.QueryContext(ctx, `SELECT user_id, COUNT(*) FROM api_keys GROUP BY user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("counting api keys: %w", err)
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var userID string
+		var n int
+		if err := rows.Scan(&userID, &n); err != nil {
+			return nil, fmt.Errorf("scanning api key count: %w", err)
+		}
+		counts[userID] = n
+	}
+	return counts, rows.Err()
+}
+
+// DeleteUserAPIKeys deletes all of a user's API keys and returns how many
+// there were.
+func (d *DB) DeleteUserAPIKeys(ctx context.Context, userID string) (int, error) {
+	result, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM api_keys WHERE user_id = ?`), userID)
+	if err != nil {
+		return 0, fmt.Errorf("deleting api keys: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
 }
 
 // q rewrites ? placeholders to $1, $2, ... for postgres. SQLite uses ? natively.

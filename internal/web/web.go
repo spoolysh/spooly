@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -56,7 +57,7 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, svc *service.Ser
 		"isWebURL":    isWebURL,
 		"sub":         func(a, b int) int { return a - b },
 	}
-	for _, p := range []string{"messages", "message", "accounts", "account", "labels", "apikeys"} {
+	for _, p := range []string{"messages", "message", "accounts", "account", "labels", "users", "apikeys"} {
 		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(
 			templateFS,
 			"templates/layout.html",
@@ -79,6 +80,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	page("GET /accounts", h.AccountsPage)
 	page("GET /accounts/{address}", h.AccountPage)
 	page("GET /labels", h.LabelsPage)
+	page("GET /users", h.UsersPage)
 	page("GET /keys", h.KeysPage)
 	page("GET /auth/keys", h.listKeys)
 
@@ -98,6 +100,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	action("POST /ui/messages/labels", h.updateManyLabels)
 	action("POST /ui/messages/delete", h.deleteMessages)
 	action("POST /ui/accounts/{id}/empty", h.emptyLabel)
+	action("DELETE /ui/users/{id}/keys", h.revokeKeys)
+	action("DELETE /ui/users/{id}/access", h.removeAccess)
 }
 
 // withUser runs next as the signed-in user, if there is one.
@@ -579,9 +583,15 @@ type accountsData struct {
 	Hostname string
 }
 
+// AccountsPage lists the accounts. Accounts are managed by admins only;
+// others reach the accounts shared with them from the messages page.
 func (h *Handler) AccountsPage(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
+		return
+	}
+	if !h.svc.IsAdmin(user.Email) {
+		http.NotFound(w, r)
 		return
 	}
 	accounts, err := h.visibleAccounts(r, user)
@@ -608,10 +618,14 @@ type accountData struct {
 }
 
 // AccountPage shows an account's addresses and who it's shared with, and
-// lets anyone with access change them.
+// lets admins change them.
 func (h *Handler) AccountPage(w http.ResponseWriter, r *http.Request) {
 	user := h.requireUser(w, r)
 	if user == nil {
+		return
+	}
+	if !h.svc.IsAdmin(user.Email) {
+		http.NotFound(w, r)
 		return
 	}
 	a, err := h.db.ResolveAccount(r.Context(), strings.ToLower(r.PathValue("address")))
@@ -641,6 +655,62 @@ func (h *Handler) AccountPage(w http.ResponseWriter, r *http.Request) {
 		Account:    a,
 		Users:      users,
 	})
+}
+
+// Users
+
+type userRow struct {
+	ID       string
+	Email    string
+	Name     string
+	Admin    bool
+	Self     bool
+	Accounts []string // addresses of the accounts shared with them
+	Keys     int
+	JoinedAt string
+}
+
+type usersData struct {
+	layoutData
+	Users []userRow
+}
+
+// UsersPage lists everyone who has signed in, what they reach, and lets
+// admins take it away.
+func (h *Handler) UsersPage(w http.ResponseWriter, r *http.Request) {
+	user := h.requireUser(w, r)
+	if user == nil {
+		return
+	}
+	if !h.svc.IsAdmin(user.Email) {
+		http.NotFound(w, r)
+		return
+	}
+	users, err := h.svc.ListUsers(r.Context())
+	if err != nil {
+		h.internalError(w, "listing users", err)
+		return
+	}
+	accounts, err := h.visibleAccounts(r, user)
+	if err != nil {
+		h.internalError(w, "listing accounts", err)
+		return
+	}
+	addresses := make(map[string]string, len(accounts))
+	for _, a := range accounts {
+		addresses[a.ID] = a.Address()
+	}
+	data := usersData{layoutData: layoutData{ActiveTab: "users", Title: "Users", User: user, Admin: true}}
+	for _, u := range users {
+		row := userRow{ID: u.ID, Email: u.Email, Name: u.Name, Admin: u.Admin, Self: u.ID == user.ID, Keys: u.Keys,
+			JoinedAt: u.CreatedAt.Local().Format(time.DateTime)}
+		for _, id := range u.AccountIDs {
+			row.Accounts = append(row.Accounts, addresses[id])
+		}
+		slices.Sort(row.Accounts)
+		data.Users = append(data.Users, row)
+	}
+	h.render(w, "users", data)
 }
 
 // Labels

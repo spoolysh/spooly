@@ -1,10 +1,9 @@
 {{define "content"}}
 <div class="mb-8">
   <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Accounts</h2>
-  <p class="mt-1 text-sm text-gray-500">An account receives all mail sent to any of its addresses. Plus addresses reach it too: <code>hello+news@</code> lands in <code>hello@</code>.{{if not .Admin}} You see the accounts shared with you.{{end}}</p>
+  <p class="mt-1 text-sm text-gray-500">An account receives all mail sent to any of its addresses. Plus addresses reach it too: <code>hello+news@</code> lands in <code>hello@</code>.</p>
 </div>
 
-{{if .Admin}}
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
   <h3 class="text-sm font-semibold text-gray-900 mb-4">Create account</h3>
   <form id="create-form" class="flex flex-wrap gap-3">
@@ -19,7 +18,6 @@
   </form>
   <p id="create-error" role="alert" class="hidden mt-3 text-sm text-red-700"></p>
 </div>
-{{end}}
 
 <div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
   {{if .Accounts}}
@@ -50,13 +48,13 @@
   </div>
   {{else}}
   <div class="px-6 py-12 text-center text-gray-500">
-    <p>{{if .Admin}}No accounts yet. Create one above.{{else}}No accounts are shared with you yet. Ask an admin, or someone with access, to share one.{{end}}</p>
+    <p>No accounts yet. Create one above.</p>
   </div>
   {{end}}
 </div>
 
 <script>
-  document.getElementById('create-form')?.addEventListener('submit', async (e) => {
+  document.getElementById('create-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const resp = await fetch('/ui/accounts', { method: 'POST', body: new FormData(e.target) });
     if (resp.ok) { location.href = '/accounts/' + (await resp.json()).address; return; }

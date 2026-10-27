@@ -624,8 +624,10 @@ func TestAccess(t *testing.T) {
 	}
 
 	// More addresses route mail to the account, each to one account only.
+	// Only admins manage accounts; Alice can't, though she has access.
+	as("alice", "PATCH", "/v1/accounts/support@boxy.sh", "application/json", `{"name": "Mine"}`, 403, nil)
 	var updated struct{ Addresses []string }
-	as("alice", "PATCH", "/v1/accounts/support@boxy.sh", "application/json", `{"addresses": ["support@boxy.sh", "contact@domain2.com", "Help@Boxy.sh"]}`, 200, &updated)
+	as("admin", "PATCH", "/v1/accounts/support@boxy.sh", "application/json", `{"addresses": ["support@boxy.sh", "contact@domain2.com", "Help@Boxy.sh"]}`, 200, &updated)
 	if strings.Join(updated.Addresses, ",") != "support@boxy.sh,contact@domain2.com,help@boxy.sh" {
 		t.Errorf("addresses = %v", updated.Addresses)
 	}

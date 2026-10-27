@@ -208,7 +208,7 @@ delivered through the API shows up in POP3 and IMAP at once.
 | `POST` | `/v1/accounts` | Create an account (admins only): `addresses` (the first is primary), `name` |
 | `GET` | `/v1/accounts` | List accounts, newest first. Query: `limit` (1–100, default 50), `after` (last ID of the previous page) |
 | `GET` | `/v1/accounts/{id_or_address}` | Get an account by ID or any of its addresses |
-| `PATCH` | `/v1/accounts/{id_or_address}` | Update an account: `name`, `addresses` (replaces them, in order) |
+| `PATCH` | `/v1/accounts/{id_or_address}` | Update an account (admins only): `name`, `addresses` (replaces them, in order) |
 | `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_address`, `sender`, `received_at`, `idempotency_key`, `labels` |
 | `POST` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
 | `GET` | `/v1/messages` | List messages, newest received first. Query: `account_id_or_address`, `label`, `limit`, `after` |
@@ -217,6 +217,7 @@ delivered through the API shows up in POP3 and IMAP at once.
 | `GET` | `/v1/messages/{id}/raw` | Get a message's raw source |
 | `GET` | `/v1/messages/{id}/attachments/{index}` | Get an attachment, decoded, by its position in `attachments` (from 0) |
 | `PATCH` | `/v1/messages/{id}` | Update a message: `add_labels`, `remove_labels`, `metadata` (merged; an empty value deletes a key) |
+| `DELETE` | `/v1/messages/{id}` | Delete a message for good, with its raw source |
 | `GET` | `/v1/labels` | List labels |
 | `POST` | `/v1/labels` | Create a user label (admins only) |
 | `DELETE` | `/v1/labels/{name}` | Delete a user label (admins only) |
@@ -262,7 +263,7 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `POP3_MAX_MESSAGES` | How many of the newest inbox messages POP3 lists | `250` |
 | `IMAP_ADDR` | IMAP listen address for `serve --mail` and `mail`, with STARTTLS when a certificate is set; empty disables IMAP | `:1143` |
 | `IMAPS_ADDR` | IMAP over TLS listen address, such as `:993` | — |
-| `ADMIN_EMAILS` | Comma-separated sign-in emails of admins, who create accounts and reach every account | — (no admins) |
+| `ADMIN_EMAILS` | Comma-separated sign-in emails of admins, who manage accounts, labels, and users, and reach every account | — (no admins) |
 | `SESSION_SECRET` | HMAC key for signing session cookies | required |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID | required |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret | required |
@@ -276,13 +277,18 @@ Migrations are managed by [goose](https://github.com/pressly/goose): run
 ## Access
 
 Users sign in to the dashboard with Google, and each creates their own API
-keys, which act as them. Admins, listed in `ADMIN_EMAILS`, create accounts and
-reach every account. Everyone else reaches the accounts shared with them: on
-an account's page, anyone with access can share it by the email someone signs
-in with (they sign in once first), change its addresses, and stop sharing it.
-Without access, an account and its mail don't exist for a user: lists leave
-them out and lookups answer 404. Labels are shared by every account, so
-admins create and delete them; everyone applies them.
+keys, which act as them. Admins, listed in `ADMIN_EMAILS`, reach every account
+and manage them: they create accounts, change their addresses, and share
+them by the email someone signs in with (they sign in once first). Everyone
+else works with the mail of the accounts shared with them. Without access,
+an account and its mail don't exist for a user: lists leave them out and
+lookups answer 404. Labels are shared by every account, so admins create and
+delete them; everyone applies them.
+
+The dashboard's Users page, for admins, lists everyone who has signed in,
+the accounts shared with them, and their API keys. To offboard someone,
+revoke their keys, which also signs out their mail clients, and remove
+their access.
 
 An account receives mail for every one of its addresses, which are in
 order: the first is primary, shown for the account. Each address belongs to

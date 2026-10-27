@@ -8,7 +8,7 @@
 <div class="mb-8">
   <h2 class="text-2xl font-bold text-gray-900 tracking-tight break-words">{{$a.Address}}</h2>
   <p class="mt-1 text-sm text-gray-500">
-    {{if $a.Name}}{{$a.Name}}{{else}}No name{{end}}{{if .Admin}} &middot; You're an admin: you reach every account{{end}}
+    {{if $a.Name}}{{$a.Name}}{{else}}No name{{end}}
   </p>
   <p class="mt-2 flex items-center gap-2 text-xs text-gray-500">
     <span title="Never changes, unlike addresses: store this in integrations">ID</span>
@@ -63,7 +63,7 @@
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
   <div class="px-6 py-4 border-b border-gray-200">
     <h3 class="text-sm font-semibold text-gray-900">Shared with</h3>
-    <p class="mt-1 text-sm text-gray-500">They see this account's mail and can change it, its addresses, and who it's shared with. Admins reach every account.</p>
+    <p class="mt-1 text-sm text-gray-500">They see and work with this account's mail, in the dashboard, the API, and mail clients. Only admins change its addresses and who it's shared with, and admins reach every account.</p>
   </div>
   {{if .Users}}
   <ul class="divide-y divide-gray-200">

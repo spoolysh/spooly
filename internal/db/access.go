@@ -92,3 +92,51 @@ func (d *DB) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	}
 	return &u, nil
 }
+
+// ListUsers returns every user who has signed in, newest first.
+func (d *DB) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := d.sql.QueryContext(ctx, `SELECT id, google_id, email, name, created_at FROM users ORDER BY id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listing users: %w", err)
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.GoogleID, &u.Email, &u.Name, &u.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning user: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// AllAccess returns the IDs of the accounts shared with each user, by user
+// ID.
+func (d *DB) AllAccess(ctx context.Context) (map[string][]string, error) {
+	rows, err := d.sql.QueryContext(ctx, `SELECT user_id, account_id FROM account_users ORDER BY account_id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing access: %w", err)
+	}
+	defer rows.Close()
+	access := map[string][]string{}
+	for rows.Next() {
+		var userID, accountID string
+		if err := rows.Scan(&userID, &accountID); err != nil {
+			return nil, fmt.Errorf("scanning access: %w", err)
+		}
+		access[userID] = append(access[userID], accountID)
+	}
+	return access, rows.Err()
+}
+
+// RemoveAllAccess takes a user off every account and returns how many they
+// had.
+func (d *DB) RemoveAllAccess(ctx context.Context, userID string) (int, error) {
+	result, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM account_users WHERE user_id = ?`), userID)
+	if err != nil {
+		return 0, fmt.Errorf("unsharing accounts: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}

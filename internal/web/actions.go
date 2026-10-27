@@ -216,6 +216,32 @@ func (h *Handler) updateManyLabels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]int{"updated": updated})
 }
 
+// revokeKeys deletes all of a user's API keys.
+func (h *Handler) revokeKeys(w http.ResponseWriter, r *http.Request) {
+	if !h.signedIn(w, r) {
+		return
+	}
+	n, err := h.svc.RevokeKeys(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, "revokeKeys", err)
+		return
+	}
+	writeJSON(w, map[string]int{"revoked": n})
+}
+
+// removeAccess takes a user off every account shared with them.
+func (h *Handler) removeAccess(w http.ResponseWriter, r *http.Request) {
+	if !h.signedIn(w, r) {
+		return
+	}
+	n, err := h.svc.RemoveAccess(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, "removeAccess", err)
+		return
+	}
+	writeJSON(w, map[string]int{"removed": n})
+}
+
 // deleteMessages deletes several messages for good: the body is
 // {"ids": [...]}.
 func (h *Handler) deleteMessages(w http.ResponseWriter, r *http.Request) {

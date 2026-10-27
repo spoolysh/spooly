@@ -40,7 +40,7 @@ service AccountService {
   }
 
   // Update an account's name and addresses. Absent fields are left
-  // unchanged.
+  // unchanged. Admins only.
   rpc UpdateAccount(UpdateAccountRequest) returns (UpdateAccountResponse) {
     option idempotency_level = IDEMPOTENT;
     option (google.api.http) = {

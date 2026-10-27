@@ -13,7 +13,7 @@ import (
 )
 
 // IsAdmin reports whether email belongs to an admin: they see every
-// account, and create accounts.
+// account, and create and manage accounts, labels, and users.
 func (s *Service) IsAdmin(email string) bool {
 	return slices.Contains(s.admins, strings.ToLower(email))
 }
@@ -74,10 +74,21 @@ func (s *Service) requireAdmin(ctx context.Context) error {
 	return nil
 }
 
-// Share gives the user who signs in with email access to an account. It
-// needs access to the account; the user must have signed in once.
-func (s *Service) Share(ctx context.Context, accountID, email string) error {
+// requireManage checks that the caller may manage an account: its
+// addresses, name, and who it's shared with. That's admins only; others get
+// the same not found as for an account they can't see, or permission
+// denied for one they can.
+func (s *Service) requireManage(ctx context.Context, accountID string) error {
 	if err := s.Require(ctx, accountID); err != nil {
+		return err
+	}
+	return s.requireAdmin(ctx)
+}
+
+// Share gives the user who signs in with email access to an account.
+// Admins only; the user must have signed in once.
+func (s *Service) Share(ctx context.Context, accountID, email string) error {
+	if err := s.requireManage(ctx, accountID); err != nil {
 		return err
 	}
 	u, err := s.db.GetUserByEmail(ctx, strings.TrimSpace(email))
@@ -93,10 +104,9 @@ func (s *Service) Share(ctx context.Context, accountID, email string) error {
 	return nil
 }
 
-// Unshare takes a user's access to an account away. It needs access to the
-// account.
+// Unshare takes a user's access to an account away. Admins only.
 func (s *Service) Unshare(ctx context.Context, accountID, userID string) error {
-	if err := s.Require(ctx, accountID); err != nil {
+	if err := s.requireManage(ctx, accountID); err != nil {
 		return err
 	}
 	if err := s.db.RemoveUser(ctx, accountID, userID); err != nil {
@@ -106,9 +116,9 @@ func (s *Service) Unshare(ctx context.Context, accountID, userID string) error {
 }
 
 // AccountUsers returns who an account is shared with. Admins aren't listed:
-// they reach every account.
+// they reach every account. Admins only.
 func (s *Service) AccountUsers(ctx context.Context, accountID string) ([]db.User, error) {
-	if err := s.Require(ctx, accountID); err != nil {
+	if err := s.requireManage(ctx, accountID); err != nil {
 		return nil, err
 	}
 	users, err := s.db.AccountUsers(ctx, accountID)
