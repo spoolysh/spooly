@@ -54,7 +54,7 @@ func messageProto(m *db.Message, withBody bool) *boxyv1.Message {
 		Subject:     m.Subject,
 		Snippet:     m.Snippet,
 		Size:        m.Size,
-		Attachments: make([]*boxyv1.Attachment, 0, len(m.Attachments)),
+		Attachments: make([]*boxyv1.MessageAttachment, 0, len(m.Attachments)),
 		Labels:      m.Labels,
 		Metadata:    m.Metadata,
 		ReceivedAt:  timestamppb.New(m.ReceivedAt),
@@ -63,10 +63,13 @@ func messageProto(m *db.Message, withBody bool) *boxyv1.Message {
 		p.Date = timestamppb.New(*m.Date)
 	}
 	for _, a := range m.Attachments {
-		p.Attachments = append(p.Attachments, &boxyv1.Attachment{Filename: a.Filename, ContentType: a.ContentType, Size: a.Size})
+		p.Attachments = append(p.Attachments, &boxyv1.MessageAttachment{Filename: a.Filename, ContentType: a.ContentType, Size: a.Size})
 	}
 	if withBody {
 		p.Body = &boxyv1.MessageBody{Text: m.Text, Html: m.HTML}
+		for _, h := range m.Headers {
+			p.Headers = append(p.Headers, &boxyv1.MessageHeader{Name: h.Name, Value: h.Value})
+		}
 	}
 	return p
 }
@@ -140,6 +143,9 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 		Attachments:    parsed.Attachments,
 		Text:           parsed.Text,
 		HTML:           parsed.HTML,
+		Headers:        parsed.Headers,
+		MsgID:          parsed.MessageID,
+		ParentMsgID:    parsed.InReplyTo,
 		IdempotencyKey: in.IdempotencyKey,
 		ReceivedAt:     receivedAt,
 	}, labels)
@@ -169,7 +175,6 @@ func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.Messag
 		if first {
 			in.AccountIDOrAddress = msg.AccountIdOrAddress
 			in.Sender = msg.Sender
-			in.IdempotencyKey = msg.GetIdempotencyKey()
 			if len(msg.Labels) > 0 {
 				in.Labels = msg.Labels
 			}
@@ -177,6 +182,9 @@ func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.Messag
 				in.ReceivedAt = msg.ReceivedAt.AsTime()
 			}
 			first = false
+			if in.IdempotencyKey, err = idempotencyKey(ctx); err != nil {
+				return nil, err
+			}
 			// Reject unknown addresses before reading the message: a relay
 			// may forward every address of a domain, spam included.
 			if err := s.requireDelivery(ctx, in.AccountIDOrAddress); err != nil {
@@ -195,6 +203,22 @@ func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.Messag
 		return nil, err
 	}
 	return &boxyv1.CreateMessageResponse{Message: messageProto(m, false)}, nil
+}
+
+// MaxIdempotencyKeyLength is the longest idempotency key, in bytes.
+const MaxIdempotencyKeyLength = 128
+
+// idempotencyKey returns the Idempotency-Key request header, or empty.
+func idempotencyKey(ctx context.Context) (string, error) {
+	info, ok := connect.CallInfoForServerContext(ctx)
+	if !ok {
+		return "", nil
+	}
+	key := strings.TrimSpace(info.RequestHeader().Get("Idempotency-Key"))
+	if len(key) > MaxIdempotencyKeyLength {
+		return "", connect.Errorf(connect.CodeInvalidArgument, "Idempotency-Key: longer than %d bytes", MaxIdempotencyKeyLength)
+	}
+	return key, nil
 }
 
 // requireDelivery checks that ctx's user may deliver mail to an account:

@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments TEXT NOT NULL,
     text_body TEXT NOT NULL,
     html_body TEXT NOT NULL,
+    -- The header fields as received, in order: a JSON list of {name, value}.
+    headers TEXT NOT NULL,
+    -- The Message-ID, and the parent's: the first In-Reply-To ID. Without
+    -- angle brackets; empty when missing. A reply's parent_msg_id is its
+    -- parent's msg_id, which Boxy looks up for replies and threads.
+    msg_id TEXT NOT NULL DEFAULT '',
+    parent_msg_id TEXT NOT NULL DEFAULT '',
     metadata TEXT NOT NULL,
     idempotency_key TEXT,
     received_at TIMESTAMPTZ NOT NULL,
@@ -87,6 +94,7 @@ CREATE TABLE IF NOT EXISTS messages (
 -- Lists are newest received first, so they read messages in that order.
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at, id);
 CREATE INDEX IF NOT EXISTS idx_messages_account_received ON messages(account_id, received_at, id);
+CREATE INDEX IF NOT EXISTS idx_messages_account_msg_id ON messages(account_id, msg_id);
 
 CREATE TABLE IF NOT EXISTS message_labels (
     message_id TEXT NOT NULL REFERENCES messages(id),

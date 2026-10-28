@@ -172,3 +172,56 @@ y
 		t.Errorf("file names = %q", got)
 	}
 }
+
+func TestParseHeaders(t *testing.T) {
+	raw := crlf(`Received: from b.example.com; Mon, 26 Oct 2026 10:00:02 +0000
+Received: from a.example.com; Mon, 26 Oct 2026 10:00:01 +0000
+From: =?UTF-8?B?0JzQsNGI0LA=?= <masha@example.com>
+Subject: A long subject
+  folded onto two lines
+Message-ID: <quote-2@example.com>
+In-Reply-To: <quote-reply@example.com> <quote@example.com>
+X-Ticket-ID: T-123
+
+Hi
+`)
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	var got []string
+	for _, h := range p.Headers {
+		got = append(got, h.Name+": "+h.Value)
+	}
+	want := []string{
+		"Received: from b.example.com; Mon, 26 Oct 2026 10:00:02 +0000",
+		"Received: from a.example.com; Mon, 26 Oct 2026 10:00:01 +0000",
+		"From: =?UTF-8?B?0JzQsNGI0LA=?= <masha@example.com>",
+		"Subject: A long subject folded onto two lines",
+		"Message-ID: <quote-2@example.com>",
+		"In-Reply-To: <quote-reply@example.com> <quote@example.com>",
+		"X-Ticket-ID: T-123",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("Headers =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if p.MessageID != "quote-2@example.com" || p.InReplyTo != "quote-reply@example.com" {
+		t.Errorf("MessageID = %q, InReplyTo = %q", p.MessageID, p.InReplyTo)
+	}
+}
+
+func TestParseMalformedMessageID(t *testing.T) {
+	for raw, want := range map[string]string{
+		"Message-ID: <no-at-sign>\r\n\r\nHi\r\n":     "no-at-sign",
+		"Message-ID: bare@example.com\r\n\r\nHi\r\n": "bare@example.com",
+		"Subject: none\r\n\r\nHi\r\n":                "",
+	} {
+		p, err := Parse([]byte(raw))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", raw, err)
+		}
+		if p.MessageID != want {
+			t.Errorf("Parse(%q).MessageID = %q, want %q", raw, p.MessageID, want)
+		}
+	}
+}

@@ -130,6 +130,9 @@ func TestPagesRender(t *testing.T) {
 	if strings.Contains(body, `<img src="https://tracker.example`) {
 		t.Errorf("HTML body is not escaped into srcdoc")
 	}
+	if !strings.Contains(body, "Headers <span class=\"text-gray-400\">(4)</span>") || !strings.Contains(body, "text/html</dd>") {
+		t.Errorf("message page doesn't list the header fields")
+	}
 	if _, err := u.db.UpdateMessage(t.Context(), id, db.MessageUpdate{Metadata: map[string]string{
 		"ticket_id": "T-123", "crm": "https://crm.example.com/c/1", "script": "javascript:alert(1)",
 	}}); err != nil {

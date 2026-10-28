@@ -1,5 +1,5 @@
 // Package mailparse extracts the fields Boxy stores from a raw RFC 5322
-// message: headers, text and HTML bodies, a snippet, and attachments.
+// message: header fields, text and HTML bodies, a snippet, and attachments.
 package mailparse
 
 import (
@@ -32,6 +32,9 @@ type Parsed struct {
 	Cc          []db.Address
 	Subject     string
 	Date        *time.Time // nil when missing or invalid
+	Headers     []db.Header
+	MessageID   string // without angle brackets; empty when missing
+	InReplyTo   string // the first ID, without angle brackets; empty when missing
 	Text        string
 	HTML        string
 	Snippet     string
@@ -66,6 +69,9 @@ func Parse(raw []byte) (*Parsed, error) {
 		d = d.UTC()
 		p.Date = &d
 	}
+	p.Headers = headers(h)
+	p.MessageID = msgID(h, "Message-Id")
+	p.InReplyTo = msgID(h, "In-Reply-To")
 
 	walkParts(mr, func(pt part) bool {
 		switch pt.kind {
@@ -197,6 +203,38 @@ func walkParts(mr *mail.Reader, fn func(part) bool) {
 			return
 		}
 	}
+}
+
+// headers returns h's fields in order, with names as written and values
+// unfolded but not decoded.
+func headers(h mail.Header) []db.Header {
+	list := []db.Header{}
+	fields := h.Fields()
+	for fields.Next() {
+		name := fields.Key()
+		if raw, err := fields.Raw(); err == nil {
+			if n, _, ok := bytes.Cut(raw, []byte(":")); ok {
+				name = string(bytes.TrimSpace(n))
+			}
+		}
+		list = append(list, db.Header{
+			Name:  strings.ToValidUTF8(name, "�"),
+			Value: strings.ToValidUTF8(fields.Value(), "�"),
+		})
+	}
+	return list
+}
+
+// msgID returns the first message ID in header key, without angle brackets.
+// A malformed one, such as without an @, is kept as written.
+func msgID(h mail.Header, key string) string {
+	if ids, err := h.MsgIDList(key); len(ids) > 0 {
+		return ids[0]
+	} else if err == nil {
+		return ""
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(h.Get(key)), " ")
+	return strings.ToValidUTF8(strings.Trim(first, "<>"), "�")
 }
 
 func readText(r io.Reader) string {

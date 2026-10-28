@@ -45,6 +45,7 @@ query string:
 curl -X POST "https://boxy.example.com/v1/accounts/hello@boxy.sh/messages?sender=bounce@example.com" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: message/rfc822" \
+  -H "Idempotency-Key: 9b2f…" \
   --data-binary @message.eml
 ```
 
@@ -52,28 +53,45 @@ The address in the path is the envelope recipient (Cloudflare's
 `message.to`) and is kept as the message's `recipient`. Plus addresses reach
 the base account: `hello+news@boxy.sh` lands in `hello@boxy.sh` with
 `recipient` `hello+news@boxy.sh`. An unknown address gets `404`, so the worker
-can reject the mail. Pass
-`idempotency_key` to make retries safe: a repeat returns the stored message.
+can reject the mail. Send an `Idempotency-Key` header to make retries safe: a repeat with the same key, in the same
+account, returns the stored message.
 New messages get the `inbox` and `unread` labels.
 
 To mirror an existing mailbox, such as Gmail, pass each message's own
 `labels` instead, repeated: `?labels=sent` stores sent mail,
 `?labels=inbox&labels=starred` a read, starred inbox message. Labels must
-exist; create your own first. Use the source's message ID as
-`idempotency_key`, so syncing again never duplicates, and its date as
+exist; create your own first. Use the source's message ID as the
+idempotency key, such as `gmail-18f3c2a9b7d41e05`, so syncing again never
+duplicates, and its date as
 `received_at`, so mail sorts by when it really arrived.
 
-A Cloudflare Email Routing worker that delivers to Boxy:
+A Cloudflare Email Routing worker that delivers to Boxy. Cloudflare gives no
+delivery ID, so the idempotency key is the recipient and Message-ID, which
+stay the same when the sending server retries. A hash of the raw bytes is
+only the fallback: Cloudflare adds its own headers, which may differ between
+attempts.
 
 ```js
+async function idempotencyKey(message, raw) {
+  const id = message.headers.get("Message-ID")?.trim();
+  const source = id ? new TextEncoder().encode(`${message.to}\n${id}`) : raw;
+  const hash = await crypto.subtle.digest("SHA-256", source);
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export default {
   async email(message, env) {
+    const raw = await new Response(message.raw).arrayBuffer();
     const to = encodeURIComponent(message.to);
     const query = new URLSearchParams({ sender: message.from });
     const resp = await fetch(`${env.BOXY_URL}/v1/accounts/${to}/messages?${query}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${env.BOXY_KEY}`, "Content-Type": "message/rfc822" },
-      body: message.raw,
+      headers: {
+        Authorization: `Bearer ${env.BOXY_KEY}`,
+        "Content-Type": "message/rfc822",
+        "Idempotency-Key": await idempotencyKey(message, raw),
+      },
+      body: raw,
     });
     if (resp.status === 404) message.setReject("Unknown address");
     else if (!resp.ok) throw new Error(`Boxy answered ${resp.status}`); // Cloudflare retries
@@ -209,11 +227,11 @@ delivered through the API shows up in POP3 and IMAP at once.
 | `GET` | `/v1/accounts` | List accounts, newest first. Query: `limit` (1–100, default 50), `after` (last ID of the previous page) |
 | `GET` | `/v1/accounts/{id_or_address}` | Get an account by ID or any of its addresses |
 | `PATCH` | `/v1/accounts/{id_or_address}` | Update an account (admins only): `name`, `addresses` (replaces them, in order) |
-| `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_address`, `sender`, `received_at`, `idempotency_key`, `labels` |
+| `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_address`, `sender`, `received_at`, `labels`. Header: `Idempotency-Key` |
 | `POST` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
 | `GET` | `/v1/messages` | List messages, newest received first. Query: `account_id_or_address`, `label`, `limit`, `after` |
 | `GET` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
-| `GET` | `/v1/messages/{id}` | Get a message with its body |
+| `GET` | `/v1/messages/{id}` | Get a message with its body and header fields |
 | `GET` | `/v1/messages/{id}/raw` | Get a message's raw source |
 | `GET` | `/v1/messages/{id}/attachments/{index}` | Get an attachment, decoded, by its position in `attachments` (from 0) |
 | `PATCH` | `/v1/messages/{id}` | Update a message: `add_labels`, `remove_labels`, `metadata` (merged; an empty value deletes a key) |
@@ -231,6 +249,11 @@ than `limit` is the last one.
 
 Messages carry `metadata`, your own key-value data such as
 `{"ticket_id": "T-123"}`: up to 50 keys of 1–40 characters, values up to 500.
+It isn't part of the email. The email's own header fields are in `headers`,
+which only getting a message returns: every field exactly as received, in
+order, as `{"name", "value"}`, including the ones parsed into `from`, `to`,
+`cc`, `subject`, and `date`. Values are unfolded but not decoded, so
+`=?utf-8?B?...?=` stays as written; the parsed fields are decoded.
 
 `sender` and `recipient` are the SMTP envelope (`MAIL FROM` and `RCPT TO`,
 Cloudflare's `message.from` and `message.to`), not the `From` and `To`
@@ -316,7 +339,7 @@ just build      # build the boxy binary
 |---|---|
 | [cmd/boxy](cmd/boxy) | Entry point: `serve`, `mail`, and `migrate` |
 | [internal/service](internal/service) | The API: Account, Label, and Message services, mounted for Connect, gRPC, and REST |
-| [internal/mailparse](internal/mailparse) | Parses raw messages into headers, bodies, a snippet, and attachments |
+| [internal/mailparse](internal/mailparse) | Parses raw messages into header fields, bodies, a snippet, and attachments |
 | [internal/db](internal/db) | SQLite and PostgreSQL storage, with migrations |
 | [internal/pop3](internal/pop3) | The POP3 server |
 | [internal/imap](internal/imap) | The IMAP server, on [go-imap](https://github.com/emersion/go-imap) |

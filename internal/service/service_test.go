@@ -107,6 +107,7 @@ type messageJSON struct {
 		Text string `json:"text"`
 		HTML string `json:"html"`
 	} `json:"body"`
+	Headers []struct{ Name, Value string } `json:"headers"`
 }
 
 const testMessage = "From: Ann <ann@example.com>\r\nTo: hello@boxy.sh\r\nSubject: Hi %d\r\n\r\nHello %d\r\n"
@@ -171,7 +172,26 @@ func TestCreateMessageREST(t *testing.T) {
 	srv := newTestServer(t)
 	accountID := createAccount(t, srv, "hello@boxy.sh")
 
-	m := deliver(t, srv, "hello+news@boxy.sh", "sender=bounce@example.com&idempotency_key=k1", 1)
+	// post delivers rawMessage(n) to an address with an Idempotency-Key.
+	post := func(to, query, key string, n, want int) messageJSON {
+		t.Helper()
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/accounts/"+to+"/messages"+query, strings.NewReader(rawMessage(n)))
+		req.Header.Set("Content-Type", "message/rfc822")
+		req.Header.Set("Idempotency-Key", key)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var got messageJSON
+		json.NewDecoder(resp.Body).Decode(&got)
+		if resp.StatusCode != want {
+			t.Fatalf("POST %s%s with Idempotency-Key %q: status %d, want %d", to, query, key, resp.StatusCode, want)
+		}
+		return got
+	}
+
+	m := post("hello+news@boxy.sh", "?sender=bounce@example.com", "k1", 1, 200)
 	if m.AccountID != accountID || m.Recipient != "hello+news@boxy.sh" || m.Sender != "bounce@example.com" {
 		t.Errorf("envelope = %+v", m)
 	}
@@ -184,14 +204,15 @@ func TestCreateMessageREST(t *testing.T) {
 	if m.Size != fmt.Sprint(len(rawMessage(1))) {
 		t.Errorf("size = %s", m.Size)
 	}
-	if m.Body != nil {
-		t.Errorf("CreateMessage returned a body")
+	if m.Body != nil || len(m.Headers) > 0 {
+		t.Errorf("CreateMessage returned a body or headers")
 	}
 
 	// A retry with the same key returns the stored message.
-	if again := deliver(t, srv, "hello@boxy.sh", "idempotency_key=k1", 2); again.ID != m.ID {
+	if again := post("hello@boxy.sh", "", "k1", 2, 200); again.ID != m.ID {
 		t.Errorf("retry stored a new message %s, want %s", again.ID, m.ID)
 	}
+	post("hello@boxy.sh", "", strings.Repeat("k", 129), 3, 400)
 
 	// By account ID, the recipient is the account's address.
 	var byID messageJSON
@@ -210,6 +231,9 @@ func TestCreateMessageREST(t *testing.T) {
 	call(t, srv, "GET", "/v1/messages/"+m.ID, "", "", 200, &full)
 	if full.Body == nil || strings.TrimSpace(full.Body.Text) != "Hello 1" {
 		t.Errorf("body = %+v", full.Body)
+	}
+	if fmt.Sprint(full.Headers) != "[{From Ann <ann@example.com>} {To hello@boxy.sh} {Subject Hi 1}]" {
+		t.Errorf("headers = %v", full.Headers)
 	}
 
 	resp, err := srv.Client().Get(srv.URL + "/v1/messages/" + m.ID + "/raw")
@@ -253,6 +277,28 @@ func TestCreateMessageConnectStream(t *testing.T) {
 	}
 	if resp.Message.Subject != "Hi 1" || resp.Message.Size != int64(len(raw)) || resp.Message.Sender != "bounce@example.com" {
 		t.Errorf("message = %v", resp.Message)
+	}
+
+	// The Idempotency-Key header works as over REST.
+	var ids []string
+	for range 2 {
+		ctx, info := connect.NewClientContext(t.Context())
+		info.RequestHeader().Set("Idempotency-Key", "k1")
+		stream, err := client.CreateMessage(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.Send(&boxyv1.CreateMessageRequest{AccountIdOrAddress: "hello@boxy.sh", Raw: &httpbody.HttpBody{Data: []byte(raw)}}); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := stream.CloseAndReceive()
+		if err != nil {
+			t.Fatalf("CloseAndReceive: %v", err)
+		}
+		ids = append(ids, resp.Message.Id)
+	}
+	if ids[0] != ids[1] {
+		t.Errorf("retry with Idempotency-Key stored a new message: %v", ids)
 	}
 }
 
@@ -714,7 +760,7 @@ func TestCreateMessageLabels(t *testing.T) {
 	createAccount(t, srv, "hello@boxy.sh")
 
 	var sent messageJSON
-	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages?labels=sent&idempotency_key=gmail-1", "message/rfc822", rawMessage(1), 200, &sent)
+	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages?labels=sent", "message/rfc822", rawMessage(1), 200, &sent)
 	if strings.Join(sent.Labels, ",") != "sent" {
 		t.Errorf("sent mail labels = %v", sent.Labels)
 	}

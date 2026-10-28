@@ -65,9 +65,9 @@ service MessageService {
       }
       parameters: {
         parameter: {
-          name: "idempotency_key"
-          in: "query"
-          description: "Unique per account. A repeat returns the stored message."
+          name: "Idempotency-Key"
+          in: "header"
+          description: "Unique per account, up to 128 bytes. A repeat returns the stored message."
           schema: {
             schema: {
               type: "string"
@@ -271,14 +271,17 @@ message Message {
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).int64.gte = 0
   ];
-  repeated Attachment attachments = 12 [(google.api.field_behavior) = REQUIRED];
+  repeated MessageAttachment attachments = 12 [(google.api.field_behavior) = REQUIRED];
   // Only set by GetMessage.
   optional MessageBody body = 13;
+  // Every header field exactly as received, in order, including the ones
+  // parsed into from, to, cc, subject, and date. Only set by GetMessage.
+  repeated MessageHeader headers = 14;
 
   // Label names. New messages get inbox and unread.
-  repeated string labels = 14 [(google.api.field_behavior) = REQUIRED];
+  repeated string labels = 15 [(google.api.field_behavior) = REQUIRED];
   // Your own key-value data, e.g. {"ticket_id": "T-123"}.
-  map<string, string> metadata = 15 [
+  map<string, string> metadata = 16 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).map = {
       max_pairs: 50
@@ -295,10 +298,18 @@ message Message {
   ];
 
   // When the MTA accepted it.
-  google.protobuf.Timestamp received_at = 16 [
+  google.protobuf.Timestamp received_at = 17 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).required = true
   ];
+}
+
+// A header field: its name as written, such as "List-Id", and its value
+// unfolded but not decoded, so encoded words like =?utf-8?B?...?= stay as
+// they are.
+message MessageHeader {
+  string name = 1 [(google.api.field_behavior) = REQUIRED];
+  string value = 2 [(google.api.field_behavior) = REQUIRED];
 }
 
 message MessageBody {
@@ -307,7 +318,7 @@ message MessageBody {
   string html = 2 [(google.api.field_behavior) = REQUIRED];
 }
 
-message Attachment {
+message MessageAttachment {
   // Empty when not set.
   string filename = 1 [(google.api.field_behavior) = REQUIRED];
   string content_type = 2 [
@@ -322,7 +333,9 @@ message Attachment {
 }
 
 // Over Connect/gRPC, the first message carries all fields, later ones
-// only raw chunks.
+// only raw chunks. To make retries safe, send an Idempotency-Key request
+// header, unique per account and up to 128 bytes: a repeat returns the
+// stored message.
 message CreateMessageRequest {
   // Treated as an address if it contains "@"; "local+tag@domain" finds
   // "local@domain". Stored as the message's recipient. Required in the first
@@ -341,11 +354,9 @@ message CreateMessageRequest {
   string sender = 3 [(buf.validate.field).string.max_len = 254];
   // Absent means now.
   optional google.protobuf.Timestamp received_at = 4;
-  // Unique per account. A repeat returns the stored message.
-  optional string idempotency_key = 5 [(buf.validate.field).string.max_len = 128];
   // The message's labels, such as ["sent"] for mirrored sent mail. Empty
   // means inbox and unread, as for new mail. Each must exist.
-  repeated string labels = 6 [(buf.validate.field).repeated = {
+  repeated string labels = 5 [(buf.validate.field).repeated = {
     max_items: 100
     unique: true
     items: {

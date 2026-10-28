@@ -16,6 +16,13 @@ type Address struct {
 	Address string `json:"address"`
 }
 
+// Header is a header field as received: its name as written, and its value
+// unfolded but not decoded.
+type Header struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
 // Attachment describes one attached file; its bytes stay in the raw message.
 type Attachment struct {
 	Filename    string `json:"filename"`
@@ -38,8 +45,11 @@ type Message struct {
 	Snippet        string
 	Size           int64
 	Attachments    []Attachment
-	Text           string // only loaded by GetMessage with body
-	HTML           string // only loaded by GetMessage with body
+	Text           string   // only loaded by GetMessage with body
+	HTML           string   // only loaded by GetMessage with body
+	Headers        []Header // only loaded by GetMessage with body
+	MsgID          string   // Message-ID, without angle brackets
+	ParentMsgID    string   // the first In-Reply-To ID, without angle brackets
 	Labels         []string
 	Metadata       map[string]string
 	IdempotencyKey string // empty when not set
@@ -140,12 +150,15 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 	if err != nil {
 		return nil, false, err
 	}
-	query := d.q(`INSERT INTO messages (` + messageColumns + `, text_body, html_body, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if m.Headers == nil {
+		m.Headers = []Header{}
+	}
+	query := d.q(`INSERT INTO messages (` + messageColumns + `, text_body, html_body, headers, msg_id, parent_msg_id, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err = tx.ExecContext(ctx, query,
 		m.ID, m.AccountID, m.Sender, m.Recipient, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
 		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Attachments), marshalJSON(m.Metadata), key, m.ReceivedAt.UTC(),
-		m.Text, m.HTML, seq)
+		m.Text, m.HTML, marshalJSON(m.Headers), m.MsgID, m.ParentMsgID, seq)
 	if err != nil {
 		tx.Rollback()
 		// Lost a race with a retry using the same idempotency key.
@@ -182,7 +195,7 @@ func (d *DB) messageByIdempotencyKey(ctx context.Context, accountID, key string)
 }
 
 // GetMessage returns a message with its labels, and its text and HTML bodies
-// if withBody is set.
+// and header fields if withBody is set.
 func (d *DB) GetMessage(ctx context.Context, id string, withBody bool) (*Message, error) {
 	m, err := getMessage(ctx, d, d.sql, id, withBody)
 	if err != nil {
@@ -200,12 +213,12 @@ type querier interface {
 }
 
 func getMessage(ctx context.Context, d *DB, q querier, id string, withBody bool) (*Message, error) {
-	var text, html string
+	var text, html, headers string
 	var extra []any
 	columns := messageColumns
 	if withBody {
-		columns += `, text_body, html_body`
-		extra = []any{&text, &html}
+		columns += `, text_body, html_body, headers`
+		extra = []any{&text, &html, &headers}
 	}
 	m, err := scanMessage(q.QueryRowContext(ctx, d.q(`SELECT `+columns+` FROM messages WHERE id = ?`), id), extra...)
 	if err == sql.ErrNoRows {
@@ -215,6 +228,11 @@ func getMessage(ctx context.Context, d *DB, q querier, id string, withBody bool)
 		return nil, fmt.Errorf("getting message: %w", err)
 	}
 	m.Text, m.HTML = text, html
+	if withBody {
+		if err := json.Unmarshal([]byte(headers), &m.Headers); err != nil {
+			return nil, fmt.Errorf("decoding message %s: %w", m.ID, err)
+		}
+	}
 	return m, nil
 }
 
