@@ -19,6 +19,9 @@ import (
 func (c *session) Search(kind imapserver.NumKind, criteria *goimap.SearchCriteria, options *goimap.SearchOptions) (*goimap.SearchData, error) {
 	c.staticCriteria(criteria)
 	raws := needsRaw(criteria)
+	// Header criteria need only the header block; text ones the whole
+	// message.
+	headerOnly := !needsBody(criteria)
 
 	var data goimap.SearchData
 	var seqSet goimap.SeqSet
@@ -31,7 +34,7 @@ func (c *session) Search(kind imapserver.NumKind, criteria *goimap.SearchCriteri
 			loaded := false
 			entity = func() *gomessage.Entity {
 				if !loaded {
-					raw, _ = c.raw(m)
+					raw, _ = c.raw(m, headerOnly)
 					loaded = true
 				}
 				e, _ := gomessage.Read(bytes.NewReader(raw))
@@ -107,6 +110,24 @@ func needsRaw(criteria *goimap.SearchCriteria) bool {
 	}
 	for i := range criteria.Or {
 		if needsRaw(&criteria.Or[i][0]) || needsRaw(&criteria.Or[i][1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// needsBody reports whether criteria look at the text, not just headers.
+func needsBody(criteria *goimap.SearchCriteria) bool {
+	if len(criteria.Text) > 0 || len(criteria.Body) > 0 {
+		return true
+	}
+	for i := range criteria.Not {
+		if needsBody(&criteria.Not[i]) {
+			return true
+		}
+	}
+	for i := range criteria.Or {
+		if needsBody(&criteria.Or[i][0]) || needsBody(&criteria.Or[i][1]) {
 			return true
 		}
 	}

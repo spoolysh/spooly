@@ -95,8 +95,8 @@ func (ps Parts) Attachments() []Part {
 type Message struct {
 	ID        string
 	AccountID string
-	Sender    string // SMTP envelope sender (MAIL FROM)
-	Recipient string // SMTP envelope recipient (RCPT TO)
+	MailFrom  string // SMTP envelope sender (MAIL FROM)
+	RcptTo    string // SMTP envelope recipient (RCPT TO)
 	From      Address
 	To        []Address
 	Cc        []Address
@@ -110,8 +110,8 @@ type Message struct {
 	Text           string
 	HTML           string
 	Headers        []Header
-	MsgID          string // Message-ID, without angle brackets
-	ParentMsgID    string // the first In-Reply-To ID, without angle brackets
+	MessageID      string // Message-ID, without angle brackets
+	InReplyTo      string // the first In-Reply-To ID, without angle brackets
 	Labels         []string
 	Metadata       map[string]string
 	IdempotencyKey string // empty when not set
@@ -131,7 +131,7 @@ var (
 )
 
 // messageColumns are the columns of a message.
-const messageColumns = `id, account_id, sender, recipient, from_name, from_address, to_addresses, cc_addresses,
+const messageColumns = `id, account_id, mail_from, rcpt_to, from_name, from_address, to_addresses, cc_addresses,
 	subject, date, snippet, size, parts, metadata, idempotency_key, received_at`
 
 func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, error) {
@@ -139,7 +139,7 @@ func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, e
 	var to, cc, parts, metadata string
 	var date sql.NullTime
 	var key sql.NullString
-	dest := []any{&m.ID, &m.AccountID, &m.Sender, &m.Recipient, &m.From.Name, &m.From.Address, &to, &cc,
+	dest := []any{&m.ID, &m.AccountID, &m.MailFrom, &m.RcptTo, &m.From.Name, &m.From.Address, &to, &cc,
 		&m.Subject, &date, &m.Snippet, &m.Size, &parts, &metadata, &key, &m.ReceivedAt}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
@@ -212,12 +212,12 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 	if err != nil {
 		return nil, false, err
 	}
-	query := d.q(`INSERT INTO messages (` + messageColumns + `, msg_id, parent_msg_id, seq)
+	query := d.q(`INSERT INTO messages (` + messageColumns + `, message_id, in_reply_to, seq)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err = tx.ExecContext(ctx, query,
-		m.ID, m.AccountID, m.Sender, m.Recipient, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
+		m.ID, m.AccountID, m.MailFrom, m.RcptTo, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
 		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Parts), marshalJSON(m.Metadata), key, m.ReceivedAt.UTC(),
-		m.MsgID, m.ParentMsgID, seq)
+		m.MessageID, m.InReplyTo, seq)
 	if err != nil {
 		tx.Rollback()
 		// Lost a race with a retry using the same idempotency key.

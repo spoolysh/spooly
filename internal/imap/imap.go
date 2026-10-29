@@ -510,26 +510,58 @@ func envelope(raw []byte) *goimap.Envelope {
 	return imapserver.ExtractEnvelope(h)
 }
 
-func (c *session) raw(m *msg) ([]byte, error) {
+// raw reads a message's raw source, or with headerOnly just its header
+// block, up to and including the blank line that ends it.
+func (c *session) raw(m *msg, headerOnly bool) ([]byte, error) {
 	_, rc, err := c.s.svc.OpenRaw(context.Background(), m.ID)
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(rc)
+	if !headerOnly {
+		return io.ReadAll(rc)
+	}
+	br := bufio.NewReader(rc)
+	var header []byte
+	for {
+		line, err := br.ReadBytes('\n')
+		header = append(header, line...)
+		if err == io.EOF || (err == nil && len(bytes.TrimRight(line, "\r\n")) == 0) {
+			return header, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// headerOnly reports whether everything options asks for is in a message's
+// header block, as mail clients fetch for their message lists: ENVELOPE,
+// BODY[HEADER], or BODY[HEADER.FIELDS (...)].
+func headerOnly(options *goimap.FetchOptions) bool {
+	if options.BodyStructure != nil || len(options.BinarySection) > 0 || len(options.BinarySectionSize) > 0 {
+		return false
+	}
+	for _, bs := range options.BodySection {
+		if bs.Specifier != goimap.PartSpecifierHeader || len(bs.Part) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *session) Fetch(w *imapserver.FetchWriter, numSet goimap.NumSet, options *goimap.FetchOptions) error {
 	markSeen := slices.ContainsFunc(options.BodySection, func(bs *goimap.FetchItemBodySection) bool { return !bs.Peek })
 	needRaw := options.Envelope || options.BodyStructure != nil || len(options.BodySection) > 0 ||
 		len(options.BinarySection) > 0 || len(options.BinarySectionSize) > 0
+	headerOnly := headerOnly(options)
 
 	for _, i := range c.resolve(numSet) {
 		m := c.msgs[i]
 		var raw []byte
 		if needRaw {
 			var err error
-			if raw, err = c.raw(m); err != nil {
+			if raw, err = c.raw(m, headerOnly); err != nil {
 				// Gone from storage: skip it rather than fail the
 				// whole FETCH.
 				log.Printf("imap: reading %s: %v", m.ID, err)

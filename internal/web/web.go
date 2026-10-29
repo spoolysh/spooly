@@ -150,7 +150,7 @@ type messageRow struct {
 	FromAddress string
 	Subject     string
 	Snippet     string
-	Recipient   string
+	RcptTo      string
 	UserLabels  []string // labels shown as tags: inbox and user labels
 	Unread      bool
 	Starred     bool
@@ -313,7 +313,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			FromAddress: m.From.Address,
 			Subject:     m.Subject,
 			Snippet:     m.Snippet,
-			Recipient:   m.Recipient,
+			RcptTo:      m.RcptTo,
 			Attachments: countAttachments(m.Parts),
 			ReceivedAt:  formatTime(m.ReceivedAt),
 			ReceivedISO: m.ReceivedAt.Local().Format(time.DateTime),

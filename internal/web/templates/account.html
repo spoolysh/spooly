@@ -27,7 +27,7 @@
     <li class="flex flex-wrap items-center justify-between gap-3 px-6 py-3 text-sm">
       <span class="min-w-0 break-all text-gray-900">
         {{$address}}
-        {{if eq $i 0}}<span title="Shown for the account, and recorded as the recipient of mail delivered by account ID" class="ml-2 inline-flex items-center rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-600/20">Primary</span>{{end}}
+        {{if eq $i 0}}<span title="Shown for the account, and recorded as the RCPT TO of mail delivered by account ID" class="ml-2 inline-flex items-center rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-600/20">Primary</span>{{end}}
       </span>
       <span class="flex gap-2">
         {{if ne $i 0}}

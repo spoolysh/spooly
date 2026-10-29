@@ -94,8 +94,8 @@ func call(t *testing.T, srv *httptest.Server, method, path, contentType, body st
 type messageJSON struct {
 	ID        string `json:"id"`
 	AccountID string `json:"account_id"`
-	Sender    string `json:"sender"`
-	Recipient string `json:"recipient"`
+	MailFrom  string `json:"mail_from"`
+	RcptTo    string `json:"rcpt_to"`
 	From      struct{ Name, Address string }
 	Subject   string            `json:"subject"`
 	Snippet   string            `json:"snippet"`
@@ -192,8 +192,8 @@ func TestCreateMessageREST(t *testing.T) {
 		return got
 	}
 
-	m := post("hello+news@boxy.sh", "?sender=bounce@example.com", "k1", 1, 200)
-	if m.AccountID != accountID || m.Recipient != "hello+news@boxy.sh" || m.Sender != "bounce@example.com" {
+	m := post("hello+news@boxy.sh", "?mail_from=bounce@example.com", "k1", 1, 200)
+	if m.AccountID != accountID || m.RcptTo != "hello+news@boxy.sh" || m.MailFrom != "bounce@example.com" {
 		t.Errorf("envelope = %+v", m)
 	}
 	if m.Subject != "Hi 1" || m.From.Address != "ann@example.com" || m.Snippet != "Hello 1" {
@@ -215,11 +215,11 @@ func TestCreateMessageREST(t *testing.T) {
 	}
 	post("hello@boxy.sh", "", strings.Repeat("k", 129), 3, 400)
 
-	// By account ID, the recipient is the account's address.
+	// By account ID, rcpt_to is the account's address.
 	var byID messageJSON
 	call(t, srv, "POST", "/v1/messages?account_id_or_address="+accountID, "message/rfc822", rawMessage(3), 200, &byID)
-	if byID.Recipient != "hello@boxy.sh" {
-		t.Errorf("recipient by ID = %q", byID.Recipient)
+	if byID.RcptTo != "hello@boxy.sh" {
+		t.Errorf("rcpt_to by ID = %q", byID.RcptTo)
 	}
 
 	call(t, srv, "POST", "/v1/accounts/nobody@boxy.sh/messages", "message/rfc822", rawMessage(4), 404, nil)
@@ -263,7 +263,7 @@ func TestCreateMessageConnectStream(t *testing.T) {
 	raw := rawMessage(1)
 	first := &boxyv1.CreateMessageRequest{
 		AccountIdOrAddress: "hello@boxy.sh",
-		Sender:             "bounce@example.com",
+		MailFrom:           "bounce@example.com",
 		Raw:                &httpbody.HttpBody{ContentType: "message/rfc822", Data: []byte(raw[:10])},
 	}
 	if err := stream.Send(first); err != nil {
@@ -276,7 +276,7 @@ func TestCreateMessageConnectStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CloseAndReceive: %v", err)
 	}
-	if resp.Message.Subject != "Hi 1" || resp.Message.Size != int64(len(raw)) || resp.Message.Sender != "bounce@example.com" {
+	if resp.Message.Subject != "Hi 1" || resp.Message.Size != int64(len(raw)) || resp.Message.MailFrom != "bounce@example.com" {
 		t.Errorf("message = %v", resp.Message)
 	}
 
@@ -694,8 +694,8 @@ func TestAccess(t *testing.T) {
 	as("bob", "PATCH", "/v1/accounts/support@boxy.sh", "application/json", `{"name": "Mine"}`, 404, nil)
 	var routed messageJSON
 	as("admin", "POST", "/v1/accounts/contact+web@domain2.com/messages", "message/rfc822", rawMessage(4), 200, &routed)
-	if routed.AccountID != support.ID || routed.Recipient != "contact+web@domain2.com" {
-		t.Errorf("mail to an extra address: account %s, recipient %s", routed.AccountID, routed.Recipient)
+	if routed.AccountID != support.ID || routed.RcptTo != "contact+web@domain2.com" {
+		t.Errorf("mail to an extra address: account %s, rcpt_to %s", routed.AccountID, routed.RcptTo)
 	}
 	var found struct{ ID string }
 	as("alice", "GET", "/v1/accounts/contact@domain2.com", "", "", 200, &found)

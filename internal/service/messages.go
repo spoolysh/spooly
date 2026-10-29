@@ -45,8 +45,8 @@ func messageProto(m *db.Message) *boxyv1.Message {
 	p := &boxyv1.Message{
 		Id:         m.ID,
 		AccountId:  m.AccountID,
-		Sender:     m.Sender,
-		Recipient:  m.Recipient,
+		MailFrom:   m.MailFrom,
+		RcptTo:     m.RcptTo,
 		From:       addressProto(m.From),
 		To:         addressesProto(m.To),
 		Cc:         addressesProto(m.Cc),
@@ -73,7 +73,7 @@ func messageProto(m *db.Message) *boxyv1.Message {
 // Incoming is a message to store, as CreateMessage receives it.
 type Incoming struct {
 	AccountIDOrAddress string
-	Sender             string
+	MailFrom           string
 	ReceivedAt         time.Time // zero means now
 	IdempotencyKey     string
 	Raw                []byte
@@ -93,7 +93,7 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	if len(in.Raw) == 0 {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "raw: the message is empty")
 	}
-	account, recipient, err := s.resolveAccount(ctx, in.AccountIDOrAddress)
+	account, rcptTo, err := s.resolveAccount(ctx, in.AccountIDOrAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -127,8 +127,8 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	m, created, err := s.db.CreateMessage(ctx, db.Message{
 		ID:             id,
 		AccountID:      account.ID,
-		Sender:         strings.TrimSpace(in.Sender),
-		Recipient:      recipient,
+		MailFrom:       strings.TrimSpace(in.MailFrom),
+		RcptTo:         rcptTo,
 		From:           parsed.From,
 		To:             parsed.To,
 		Cc:             parsed.Cc,
@@ -137,8 +137,8 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 		Snippet:        parsed.Snippet,
 		Size:           int64(len(in.Raw)),
 		Parts:          parsed.Parts,
-		MsgID:          parsed.MessageID,
-		ParentMsgID:    parsed.InReplyTo,
+		MessageID:      parsed.MessageID,
+		InReplyTo:      parsed.InReplyTo,
 		IdempotencyKey: in.IdempotencyKey,
 		ReceivedAt:     receivedAt,
 	}, labels)
@@ -167,7 +167,7 @@ func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.Messag
 		}
 		if first {
 			in.AccountIDOrAddress = msg.AccountIdOrAddress
-			in.Sender = msg.Sender
+			in.MailFrom = msg.MailFrom
 			if len(msg.Labels) > 0 {
 				in.Labels = msg.Labels
 			}

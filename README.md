@@ -42,7 +42,7 @@ An inbound worker posts the raw message as the body, with the envelope in the
 query string:
 
 ```bash
-curl -X POST "https://boxy.example.com/v1/accounts/hello@boxy.sh/messages?sender=bounce@example.com" \
+curl -X POST "https://boxy.example.com/v1/accounts/hello@boxy.sh/messages?mail_from=bounce@example.com" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: message/rfc822" \
   -H "Idempotency-Key: 9b2f…" \
@@ -50,9 +50,9 @@ curl -X POST "https://boxy.example.com/v1/accounts/hello@boxy.sh/messages?sender
 ```
 
 The address in the path is the envelope recipient (Cloudflare's
-`message.to`) and is kept as the message's `recipient`. Plus addresses reach
+`message.to`) and is kept as the message's `rcpt_to`. Plus addresses reach
 the base account: `hello+news@boxy.sh` lands in `hello@boxy.sh` with
-`recipient` `hello+news@boxy.sh`. An unknown address gets `404`, so the worker
+`rcpt_to` `hello+news@boxy.sh`. An unknown address gets `404`, so the worker
 can reject the mail. Send an `Idempotency-Key` header to make retries safe: a repeat with the same key, in the same
 account, returns the stored message.
 New messages get the `inbox` and `unread` labels.
@@ -83,7 +83,7 @@ export default {
   async email(message, env) {
     const raw = await new Response(message.raw).arrayBuffer();
     const to = encodeURIComponent(message.to);
-    const query = new URLSearchParams({ sender: message.from });
+    const query = new URLSearchParams({ mail_from: message.from });
     const resp = await fetch(`${env.BOXY_URL}/v1/accounts/${to}/messages?${query}`, {
       method: "POST",
       headers: {
@@ -227,7 +227,7 @@ delivered through the API shows up in POP3 and IMAP at once.
 | `GET` | `/v1/accounts` | List accounts, newest first. Query: `limit` (1–100, default 50), `after` (last ID of the previous page) |
 | `GET` | `/v1/accounts/{id_or_address}` | Get an account by ID or any of its addresses |
 | `PATCH` | `/v1/accounts/{id_or_address}` | Update an account (admins only): `name`, `addresses` (replaces them, in order) |
-| `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_address`, `sender`, `received_at`, `labels`. Header: `Idempotency-Key` |
+| `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_address`, `mail_from`, `received_at`, `labels`. Header: `Idempotency-Key` |
 | `POST` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
 | `GET` | `/v1/messages/{id}` | Get a message, with its `parts` listed |
 | `GET` | `/v1/messages` | List messages, newest received first. Query: `account_id_or_address`, `label`, `limit`, `after` |
@@ -272,9 +272,10 @@ in UTF-8, with its content type and its disposition naming the file (without
 one, named parts download and the rest show). Only that
 part is read from storage.
 
-`sender` and `recipient` are the SMTP envelope (`MAIL FROM` and `RCPT TO`,
-Cloudflare's `message.from` and `message.to`), not the `From` and `To`
-headers; `sender` is empty for bounces.
+`mail_from` and `rcpt_to` are the SMTP envelope (`MAIL FROM` and `RCPT TO`,
+Cloudflare's `message.from` and `message.to`, named as in JMAP's
+`envelope`), not the `From`, `Sender`, and `To` headers; `mail_from` is empty
+for bounces.
 
 An account's address can't contain `+`, since `+` starts a tag. The API
 never changes `unread` on its own; the dashboard removes it when you open a

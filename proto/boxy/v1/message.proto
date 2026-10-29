@@ -39,7 +39,7 @@ service MessageService {
       }
       parameters: {
         parameter: {
-          name: "sender"
+          name: "mail_from"
           in: "query"
           description: "SMTP envelope sender (MAIL FROM)."
           schema: {
@@ -258,11 +258,12 @@ message Message {
     }
   ];
 
-  // SMTP envelope sender (MAIL FROM), not the From header. Empty for bounces.
-  string sender = 3 [(google.api.field_behavior) = REQUIRED];
+  // SMTP envelope sender (MAIL FROM): the bounce address, not the From or
+  // Sender header. Empty for bounces.
+  string mail_from = 3 [(google.api.field_behavior) = REQUIRED];
   // SMTP envelope recipient (RCPT TO) it was delivered to, e.g.
   // "hello+news@boxy.sh". The account's address when created by account ID.
-  string recipient = 4 [(google.api.field_behavior) = REQUIRED];
+  string rcpt_to = 4 [(google.api.field_behavior) = REQUIRED];
 
   // First address of the From header. Empty when there's none.
   Address from = 5 [
@@ -352,7 +353,7 @@ message MessagePart {
 // stored message.
 message CreateMessageRequest {
   // Treated as an address if it contains "@"; "local+tag@domain" finds
-  // "local@domain". Stored as the message's recipient. Required in the first
+  // "local@domain". Stored as the message's rcpt_to. Required in the first
   // message.
   string account_id_or_address = 1 [(buf.validate.field) = {
     ignore: IGNORE_IF_ZERO_VALUE
@@ -365,7 +366,7 @@ message CreateMessageRequest {
   // Raw RFC 5322 source.
   google.api.HttpBody raw = 2 [(buf.validate.field).required = true];
   // SMTP envelope sender (MAIL FROM), e.g. Cloudflare's message.from.
-  string sender = 3 [(buf.validate.field).string.max_len = 254];
+  string mail_from = 3 [(buf.validate.field).string.max_len = 254];
   // Absent means now.
   optional google.protobuf.Timestamp received_at = 4;
   // The message's labels, such as ["sent"] for mirrored sent mail. Empty

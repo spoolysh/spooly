@@ -230,6 +230,50 @@ func TestReadAndFlags(t *testing.T) {
 	}
 }
 
+// Header-only fetches, as mail clients make for their lists, read just the
+// header block and still answer in full.
+func TestFetchHeaders(t *testing.T) {
+	e := newTestEnv(t)
+	raw := "From: Ann <ann@example.com>\r\nTo: hello@boxy.sh\r\nSubject: Re: plan\r\n" +
+		"Message-ID: <reply@example.com>\r\nIn-Reply-To: <plan@example.com> <other@example.com>\r\n\r\nSounds good.\r\n"
+	if _, err := e.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)}); err != nil {
+		t.Fatal(err)
+	}
+	c := e.dial(nil)
+	selectBox(t, c, "INBOX")
+
+	msgs, err := c.Fetch(goimap.SeqSetNum(4), &goimap.FetchOptions{
+		Envelope: true,
+		BodySection: []*goimap.FetchItemBodySection{
+			{Specifier: goimap.PartSpecifierHeader, Peek: true},
+			{Specifier: goimap.PartSpecifierHeader, HeaderFields: []string{"Subject"}, Peek: true},
+		},
+	}).Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := msgs[0].Envelope
+	if env.Subject != "Re: plan" || env.MessageID != "reply@example.com" || strings.Join(env.InReplyTo, ",") != "plan@example.com,other@example.com" {
+		t.Errorf("ENVELOPE = %+v", env)
+	}
+	header, fields := string(msgs[0].BodySection[0].Bytes), string(msgs[0].BodySection[1].Bytes)
+	if !strings.HasPrefix(header, "From: Ann") || !strings.HasSuffix(header, "\r\n\r\n") || strings.Contains(header, "Sounds good") {
+		t.Errorf("BODY[HEADER] = %q", header)
+	}
+	if fields != "Subject: Re: plan\r\n\r\n" {
+		t.Errorf("BODY[HEADER.FIELDS (SUBJECT)] = %q", fields)
+	}
+
+	// The whole message still comes whole.
+	full, err := c.Fetch(goimap.SeqSetNum(4), &goimap.FetchOptions{BodySection: []*goimap.FetchItemBodySection{{Peek: true}}}).Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(full[0].BodySection[0].Bytes); got != raw {
+		t.Errorf("BODY[] = %q", got)
+	}
+}
+
 func TestMoveCopyExpunge(t *testing.T) {
 	e := newTestEnv(t)
 	c := e.dial(nil)
