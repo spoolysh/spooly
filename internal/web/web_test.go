@@ -143,7 +143,7 @@ func TestPagesRender(t *testing.T) {
 		t.Errorf("message page doesn't show metadata, or links a non-web value")
 	}
 	// Opening a message marks it read.
-	got, err := u.db.GetMessage(t.Context(), id, false)
+	got, err := u.db.GetMessage(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,15 +228,15 @@ func TestAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if body := u.get("/"+m.ID, 200); !strings.Contains(body, "?attachment=1&amp;download") {
+	if body := u.get("/"+m.ID, 200); !strings.Contains(body, "?part=2&amp;download") {
 		t.Error("message page doesn't link attachments")
 	}
 	for _, tc := range []struct {
 		query, disposition string
 	}{
-		{"attachment=0", `inline; filename=a.png`},
-		{"attachment=0&download", `attachment; filename=a.png`},
-		{"attachment=1", `attachment; filename=page.html`}, // HTML never shows inline
+		{"part=1", `inline; filename=a.png`},
+		{"part=1&download", `attachment; filename=a.png`},
+		{"part=2", `attachment; filename=page.html`}, // HTML never shows inline
 	} {
 		rec := u.do("GET", "/"+m.ID+"?"+tc.query, "", "", true)
 		if rec.Code != 200 || rec.Header().Get("Content-Disposition") != tc.disposition {
@@ -246,10 +246,10 @@ func TestAttachments(t *testing.T) {
 			t.Errorf("%s: not sandboxed", tc.query)
 		}
 	}
-	if rec := u.do("GET", "/"+m.ID+"?attachment=2", "", "", true); rec.Code != 404 {
-		t.Errorf("missing attachment: %d", rec.Code)
+	if rec := u.do("GET", "/"+m.ID+"?part=3", "", "", true); rec.Code != 404 {
+		t.Errorf("missing part: %d", rec.Code)
 	}
-	if rec := u.do("GET", "/"+m.ID+"?attachment=0", "", "", false); rec.Code != 401 {
+	if rec := u.do("GET", "/"+m.ID+"?part=1", "", "", false); rec.Code != 401 {
 		t.Errorf("signed out: %d", rec.Code)
 	}
 }
@@ -316,7 +316,7 @@ func TestPagingAndBulkActions(t *testing.T) {
 		t.Fatalf("bulk: %d %s", rec.Code, rec.Body)
 	}
 	for _, id := range ids[:2] {
-		m, err := u.db.GetMessage(t.Context(), id, false)
+		m, err := u.db.GetMessage(t.Context(), id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -385,7 +385,7 @@ func TestDeleteForever(t *testing.T) {
 	}
 	// Only that account's trash goes: its spam and the other's trash stay.
 	for i, want := range []bool{false, false, true, true} {
-		_, err := u.db.GetMessage(t.Context(), ids[i], false)
+		_, err := u.db.GetMessage(t.Context(), ids[i])
 		if got := err == nil; got != want {
 			t.Errorf("message %d exists = %v, want %v", i, got, want)
 		}

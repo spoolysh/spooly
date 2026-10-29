@@ -23,33 +23,95 @@ type Header struct {
 	Value string `json:"value"`
 }
 
-// Attachment describes one attached file; its bytes stay in the raw message.
-type Attachment struct {
-	Filename    string `json:"filename"`
-	ContentType string `json:"content_type"`
-	Size        int64  `json:"size"`
+// Part is a MIME body part (a leaf: not a multipart) of a message, and
+// where it is in the raw message, so it can be read without the rest.
+type Part struct {
+	Type string `json:"type"`
+	// Disposition is the Content-Disposition type, such as "inline" or
+	// "attachment"; empty when missing.
+	Disposition string `json:"disposition,omitempty"`
+	Name        string `json:"name,omitempty"` // the file name
+	// CID is the Content-ID, without angle brackets.
+	CID  string `json:"cid,omitempty"`
+	Size int64  `json:"size"` // decoded
+	// Offset and Length are its bytes in the raw message, header included.
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
+}
+
+// Body media types.
+const (
+	TextBody = "text/plain"
+	HTMLBody = "text/html"
+)
+
+// Parts are a message's parts, in the order of the raw message.
+type Parts []Part
+
+// BodyIndex returns the index of the body of mediaType, TextBody or
+// HTMLBody, or -1 if there's none: the first part of that type that isn't
+// an attachment and has no file name.
+func (ps Parts) BodyIndex(mediaType string) int {
+	for i, p := range ps {
+		if p.Type == mediaType && p.Disposition != "attachment" && p.Name == "" {
+			return i
+		}
+	}
+	return -1
+}
+
+// Body returns the body of mediaType, TextBody or HTMLBody, if any.
+func (ps Parts) Body(mediaType string) (Part, bool) {
+	if i := ps.BodyIndex(mediaType); i >= 0 {
+		return ps[i], true
+	}
+	return Part{}, false
+}
+
+// AttachmentIndexes returns the indexes of the parts that aren't a body,
+// in order: what a mail client lists as attachments.
+func (ps Parts) AttachmentIndexes() []int {
+	text, html := ps.BodyIndex(TextBody), ps.BodyIndex(HTMLBody)
+	list := []int{}
+	for i := range ps {
+		if i != text && i != html {
+			list = append(list, i)
+		}
+	}
+	return list
+}
+
+// Attachments returns the parts that aren't a body, in order.
+func (ps Parts) Attachments() []Part {
+	list := []Part{}
+	for _, i := range ps.AttachmentIndexes() {
+		list = append(list, ps[i])
+	}
+	return list
 }
 
 // Message is a stored message. Its raw source is in object storage under its
 // ID; everything here is parsed from it, except the envelope and labels.
 type Message struct {
-	ID             string
-	AccountID      string
-	Sender         string // SMTP envelope sender (MAIL FROM)
-	Recipient      string // SMTP envelope recipient (RCPT TO)
-	From           Address
-	To             []Address
-	Cc             []Address
-	Subject        string
-	Date           *time.Time
-	Snippet        string
-	Size           int64
-	Attachments    []Attachment
-	Text           string   // only loaded by GetMessage with body
-	HTML           string   // only loaded by GetMessage with body
-	Headers        []Header // only loaded by GetMessage with body
-	MsgID          string   // Message-ID, without angle brackets
-	ParentMsgID    string   // the first In-Reply-To ID, without angle brackets
+	ID        string
+	AccountID string
+	Sender    string // SMTP envelope sender (MAIL FROM)
+	Recipient string // SMTP envelope recipient (RCPT TO)
+	From      Address
+	To        []Address
+	Cc        []Address
+	Subject   string
+	Date      *time.Time
+	Snippet   string
+	Size      int64
+	Parts     Parts
+	// Text, HTML, and Headers aren't stored: they're read from the raw
+	// message when shown.
+	Text           string
+	HTML           string
+	Headers        []Header
+	MsgID          string // Message-ID, without angle brackets
+	ParentMsgID    string // the first In-Reply-To ID, without angle brackets
 	Labels         []string
 	Metadata       map[string]string
 	IdempotencyKey string // empty when not set
@@ -68,17 +130,17 @@ var (
 	ErrMetadataLimit = fmt.Errorf("a message can have at most %d metadata keys", MaxMetadataKeys)
 )
 
-// messageColumns are the columns of a message without its bodies and raw source.
+// messageColumns are the columns of a message.
 const messageColumns = `id, account_id, sender, recipient, from_name, from_address, to_addresses, cc_addresses,
-	subject, date, snippet, size, attachments, metadata, idempotency_key, received_at`
+	subject, date, snippet, size, parts, metadata, idempotency_key, received_at`
 
 func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, error) {
 	var m Message
-	var to, cc, attachments, metadata string
+	var to, cc, parts, metadata string
 	var date sql.NullTime
 	var key sql.NullString
 	dest := []any{&m.ID, &m.AccountID, &m.Sender, &m.Recipient, &m.From.Name, &m.From.Address, &to, &cc,
-		&m.Subject, &date, &m.Snippet, &m.Size, &attachments, &metadata, &key, &m.ReceivedAt}
+		&m.Subject, &date, &m.Snippet, &m.Size, &parts, &metadata, &key, &m.ReceivedAt}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
 	}
@@ -89,7 +151,7 @@ func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, e
 	for _, f := range []struct {
 		src string
 		dst any
-	}{{to, &m.To}, {cc, &m.Cc}, {attachments, &m.Attachments}, {metadata, &m.Metadata}} {
+	}{{to, &m.To}, {cc, &m.Cc}, {parts, &m.Parts}, {metadata, &m.Metadata}} {
 		if err := json.Unmarshal([]byte(f.src), f.dst); err != nil {
 			return nil, fmt.Errorf("decoding message %s: %w", m.ID, err)
 		}
@@ -125,8 +187,8 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 	if m.Cc == nil {
 		m.Cc = []Address{}
 	}
-	if m.Attachments == nil {
-		m.Attachments = []Attachment{}
+	if m.Parts == nil {
+		m.Parts = Parts{}
 	}
 	if m.Metadata == nil {
 		m.Metadata = map[string]string{}
@@ -150,15 +212,12 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 	if err != nil {
 		return nil, false, err
 	}
-	if m.Headers == nil {
-		m.Headers = []Header{}
-	}
-	query := d.q(`INSERT INTO messages (` + messageColumns + `, text_body, html_body, headers, msg_id, parent_msg_id, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	query := d.q(`INSERT INTO messages (` + messageColumns + `, msg_id, parent_msg_id, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err = tx.ExecContext(ctx, query,
 		m.ID, m.AccountID, m.Sender, m.Recipient, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
-		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Attachments), marshalJSON(m.Metadata), key, m.ReceivedAt.UTC(),
-		m.Text, m.HTML, marshalJSON(m.Headers), m.MsgID, m.ParentMsgID, seq)
+		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Parts), marshalJSON(m.Metadata), key, m.ReceivedAt.UTC(),
+		m.MsgID, m.ParentMsgID, seq)
 	if err != nil {
 		tx.Rollback()
 		// Lost a race with a retry using the same idempotency key.
@@ -178,7 +237,7 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 		return nil, false, fmt.Errorf("inserting message: %w", err)
 	}
 
-	stored, err = d.GetMessage(ctx, m.ID, false)
+	stored, err = d.GetMessage(ctx, m.ID)
 	return stored, true, err
 }
 
@@ -191,13 +250,12 @@ func (d *DB) messageByIdempotencyKey(ctx context.Context, accountID, key string)
 	if err != nil {
 		return nil, fmt.Errorf("getting message: %w", err)
 	}
-	return d.GetMessage(ctx, id, false)
+	return d.GetMessage(ctx, id)
 }
 
-// GetMessage returns a message with its labels, and its text and HTML bodies
-// and header fields if withBody is set.
-func (d *DB) GetMessage(ctx context.Context, id string, withBody bool) (*Message, error) {
-	m, err := getMessage(ctx, d, d.sql, id, withBody)
+// GetMessage returns a message with its labels.
+func (d *DB) GetMessage(ctx context.Context, id string) (*Message, error) {
+	m, err := getMessage(ctx, d, d.sql, id)
 	if err != nil {
 		return nil, err
 	}
@@ -212,26 +270,13 @@ type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func getMessage(ctx context.Context, d *DB, q querier, id string, withBody bool) (*Message, error) {
-	var text, html, headers string
-	var extra []any
-	columns := messageColumns
-	if withBody {
-		columns += `, text_body, html_body, headers`
-		extra = []any{&text, &html, &headers}
-	}
-	m, err := scanMessage(q.QueryRowContext(ctx, d.q(`SELECT `+columns+` FROM messages WHERE id = ?`), id), extra...)
+func getMessage(ctx context.Context, d *DB, q querier, id string) (*Message, error) {
+	m, err := scanMessage(q.QueryRowContext(ctx, d.q(`SELECT `+messageColumns+` FROM messages WHERE id = ?`), id))
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("%w: %s", ErrMessageNotFound, id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("getting message: %w", err)
-	}
-	m.Text, m.HTML = text, html
-	if withBody {
-		if err := json.Unmarshal([]byte(headers), &m.Headers); err != nil {
-			return nil, fmt.Errorf("decoding message %s: %w", m.ID, err)
-		}
 	}
 	return m, nil
 }
@@ -385,7 +430,7 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 	}
 	defer tx.Rollback()
 
-	m, err := getMessage(ctx, d, tx, id, false)
+	m, err := getMessage(ctx, d, tx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -448,7 +493,7 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("updating message: %w", err)
 	}
-	return d.GetMessage(ctx, id, false)
+	return d.GetMessage(ctx, id)
 }
 
 // CountFiltered returns how many messages match f, ignoring its limit.

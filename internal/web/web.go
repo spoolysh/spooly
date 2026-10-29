@@ -313,7 +313,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			Subject:     m.Subject,
 			Snippet:     m.Snippet,
 			Recipient:   m.Recipient,
-			Attachments: len(m.Attachments),
+			Attachments: len(m.Parts.Attachments()),
 			ReceivedAt:  formatTime(m.ReceivedAt),
 			ReceivedISO: m.ReceivedAt.Local().Format(time.DateTime),
 		}
@@ -359,11 +359,12 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// ?attachment=N[&download] serves an attachment; otherwise ?raw shows
-	// the source and ?download saves it as a .eml file.
+	// ?part=N[&download] serves a part, such as an attachment, numbered as
+	// in the API; otherwise ?raw shows the source and ?download saves it as
+	// a .eml file.
 	q := r.URL.Query()
-	if q.Has("attachment") {
-		h.attachment(w, r)
+	if q.Has("part") {
+		h.part(w, r)
 		return
 	}
 	if q.Has("raw") || q.Has("download") {
@@ -375,7 +376,7 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m, err := h.db.GetMessage(r.Context(), id, true)
+	m, err := h.db.GetMessage(r.Context(), id)
 	if errors.Is(err, db.ErrMessageNotFound) {
 		http.NotFound(w, r)
 		return
@@ -390,6 +391,10 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.NotFound(w, r)
 		}
+		return
+	}
+	if err := h.svc.ReadBody(r.Context(), m); err != nil {
+		h.internalError(w, "reading message", err)
 		return
 	}
 	// Opening a message reads it, as in a mail client. The API leaves
@@ -455,44 +460,49 @@ var viewable = map[string]bool{
 	"text/plain":      true,
 }
 
-// attachment serves attachment N of message {id} for ?attachment=N: shown
-// in the browser if its type is viewable, else downloaded, as is any with
-// ?download.
-func (h *Handler) attachment(w http.ResponseWriter, r *http.Request) {
+// part serves part N of message {id} for ?part=N: shown in the browser if
+// its type is viewable, else downloaded, as is any with ?download.
+func (h *Handler) part(w http.ResponseWriter, r *http.Request) {
 	if !h.canRead(w, r) {
 		return
 	}
-	index, err := strconv.Atoi(r.URL.Query().Get("attachment"))
+	index, err := strconv.Atoi(r.URL.Query().Get("part"))
 	if err != nil || index < 0 {
 		http.NotFound(w, r)
 		return
 	}
-	a, content, err := h.svc.OpenAttachment(r.Context(), r.PathValue("id"), index)
+	m, err := h.db.GetMessage(r.Context(), r.PathValue("id"))
+	if err != nil {
+		h.internalError(w, "getting message", err)
+		return
+	}
+	a, content, err := h.svc.OpenPart(r.Context(), m, index)
 	if connect.CodeOf(err) == connect.CodeNotFound {
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
-		h.internalError(w, "getting attachment", err)
+		h.internalError(w, "getting part", err)
 		return
 	}
 
-	mediaType, _, _ := strings.Cut(a.ContentType, ";")
+	mediaType, _, _ := strings.Cut(a.Type, ";")
 	disposition := "attachment"
 	if viewable[mediaType] && !r.URL.Query().Has("download") {
 		disposition = "inline"
 	}
 	hdr := w.Header()
-	hdr.Set("Content-Type", a.ContentType)
-	hdr.Set("Content-Disposition", service.ContentDisposition(disposition, a.Filename))
-	hdr.Set("Content-Length", strconv.Itoa(len(content)))
+	hdr.Set("Content-Type", a.Type)
+	hdr.Set("Content-Disposition", service.ContentDisposition(disposition, a.Name))
+	hdr.Set("Content-Length", strconv.FormatInt(a.Size, 10))
 	hdr.Set("X-Content-Type-Options", "nosniff")
 	// Belt and braces: even a mislabeled file can't run scripts. Chrome
 	// won't show a sandboxed PDF, so PDFs go without.
 	if mediaType != "application/pdf" {
 		hdr.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
 	}
-	w.Write(content)
+	defer content.Close()
+	io.Copy(w, content)
 }
 
 // canRead checks that the signed-in user can read message {id}, answering
@@ -502,7 +512,7 @@ func (h *Handler) canRead(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
 	}
-	m, err := h.db.GetMessage(r.Context(), r.PathValue("id"), false)
+	m, err := h.db.GetMessage(r.Context(), r.PathValue("id"))
 	if errors.Is(err, db.ErrMessageNotFound) {
 		http.NotFound(w, r)
 		return false

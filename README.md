@@ -12,7 +12,7 @@ with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
 - **Labels**: like Gmail, a message can have several; inbox, unread, and
   trash are labels too. Shared by all accounts
 - **Raw first**: every message is kept as received (RFC 5322); headers,
-  bodies, and attachments are parsed from it
+  bodies, and attachments are read from it, only the part asked for
 - **Any inbound**: a Cloudflare Email Routing worker first; anything that can
   POST the raw message works
 - **POP3 and IMAP**: mail clients read an account, with an API key as the
@@ -229,13 +229,14 @@ delivered through the API shows up in POP3 and IMAP at once.
 | `PATCH` | `/v1/accounts/{id_or_address}` | Update an account (admins only): `name`, `addresses` (replaces them, in order) |
 | `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_address`, `sender`, `received_at`, `labels`. Header: `Idempotency-Key` |
 | `POST` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
+| `GET` | `/v1/messages/{id}` | Get a message, with its `parts` listed |
 | `GET` | `/v1/messages` | List messages, newest received first. Query: `account_id_or_address`, `label`, `limit`, `after` |
 | `GET` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
-| `GET` | `/v1/messages/{id}` | Get a message with its body and header fields |
-| `GET` | `/v1/messages/{id}/raw` | Get a message's raw source |
-| `GET` | `/v1/messages/{id}/attachments/{index}` | Get an attachment, decoded, by its position in `attachments` (from 0) |
 | `PATCH` | `/v1/messages/{id}` | Update a message: `add_labels`, `remove_labels`, `metadata` (merged; an empty value deletes a key) |
 | `DELETE` | `/v1/messages/{id}` | Delete a message for good, with its raw source |
+| `GET` | `/v1/messages/{id}/headers` | Get a message's header fields |
+| `GET` | `/v1/messages/{id}/parts/{index}` | Get a part, decoded, by its position in `parts` (from 0): the text or HTML body, or an attachment |
+| `GET` | `/v1/messages/{id}/raw` | Get a message's raw source |
 | `GET` | `/v1/labels` | List labels |
 | `POST` | `/v1/labels` | Create a user label (admins only) |
 | `DELETE` | `/v1/labels/{name}` | Delete a user label (admins only) |
@@ -249,11 +250,27 @@ than `limit` is the last one.
 
 Messages carry `metadata`, your own key-value data such as
 `{"ticket_id": "T-123"}`: up to 50 keys of 1–40 characters, values up to 500.
-It isn't part of the email. The email's own header fields are in `headers`,
-which only getting a message returns: every field exactly as received, in
-order, as `{"name", "value"}`, including the ones parsed into `from`, `to`,
+It isn't part of the email. The email's own header fields are at
+`/v1/messages/{id}/headers`: every field exactly as received, in order, as `{"name", "value"}`, including the ones parsed into `from`, `to`,
 `cc`, `subject`, and `date`. Values are unfolded but not decoded, so
 `=?utf-8?B?...?=` stays as written; the parsed fields are decoded.
+
+A message's `parts` are its MIME parts, every one but multiparts, in the
+order of the raw message, named as in JMAP: `type` (such as
+`application/pdf`), `disposition` (`inline`, `attachment`, or empty),
+`name` (the file name), `cid` (the Content-ID the HTML refers to as
+`cid:...` for inline images), and `size` (decoded). The text body is the first
+`text/plain` part whose disposition isn't `attachment` and that has no name;
+the HTML body, the same for `text/html`. Everything else is an attachment:
+
+```js
+const body = type => parts.findIndex(p => p.type === type && p.disposition !== "attachment" && !p.name)
+```
+
+Get a part by its index at `/v1/messages/{id}/parts/{index}`: decoded, text
+in UTF-8, with its content type and its disposition naming the file (without
+one, named parts download and the rest show). Only that
+part is read from storage.
 
 `sender` and `recipient` are the SMTP envelope (`MAIL FROM` and `RCPT TO`,
 Cloudflare's `message.from` and `message.to`), not the `From` and `To`
@@ -262,7 +279,10 @@ headers; `sender` is empty for bounces.
 An account's address can't contain `+`, since `+` starts a tag. The API
 never changes `unread` on its own; the dashboard removes it when you open a
 message. Raw messages, up to 40 MiB each, are kept in object storage under the
-message ID; everything parsed from them is in the database.
+message ID. The database keeps what lists and filters need (addresses,
+subject, snippet) and where each body and attachment is in the raw message;
+opening a message reads only its header and bodies, and downloading an
+attachment reads only that attachment.
 
 The OpenAPI spec is generated to `public/openapi.yaml` and served at
 `/openapi.yaml`.

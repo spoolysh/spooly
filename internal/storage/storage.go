@@ -14,8 +14,8 @@ import (
 var ErrNotFound = errors.New("object not found")
 
 // Storage is the abstraction over byte-storage backends (memory, local disk,
-// S3, GCS). It holds raw messages keyed by message ID; everything parsed from
-// them lives in the database.
+// S3, GCS). It holds raw messages keyed by message ID; the database holds
+// what's parsed from them, and where their parts are, to read with GetRange.
 type Storage interface {
 	// Put stores data under id, overwriting any existing content, and
 	// reports what was written. contentType is stamped on the object where

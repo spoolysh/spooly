@@ -115,6 +115,15 @@ service MessageService {
     };
   }
 
+  // Get a message. Its headers and parts have their own methods.
+  rpc GetMessage(GetMessageRequest) returns (GetMessageResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/messages/{id}"
+      response_body: "message"
+    };
+  }
+
   // List messages, newest received first. A page shorter than limit is the
   // last one.
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse) {
@@ -149,12 +158,49 @@ service MessageService {
     option (google.api.http) = {delete: "/v1/messages/{id}"};
   }
 
-  // Get a message with its body.
-  rpc GetMessage(GetMessageRequest) returns (GetMessageResponse) {
+  // Get a message's header fields, read from its raw source.
+  rpc GetMessageHeaders(GetMessageHeadersRequest) returns (GetMessageHeadersResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
     option (google.api.http) = {
-      get: "/v1/messages/{id}"
-      response_body: "message"
+      get: "/v1/messages/{id}/headers"
+      response_body: "headers"
+    };
+  }
+
+  // Get a part's content, decoded: a body or an attachment. Over REST, the
+  // body is the part, with its content type (text decoded to UTF-8) and a
+  // Content-Disposition naming the file. Only the part is read from the raw
+  // source.
+  rpc GetMessagePart(GetMessagePartRequest) returns (stream GetMessagePartResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+    option (google.api.http) = {
+      get: "/v1/messages/{id}/parts/{index}"
+      response_body: "content"
+    };
+    option (gnostic.openapi.v3.operation) = {
+      responses: {
+        response_or_reference: {
+          name: "200"
+          value: {
+            response: {
+              description: "The part, decoded."
+              content: {
+                additional_properties: {
+                  name: "application/octet-stream"
+                  value: {
+                    schema: {
+                      schema: {
+                        type: "string"
+                        format: "binary"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     };
   }
 
@@ -191,45 +237,10 @@ service MessageService {
       }
     };
   }
-
-  // Get an attachment's content. Over REST, the body is the attachment, with
-  // its content type and a Content-Disposition naming the file.
-  rpc GetAttachment(GetAttachmentRequest) returns (stream GetAttachmentResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-    option (google.api.http) = {
-      get: "/v1/messages/{id}/attachments/{index}"
-      response_body: "content"
-    };
-    option (gnostic.openapi.v3.operation) = {
-      responses: {
-        response_or_reference: {
-          name: "200"
-          value: {
-            response: {
-              description: "The attachment, decoded."
-              content: {
-                additional_properties: {
-                  name: "application/octet-stream"
-                  value: {
-                    schema: {
-                      schema: {
-                        type: "string"
-                        format: "binary"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    };
-  }
 }
 
-// A stored message. Headers, snippet, size, attachments, and body are parsed
-// from the raw source.
+// A stored message. The fields from its header, its snippet, and its parts
+// are parsed from the raw source.
 message Message {
   // 21 random characters (a nanoid).
   string id = 1 [
@@ -271,17 +282,16 @@ message Message {
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).int64.gte = 0
   ];
-  repeated MessageAttachment attachments = 12 [(google.api.field_behavior) = REQUIRED];
-  // Only set by GetMessage.
-  optional MessageBody body = 13;
-  // Every header field exactly as received, in order, including the ones
-  // parsed into from, to, cc, subject, and date. Only set by GetMessage.
-  repeated MessageHeader headers = 14;
+  // Every part, in the order of the raw source. A part's index here is its
+  // index for GetMessagePart. The text body is the first text/plain part
+  // whose disposition isn't "attachment" and that has no name; the HTML
+  // body, the same for text/html. The rest are attachments.
+  repeated MessagePart parts = 12 [(google.api.field_behavior) = REQUIRED];
 
   // Label names. New messages get inbox and unread.
-  repeated string labels = 15 [(google.api.field_behavior) = REQUIRED];
+  repeated string labels = 13 [(google.api.field_behavior) = REQUIRED];
   // Your own key-value data, e.g. {"ticket_id": "T-123"}.
-  map<string, string> metadata = 16 [
+  map<string, string> metadata = 14 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).map = {
       max_pairs: 50
@@ -298,7 +308,7 @@ message Message {
   ];
 
   // When the MTA accepted it.
-  google.protobuf.Timestamp received_at = 17 [
+  google.protobuf.Timestamp received_at = 15 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).required = true
   ];
@@ -312,21 +322,25 @@ message MessageHeader {
   string value = 2 [(google.api.field_behavior) = REQUIRED];
 }
 
-message MessageBody {
-  string text = 1 [(google.api.field_behavior) = REQUIRED];
-  // Unsanitized.
-  string html = 2 [(google.api.field_behavior) = REQUIRED];
-}
-
-message MessageAttachment {
-  // Empty when not set.
-  string filename = 1 [(google.api.field_behavior) = REQUIRED];
-  string content_type = 2 [
+// A MIME body part, other than a multipart: a body, an attachment, an
+// inline image, or an alternative such as a calendar invite. Names follow
+// JMAP's EmailBodyPart (RFC 8621).
+message MessagePart {
+  // The media type from Content-Type, such as "application/pdf".
+  string type = 1 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).required = true
   ];
-  // In bytes.
-  int64 size = 3 [
+  // The Content-Disposition type, such as "inline" or "attachment".
+  // Empty when not set.
+  string disposition = 2 [(google.api.field_behavior) = REQUIRED];
+  // The file name, decoded. Empty when not set.
+  string name = 3 [(google.api.field_behavior) = REQUIRED];
+  // The Content-ID, without angle brackets, that the HTML body refers to
+  // as cid:..., e.g. for an inline image. Empty when not set.
+  string cid = 4 [(google.api.field_behavior) = REQUIRED];
+  // Decoded, in bytes.
+  int64 size = 5 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).int64.gte = 0
   ];
@@ -369,6 +383,17 @@ message CreateMessageRequest {
 }
 
 message CreateMessageResponse {
+  Message message = 1 [(buf.validate.field).required = true];
+}
+
+message GetMessageRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[A-Za-z0-9_-]{21}$"}
+  }];
+}
+
+message GetMessageResponse {
   Message message = 1 [(buf.validate.field).required = true];
 }
 
@@ -452,15 +477,34 @@ message DeleteMessageRequest {
 
 message DeleteMessageResponse {}
 
-message GetMessageRequest {
+message GetMessageHeadersRequest {
   string id = 1 [(buf.validate.field) = {
     required: true
     string: {pattern: "^[A-Za-z0-9_-]{21}$"}
   }];
 }
 
-message GetMessageResponse {
-  Message message = 1 [(buf.validate.field).required = true];
+message GetMessageHeadersResponse {
+  // Every header field exactly as received, in order, including the ones
+  // parsed into from, to, cc, subject, and date.
+  repeated MessageHeader headers = 1;
+}
+
+message GetMessagePartRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[A-Za-z0-9_-]{21}$"}
+  }];
+  // Position in the message's parts, from 0.
+  int32 index = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lt: 1000
+  }];
+}
+
+message GetMessagePartResponse {
+  // The first message has the content type; later ones only data chunks.
+  google.api.HttpBody content = 1 [(buf.validate.field).required = true];
 }
 
 message GetRawMessageRequest {
@@ -472,21 +516,4 @@ message GetRawMessageRequest {
 
 message GetRawMessageResponse {
   google.api.HttpBody raw = 1 [(buf.validate.field).required = true];
-}
-
-message GetAttachmentRequest {
-  string id = 1 [(buf.validate.field) = {
-    required: true
-    string: {pattern: "^[A-Za-z0-9_-]{21}$"}
-  }];
-  // Position in the message's attachments, from 0.
-  int32 index = 2 [(buf.validate.field).int32 = {
-    gte: 0
-    lt: 1000
-  }];
-}
-
-message GetAttachmentResponse {
-  // The first message has the content type; later ones only data chunks.
-  google.api.HttpBody content = 1 [(buf.validate.field).required = true];
 }

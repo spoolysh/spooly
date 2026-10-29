@@ -75,11 +75,12 @@ CREATE TABLE IF NOT EXISTS messages (
     date TIMESTAMPTZ,
     snippet TEXT NOT NULL,
     size BIGINT NOT NULL,
-    attachments TEXT NOT NULL,
-    text_body TEXT NOT NULL,
-    html_body TEXT NOT NULL,
-    -- The header fields as received, in order: a JSON list of {name, value}.
-    headers TEXT NOT NULL,
+    -- The MIME parts but multiparts, in order: a JSON list of {type,
+    -- disposition, name, cid, size, offset, length}. Offset and length are
+    -- where the part's bytes, its header included, are in the raw message,
+    -- so it's read without the rest. Header fields and body content stay in
+    -- the raw message.
+    parts TEXT NOT NULL,
     -- The Message-ID, and the parent's: the first In-Reply-To ID. Without
     -- angle brackets; empty when missing. A reply's parent_msg_id is its
     -- parent's msg_id, which Boxy looks up for replies and threads.

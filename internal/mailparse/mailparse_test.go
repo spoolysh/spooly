@@ -1,9 +1,13 @@
 package mailparse
 
 import (
-	"errors"
+	"bytes"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/boxysh/boxy/internal/db"
 )
 
 func crlf(s string) []byte {
@@ -68,8 +72,8 @@ JVBERi0xLjQ=
 	if p.Snippet != "Hello there, your order is ready." {
 		t.Errorf("Snippet = %q", p.Snippet)
 	}
-	if len(p.Attachments) != 1 || p.Attachments[0].Filename != "invoice.pdf" || p.Attachments[0].Size != 8 {
-		t.Errorf("Attachments = %+v", p.Attachments)
+	if len(p.Parts.Attachments()) != 1 || p.Parts.Attachments()[0].Name != "invoice.pdf" || p.Parts.Attachments()[0].Size != 8 {
+		t.Errorf("Attachments = %+v", p.Parts.Attachments())
 	}
 }
 
@@ -125,22 +129,22 @@ iVBORw==
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachments := p.Parts.Attachments()
+	if len(attachments) != 2 {
+		t.Fatalf("attachments = %+v", attachments)
+	}
 	for i, want := range []struct {
 		name, contentType, content string
 	}{{"a.txt", "text/plain", "first"}, {"b.png", "image/png", "\x89PNG"}} {
-		a, content, err := Attachment(raw, i)
+		a := attachments[i]
+		r, err := ReadPart(bytes.NewReader(raw[a.Offset : a.Offset+a.Length]))
 		if err != nil {
-			t.Fatalf("Attachment(%d): %v", i, err)
+			t.Fatalf("ReadPart(%d): %v", i, err)
 		}
-		if a.Filename != want.name || a.ContentType != want.contentType || string(content) != want.content {
-			t.Errorf("Attachment(%d) = %+v %q", i, a, content)
+		content, _ := io.ReadAll(r)
+		if a.Name != want.name || a.Type != want.contentType || string(content) != want.content || a.Size != int64(len(content)) {
+			t.Errorf("attachment %d = %+v %q", i, a, content)
 		}
-		if a != p.Attachments[i] {
-			t.Errorf("Attachment(%d) = %+v, Parse listed %+v", i, a, p.Attachments[i])
-		}
-	}
-	if _, _, err := Attachment(raw, 2); !errors.Is(err, ErrNoAttachment) {
-		t.Errorf("Attachment(2) = %v, want ErrNoAttachment", err)
 	}
 }
 
@@ -165,8 +169,8 @@ y
 		t.Fatal(err)
 	}
 	var names []string
-	for _, a := range p.Attachments {
-		names = append(names, a.Filename)
+	for _, a := range p.Parts.Attachments() {
+		names = append(names, a.Name)
 	}
 	if got := strings.Join(names, ","); got != "Счет.pdf,café_menu.txt" {
 		t.Errorf("file names = %q", got)
@@ -223,5 +227,145 @@ func TestParseMalformedMessageID(t *testing.T) {
 		if p.MessageID != want {
 			t.Errorf("Parse(%q).MessageID = %q, want %q", raw, p.MessageID, want)
 		}
+	}
+}
+
+// Parse finds the bodies' byte ranges in the raw message, and each reads
+// back as the body.
+func TestPartRanges(t *testing.T) {
+	for name, tc := range map[string]struct {
+		raw        []byte
+		text, html string
+	}{
+		"single part": {crlf("Subject: hi\n\nJust text.\n"), "Just text.\r\n", ""},
+		"lf only":     {[]byte("Subject: hi\nContent-Type: multipart/alternative; boundary=b\n\n--b\nContent-Type: text/plain\n\nplain\n--b\nContent-Type: text/html\n\n<p>html</p>\n--b--\n"), "plain", "<p>html</p>"},
+		"preamble and epilogue": {crlf(`Content-Type: multipart/alternative; boundary="b"
+
+This is a MIME message.
+--b
+Content-Type: text/plain
+
+plain
+--bb
+not a boundary
+--b
+Content-Type: text/html
+
+<p>html</p>
+--b--
+epilogue
+`), "plain\r\n--bb\r\nnot a boundary", "<p>html</p>"},
+		"no closing boundary": {crlf(`Content-Type: multipart/mixed; boundary=b
+
+--b
+Content-Type: text/plain; charset=iso-8859-1
+Content-Transfer-Encoding: quoted-printable
+
+caf=E9
+--b
+Content-Type: application/pdf
+
+%PDF
+`), "café", ""},
+		"nested": {crlf(`Content-Type: multipart/mixed; boundary=outer
+
+--outer
+Content-Type: multipart/related; boundary=rel
+
+--rel
+Content-Type: multipart/alternative; boundary=alt
+
+--alt
+Content-Type: text/plain
+
+plain
+--alt
+Content-Type: text/html
+
+<p>html <img src="cid:logo"></p>
+--alt--
+--rel
+Content-Type: image/png
+Content-ID: <logo>
+Content-Transfer-Encoding: base64
+
+iVBORw==
+--rel--
+--outer--
+`), "plain", `<p>html <img src="cid:logo"></p>`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := tc.raw
+			p, err := Parse(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Text != tc.text || p.HTML != tc.html {
+				t.Errorf("text, html = %q, %q; want %q, %q", p.Text, p.HTML, tc.text, tc.html)
+			}
+			for _, b := range []struct{ kind, want string }{{db.TextBody, tc.text}, {db.HTMLBody, tc.html}} {
+				part, ok := p.Parts.Body(b.kind)
+				if !ok {
+					if b.want != "" {
+						t.Errorf("no %s part", b.kind)
+					}
+					continue
+				}
+				r, err := ReadPart(bytes.NewReader(raw[part.Offset : part.Offset+part.Length]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, _ := io.ReadAll(r); string(got) != b.want {
+					t.Errorf("%s part = %q, want %q", b.kind, got, b.want)
+				}
+			}
+		})
+	}
+}
+
+// Every part is listed, the ones that aren't bodies included.
+func TestParseListsEveryPart(t *testing.T) {
+	raw := crlf(`Subject: Sync
+Content-Type: multipart/mixed; boundary=m
+
+--m
+Content-Type: multipart/alternative; boundary=a
+
+--a
+Content-Type: text/plain
+
+plain
+--a
+Content-Type: text/html
+
+<p>html</p>
+--a
+Content-Type: text/calendar; method=REQUEST
+
+BEGIN:VCALENDAR
+END:VCALENDAR
+--a--
+--m
+Content-Type: text/plain
+
+-- list footer
+--m--
+`)
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	for _, pt := range p.Parts {
+		types = append(types, pt.Type)
+	}
+	if got := strings.Join(types, ","); got != "text/plain,text/html,text/calendar,text/plain" {
+		t.Errorf("parts = %s", got)
+	}
+	if p.Text != "plain" || p.HTML != "<p>html</p>" {
+		t.Errorf("text, html = %q, %q", p.Text, p.HTML)
+	}
+	if got := p.Parts.AttachmentIndexes(); fmt.Sprint(got) != "[2 3]" {
+		t.Errorf("attachments = %v", got)
 	}
 }

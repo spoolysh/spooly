@@ -41,35 +41,31 @@ func addressesProto(list []db.Address) []*boxyv1.Address {
 	return out
 }
 
-// messageProto converts m; the body is set only if withBody.
-func messageProto(m *db.Message, withBody bool) *boxyv1.Message {
+func messageProto(m *db.Message) *boxyv1.Message {
 	p := &boxyv1.Message{
-		Id:          m.ID,
-		AccountId:   m.AccountID,
-		Sender:      m.Sender,
-		Recipient:   m.Recipient,
-		From:        addressProto(m.From),
-		To:          addressesProto(m.To),
-		Cc:          addressesProto(m.Cc),
-		Subject:     m.Subject,
-		Snippet:     m.Snippet,
-		Size:        m.Size,
-		Attachments: make([]*boxyv1.MessageAttachment, 0, len(m.Attachments)),
-		Labels:      m.Labels,
-		Metadata:    m.Metadata,
-		ReceivedAt:  timestamppb.New(m.ReceivedAt),
+		Id:         m.ID,
+		AccountId:  m.AccountID,
+		Sender:     m.Sender,
+		Recipient:  m.Recipient,
+		From:       addressProto(m.From),
+		To:         addressesProto(m.To),
+		Cc:         addressesProto(m.Cc),
+		Subject:    m.Subject,
+		Snippet:    m.Snippet,
+		Size:       m.Size,
+		Parts:      make([]*boxyv1.MessagePart, 0, len(m.Parts)),
+		Labels:     m.Labels,
+		Metadata:   m.Metadata,
+		ReceivedAt: timestamppb.New(m.ReceivedAt),
 	}
 	if m.Date != nil {
 		p.Date = timestamppb.New(*m.Date)
 	}
-	for _, a := range m.Attachments {
-		p.Attachments = append(p.Attachments, &boxyv1.MessageAttachment{Filename: a.Filename, ContentType: a.ContentType, Size: a.Size})
-	}
-	if withBody {
-		p.Body = &boxyv1.MessageBody{Text: m.Text, Html: m.HTML}
-		for _, h := range m.Headers {
-			p.Headers = append(p.Headers, &boxyv1.MessageHeader{Name: h.Name, Value: h.Value})
-		}
+	for _, pt := range m.Parts {
+		p.Parts = append(p.Parts, &boxyv1.MessagePart{
+			Type: pt.Type, Name: pt.Name, Size: pt.Size, Cid: pt.CID,
+			Disposition: pt.Disposition,
+		})
 	}
 	return p
 }
@@ -140,10 +136,7 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 		Date:           parsed.Date,
 		Snippet:        parsed.Snippet,
 		Size:           int64(len(in.Raw)),
-		Attachments:    parsed.Attachments,
-		Text:           parsed.Text,
-		HTML:           parsed.HTML,
-		Headers:        parsed.Headers,
+		Parts:          parsed.Parts,
 		MsgID:          parsed.MessageID,
 		ParentMsgID:    parsed.InReplyTo,
 		IdempotencyKey: in.IdempotencyKey,
@@ -202,7 +195,7 @@ func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.Messag
 	if err != nil {
 		return nil, err
 	}
-	return &boxyv1.CreateMessageResponse{Message: messageProto(m, false)}, nil
+	return &boxyv1.CreateMessageResponse{Message: messageProto(m)}, nil
 }
 
 // MaxIdempotencyKeyLength is the longest idempotency key, in bytes.
@@ -241,7 +234,7 @@ func (s *Service) requireMessage(ctx context.Context, id string) (*db.Message, e
 	if _, _, err := s.caller(ctx); err != nil {
 		return nil, err
 	}
-	m, err := s.db.GetMessage(ctx, id, false)
+	m, err := s.db.GetMessage(ctx, id)
 	if err != nil {
 		return nil, dbError(err)
 	}
@@ -280,7 +273,7 @@ func (s *Service) ListMessages(ctx context.Context, req *boxyv1.ListMessagesRequ
 	}
 	resp := &boxyv1.ListMessagesResponse{Messages: make([]*boxyv1.Message, 0, len(messages))}
 	for _, m := range messages {
-		resp.Messages = append(resp.Messages, messageProto(m, false))
+		resp.Messages = append(resp.Messages, messageProto(m))
 	}
 	return resp, nil
 }
@@ -302,25 +295,99 @@ func (s *Service) UpdateMessage(ctx context.Context, req *boxyv1.UpdateMessageRe
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &boxyv1.UpdateMessageResponse{Message: messageProto(m, false)}, nil
+	return &boxyv1.UpdateMessageResponse{Message: messageProto(m)}, nil
 }
 
 func (s *Service) GetMessage(ctx context.Context, req *boxyv1.GetMessageRequest) (*boxyv1.GetMessageResponse, error) {
+	m, err := s.requireMessage(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	return &boxyv1.GetMessageResponse{Message: messageProto(m)}, nil
+}
+
+func (s *Service) GetMessageHeaders(ctx context.Context, req *boxyv1.GetMessageHeadersRequest) (*boxyv1.GetMessageHeadersResponse, error) {
 	if _, err := s.requireMessage(ctx, req.Id); err != nil {
 		return nil, err
 	}
-	m, err := s.db.GetMessage(ctx, req.Id, true)
+	headers, err := s.readHeaders(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	resp := &boxyv1.GetMessageHeadersResponse{Headers: make([]*boxyv1.MessageHeader, 0, len(headers))}
+	for _, h := range headers {
+		resp.Headers = append(resp.Headers, &boxyv1.MessageHeader{Name: h.Name, Value: h.Value})
+	}
+	return resp, nil
+}
+
+// readHeaders reads the header fields of message id, and nothing after
+// them. Errors are connect errors.
+func (s *Service) readHeaders(ctx context.Context, id string) ([]db.Header, error) {
+	rc, err := s.store.Get(ctx, id)
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &boxyv1.GetMessageResponse{Message: messageProto(m, true)}, nil
+	defer rc.Close()
+	headers, err := mailparse.ReadHeaders(rc)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, "reading header fields").WithCause(err)
+	}
+	return headers, nil
 }
 
-// OpenRaw returns a message, without its bodies, and its raw source. The
+// ReadBody sets m's text and HTML bodies and header fields, reading just
+// those from its raw message. Errors are connect errors.
+func (s *Service) ReadBody(ctx context.Context, m *db.Message) error {
+	var err error
+	if m.Headers, err = s.readHeaders(ctx, m.ID); err != nil {
+		return err
+	}
+	for _, b := range []struct {
+		mediaType string
+		dst       *string
+	}{{db.TextBody, &m.Text}, {db.HTMLBody, &m.HTML}} {
+		part, ok := m.Parts.Body(b.mediaType)
+		if !ok {
+			continue
+		}
+		r, err := s.openPart(ctx, m.ID, part)
+		if err != nil {
+			return err
+		}
+		content, err := io.ReadAll(r)
+		r.Close()
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, "reading message body").WithCause(err)
+		}
+		*b.dst = strings.ToValidUTF8(string(content), "\uFFFD")
+	}
+	return nil
+}
+
+// openPart returns the decoded content of a part of message id, reading
+// only its bytes. Errors are connect errors.
+func (s *Service) openPart(ctx context.Context, id string, part db.Part) (io.ReadCloser, error) {
+	rc, err := s.store.GetRange(ctx, id, part.Offset, part.Length)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	r, err := mailparse.ReadPart(rc)
+	if err != nil {
+		rc.Close()
+		return nil, connect.NewError(connect.CodeInternal, "parsing message part").WithCause(err)
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{r, rc}, nil
+}
+
+// OpenRaw returns a message and its raw source. The
 // caller must close the source and check access first. Errors are connect
 // errors.
 func (s *Service) OpenRaw(ctx context.Context, id string) (*db.Message, io.ReadCloser, error) {
-	m, err := s.db.GetMessage(ctx, id, false)
+	m, err := s.db.GetMessage(ctx, id)
 	if err != nil {
 		return nil, nil, dbError(err)
 	}
@@ -375,17 +442,25 @@ func (s *Service) GetRawMessage(ctx context.Context, req *boxyv1.GetRawMessageRe
 		info.ResponseHeader().Set("Content-Disposition", ContentDisposition("attachment", EmlFilename(m)))
 	}
 
+	return sendChunks(rc, "message/rfc822", func(chunk *httpbody.HttpBody) error {
+		return stream.Send(&boxyv1.GetRawMessageResponse{Raw: chunk})
+	})
+}
+
+// sendChunks sends r's content in chunks, the first with contentType, and
+// always at least one.
+func sendChunks(r io.Reader, contentType string, send func(*httpbody.HttpBody) error) error {
 	buf := make([]byte, chunkSize)
 	first := true
 	for {
-		n, readErr := io.ReadFull(rc, buf)
+		n, readErr := io.ReadFull(r, buf)
 		if n > 0 || first {
 			chunk := &httpbody.HttpBody{Data: buf[:n]}
 			if first {
-				chunk.ContentType = "message/rfc822"
+				chunk.ContentType = contentType
 				first = false
 			}
-			if err := stream.Send(&boxyv1.GetRawMessageResponse{Raw: chunk}); err != nil {
+			if err := send(chunk); err != nil {
 				return err
 			}
 		}
@@ -393,36 +468,28 @@ func (s *Service) GetRawMessage(ctx context.Context, req *boxyv1.GetRawMessageRe
 			return nil
 		}
 		if readErr != nil {
-			return connect.NewError(connect.CodeInternal, "reading raw message").WithCause(readErr)
+			return connect.NewError(connect.CodeInternal, "reading message").WithCause(readErr)
 		}
 	}
 }
 
-// OpenAttachment returns attachment index of message id, decoded, with its
-// filename and a content type to serve it as: text attachments are decoded
-// to UTF-8, so they say so. Callers check access first. Errors are connect
-// errors.
-func (s *Service) OpenAttachment(ctx context.Context, id string, index int) (db.Attachment, []byte, error) {
-	_, rc, err := s.OpenRaw(ctx, id)
+// OpenPart returns part index of message m, decoded, with a content type
+// to serve it as: text is decoded to UTF-8, so it says so. Only the part's
+// bytes are read. The caller must close the content and check access
+// first. Errors are connect errors.
+func (s *Service) OpenPart(ctx context.Context, m *db.Message, index int) (db.Part, io.ReadCloser, error) {
+	if index < 0 || index >= len(m.Parts) {
+		return db.Part{}, nil, connect.Errorf(connect.CodeNotFound, "no part %d", index)
+	}
+	part := m.Parts[index]
+	rc, err := s.openPart(ctx, m.ID, part)
 	if err != nil {
-		return db.Attachment{}, nil, err
+		return db.Part{}, nil, err
 	}
-	raw, err := io.ReadAll(rc)
-	rc.Close()
-	if err != nil {
-		return db.Attachment{}, nil, connect.NewError(connect.CodeInternal, "reading raw message").WithCause(err)
+	if strings.HasPrefix(part.Type, "text/") {
+		part.Type += "; charset=utf-8"
 	}
-	a, content, err := mailparse.Attachment(raw, index)
-	if errors.Is(err, mailparse.ErrNoAttachment) {
-		return db.Attachment{}, nil, connect.NewError(connect.CodeNotFound, err.Error())
-	}
-	if err != nil {
-		return db.Attachment{}, nil, connect.NewError(connect.CodeInternal, "parsing raw message").WithCause(err)
-	}
-	if strings.HasPrefix(a.ContentType, "text/") {
-		a.ContentType += "; charset=utf-8"
-	}
-	return a, content, nil
+	return part, rc, nil
 }
 
 // ContentDisposition is the Content-Disposition for serving a file named
@@ -440,29 +507,34 @@ func ContentDisposition(disposition, filename string) string {
 	return disposition
 }
 
-func (s *Service) GetAttachment(ctx context.Context, req *boxyv1.GetAttachmentRequest, stream boxyv1connect.MessageServiceGetAttachmentServerStream) error {
-	if _, err := s.requireMessage(ctx, req.Id); err != nil {
-		return err
-	}
-	a, content, err := s.OpenAttachment(ctx, req.Id, int(req.Index))
+func (s *Service) GetMessagePart(ctx context.Context, req *boxyv1.GetMessagePartRequest, stream boxyv1connect.MessageServiceGetMessagePartServerStream) error {
+	m, err := s.requireMessage(ctx, req.Id)
 	if err != nil {
 		return err
 	}
+	part, rc, err := s.OpenPart(ctx, m, int(req.Index))
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
 	// Over REST, Vanguard copies response headers onto the HTTP response.
+	// The API takes only API keys, never the dashboard's cookie, so a
+	// browser can't be made to open a part, and its own disposition is safe
+	// to pass on. Without one, named files download and the rest shows.
 	if info, ok := connect.CallInfoForServerContext(ctx); ok {
-		info.ResponseHeader().Set("Content-Disposition", ContentDisposition("attachment", a.Filename))
+		disposition := part.Disposition
+		if disposition != "inline" && disposition != "attachment" {
+			disposition = "inline"
+			if part.Name != "" {
+				disposition = "attachment"
+			}
+		}
+		info.ResponseHeader().Set("Content-Disposition", ContentDisposition(disposition, part.Name))
 		info.ResponseHeader().Set("X-Content-Type-Options", "nosniff")
 	}
-	for i := 0; i == 0 || i < len(content); i += chunkSize {
-		chunk := &httpbody.HttpBody{Data: content[i:min(i+chunkSize, len(content))]}
-		if i == 0 {
-			chunk.ContentType = a.ContentType
-		}
-		if err := stream.Send(&boxyv1.GetAttachmentResponse{Content: chunk}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return sendChunks(rc, part.Type, func(chunk *httpbody.HttpBody) error {
+		return stream.Send(&boxyv1.GetMessagePartResponse{Content: chunk})
+	})
 }
 
 func (s *Service) DeleteMessage(ctx context.Context, req *boxyv1.DeleteMessageRequest) (*boxyv1.DeleteMessageResponse, error) {

@@ -98,7 +98,7 @@ func (e *testEnv) dial(handler *imapclient.UnilateralDataHandler) *imapclient.Cl
 
 func (e *testEnv) labels(id string) string {
 	e.t.Helper()
-	m, err := e.db.GetMessage(e.t.Context(), id, false)
+	m, err := e.db.GetMessage(e.t.Context(), id)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestMoveCopyExpunge(t *testing.T) {
 	if expunged, err := c.Expunge().Collect(); err != nil || len(expunged) != 1 {
 		t.Errorf("EXPUNGE in Trash = %v, %v", expunged, err)
 	}
-	if _, err := e.db.GetMessage(t.Context(), e.ids[2], false); !errors.Is(err, db.ErrMessageNotFound) {
+	if _, err := e.db.GetMessage(t.Context(), e.ids[2]); !errors.Is(err, db.ErrMessageNotFound) {
 		t.Errorf("message after emptying the trash: %v", err)
 	}
 	if _, _, err := e.svc.OpenRaw(t.Context(), e.ids[2]); err == nil {

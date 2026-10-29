@@ -119,16 +119,16 @@
   {{if and (not $m.HTML) (not $m.Text)}}
   <p class="px-6 py-8 text-center text-sm text-gray-500">This message has no text body.</p>
   {{end}}
-  {{if $m.Attachments}}
+  {{with $m.Parts.AttachmentIndexes}}
   <div class="border-t border-gray-200 px-6 py-4">
     <h3 class="text-xs font-medium uppercase tracking-wider text-gray-500 mb-2">Attachments</h3>
     <ul class="flex flex-wrap gap-2">
-      {{range $i, $a := $m.Attachments}}
+      {{range $i := .}}{{$a := index $m.Parts $i}}
       <li class="inline-flex max-w-full items-center gap-2 rounded-md border border-gray-200 bg-gray-50 pl-3 pr-1 py-1 text-xs">
-        <a href="/{{$m.ID}}?attachment={{$i}}" target="_blank" rel="noopener" title="Open {{$a.Filename}}"
-          class="min-w-0 truncate font-medium text-brand-600 hover:text-brand-800 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">{{if $a.Filename}}{{$a.Filename}}{{else}}(unnamed){{end}}</a>
-        <span class="shrink-0 text-gray-500">{{$a.ContentType}} &middot; {{formatSize $a.Size}}</span>
-        <a href="/{{$m.ID}}?attachment={{$i}}&amp;download" title="Download" aria-label="Download {{$a.Filename}}"
+        <a href="/{{$m.ID}}?part={{$i}}" target="_blank" rel="noopener" title="Open {{$a.Name}}"
+          class="min-w-0 truncate font-medium text-brand-600 hover:text-brand-800 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-sm">{{if $a.Name}}{{$a.Name}}{{else}}(unnamed){{end}}</a>
+        <span class="shrink-0 text-gray-500">{{$a.Type}} &middot; {{formatSize $a.Size}}</span>
+        <a href="/{{$m.ID}}?part={{$i}}&amp;download" title="Download" aria-label="Download {{$a.Name}}"
           class="shrink-0 p-1 rounded text-gray-400 hover:text-gray-900 hover:bg-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
           <svg aria-hidden="true" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
         </a>

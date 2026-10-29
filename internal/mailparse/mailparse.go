@@ -25,20 +25,21 @@ import (
 // SnippetLength is the most characters a snippet has.
 const SnippetLength = 200
 
-// Parsed holds what Parse extracts.
+// Parsed holds what Parse extracts. Text, HTML, and Headers are for the
+// snippet and tests; Boxy reads them from the raw message when shown.
 type Parsed struct {
-	From        db.Address // empty when there's no From header
-	To          []db.Address
-	Cc          []db.Address
-	Subject     string
-	Date        *time.Time // nil when missing or invalid
-	Headers     []db.Header
-	MessageID   string // without angle brackets; empty when missing
-	InReplyTo   string // the first ID, without angle brackets; empty when missing
-	Text        string
-	HTML        string
-	Snippet     string
-	Attachments []db.Attachment
+	From      db.Address // empty when there's no From header
+	To        []db.Address
+	Cc        []db.Address
+	Subject   string
+	Date      *time.Time // nil when missing or invalid
+	Headers   []db.Header
+	MessageID string // without angle brackets; empty when missing
+	InReplyTo string // the first ID, without angle brackets; empty when missing
+	Text      string
+	HTML      string
+	Snippet   string
+	Parts     db.Parts
 }
 
 // ErrInvalid reports a message whose header can't be parsed at all.
@@ -47,13 +48,13 @@ var ErrInvalid = errors.New("not an RFC 5322 message")
 // Parse parses raw. It is lenient: bad addresses, dates, charsets, or parts
 // leave those fields empty rather than failing.
 func Parse(raw []byte) (*Parsed, error) {
-	mr, err := newReader(raw)
-	if err != nil {
-		return nil, err
+	mr, err := mail.CreateReader(bytes.NewReader(raw))
+	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	defer mr.Close()
 
-	p := &Parsed{To: []db.Address{}, Cc: []db.Address{}, Attachments: []db.Attachment{}}
+	p := &Parsed{To: []db.Address{}, Cc: []db.Address{}, Parts: db.Parts{}}
 	h := mr.Header
 	if from := addressList(h, "From"); len(from) > 0 {
 		p.From = from[0]
@@ -73,136 +74,165 @@ func Parse(raw []byte) (*Parsed, error) {
 	p.MessageID = msgID(h, "Message-Id")
 	p.InReplyTo = msgID(h, "In-Reply-To")
 
-	walkParts(mr, func(pt part) bool {
-		switch pt.kind {
-		case partText:
-			p.Text = readText(pt.body)
-		case partHTML:
-			p.HTML = readText(pt.body)
-		case partAttachment:
-			n, _ := io.Copy(io.Discard, pt.body)
-			p.Attachments = append(p.Attachments, db.Attachment{Filename: pt.filename, ContentType: pt.contentType, Size: n})
+	for _, l := range leaves(raw, 0, len(raw), 0, nil) {
+		e, err := readEntity(bytes.NewReader(raw[l.start:l.end]))
+		if err != nil {
+			continue
 		}
-		return true
-	})
+		pt := describe(e.Header)
+		pt.Offset, pt.Length = int64(l.start), int64(l.end-l.start)
+		i := len(p.Parts)
+		p.Parts = append(p.Parts, pt)
+		// Size counts the decoded bytes, as GetMessagePart serves them.
+		switch i {
+		case p.Parts.BodyIndex(db.TextBody):
+			b, _ := io.ReadAll(e.Body)
+			p.Text, p.Parts[i].Size = strings.ToValidUTF8(string(b), "�"), int64(len(b))
+		case p.Parts.BodyIndex(db.HTMLBody):
+			b, _ := io.ReadAll(e.Body)
+			p.HTML, p.Parts[i].Size = strings.ToValidUTF8(string(b), "�"), int64(len(b))
+		default:
+			p.Parts[i].Size, _ = io.Copy(io.Discard, e.Body)
+		}
+	}
 
 	p.Snippet = snippet(p.Text, p.HTML)
 	return p, nil
 }
 
-// ErrNoAttachment reports an attachment index past the message's last one.
-var ErrNoAttachment = errors.New("no such attachment")
-
-// Attachment returns attachment index of raw, counted from 0 in the order
-// Parse lists them, with its decoded content.
-func Attachment(raw []byte, index int) (db.Attachment, []byte, error) {
-	mr, err := newReader(raw)
+// ReadHeaders reads the header fields at the start of a raw message, and
+// nothing after them.
+func ReadHeaders(r io.Reader) ([]db.Header, error) {
+	e, err := readEntity(r)
 	if err != nil {
-		return db.Attachment{}, nil, err
-	}
-	defer mr.Close()
-
-	var found *db.Attachment
-	var content []byte
-	i := 0
-	walkParts(mr, func(pt part) bool {
-		if pt.kind != partAttachment {
-			return true
-		}
-		if i < index {
-			i++
-			return true
-		}
-		content, _ = io.ReadAll(pt.body)
-		found = &db.Attachment{Filename: pt.filename, ContentType: pt.contentType, Size: int64(len(content))}
-		return false
-	})
-	if found == nil {
-		return db.Attachment{}, nil, fmt.Errorf("%w: %d", ErrNoAttachment, index)
-	}
-	return *found, content, nil
-}
-
-func newReader(raw []byte) (*mail.Reader, error) {
-	mr, err := mail.CreateReader(bytes.NewReader(raw))
-	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	return mr, nil
+	return headers(mail.Header{Header: e.Header}), nil
 }
 
-type partKind int
-
-const (
-	partSkip       partKind = iota
-	partText                // the text body
-	partHTML                // the HTML body
-	partAttachment          // anything else with content
-)
-
-type part struct {
-	kind        partKind
-	filename    string
-	contentType string
-	body        io.Reader
+// ReadPart returns the decoded content of a part, given its bytes in the
+// raw message: Part.Length bytes from Part.Offset. Text is decoded to UTF-8.
+func ReadPart(r io.Reader) (io.Reader, error) {
+	e, err := readEntity(r)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	return e.Body, nil
 }
 
-// walkParts calls fn with each part of mr in order, classified, until fn
-// returns false. The first text/plain and text/html parts without a filename
-// are the bodies; other text parts without one are alternative bodies and
-// skipped; everything else is an attachment. Parse and Attachment both walk
-// this way, so attachment indexes agree.
-func walkParts(mr *mail.Reader, fn func(part) bool) {
-	var haveText, haveHTML bool
-	for {
-		mp, err := mr.NextPart()
-		if err == io.EOF {
-			return
-		}
-		if err != nil {
-			if message.IsUnknownCharset(err) || message.IsUnknownEncoding(err) {
-				continue
-			}
-			return // keep what was walked so far
-		}
+// readEntity reads an entity's header, and returns it with its body
+// decoded. An unknown charset or transfer encoding leaves the body as is.
+func readEntity(r io.Reader) (*message.Entity, error) {
+	e, err := message.Read(r)
+	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
+		return nil, err
+	}
+	return e, nil
+}
 
-		pt := part{kind: partAttachment, body: mp.Body}
-		switch h := mp.Header.(type) {
-		case *mail.InlineHeader:
-			ct, params, _ := h.ContentType()
-			pt.contentType, pt.filename = ct, params["name"]
-			if _, dp, err := h.ContentDisposition(); err == nil && dp["filename"] != "" {
-				pt.filename = dp["filename"]
+// maxDepth is how deep multiparts may nest; deeper ones are one part.
+const maxDepth = 20
+
+// leaf is the byte range of a leaf entity, header included.
+type leaf struct{ start, end int }
+
+// leaves appends the leaf entities of the entity at raw[start:end], in order:
+// the parts of multiparts, depth first, and everything else whole. Attached
+// messages (message/rfc822) are leaves.
+func leaves(raw []byte, start, end, depth int, out []leaf) []leaf {
+	body := start + bodyStart(raw[start:end])
+	e, err := readEntity(bytes.NewReader(raw[start:body]))
+	if err == nil && depth < maxDepth {
+		if mt, params, err := e.Header.ContentType(); err == nil && strings.HasPrefix(mt, "multipart/") && params["boundary"] != "" {
+			for _, r := range multipartRanges(raw[body:end], params["boundary"]) {
+				out = leaves(raw, body+r.start, body+r.end, depth+1, out)
 			}
-			if name := filename(h.Header); name != "" {
-				pt.filename = name
-			}
-			if pt.filename == "" {
-				switch {
-				case ct == "text/plain" && !haveText:
-					pt.kind, haveText = partText, true
-				case ct == "text/html" && !haveHTML:
-					pt.kind, haveHTML = partHTML, true
-				case strings.HasPrefix(ct, "text/"):
-					pt.kind = partSkip
-				}
-			}
-		case *mail.AttachmentHeader:
-			pt.filename, _ = h.Filename()
-			if name := filename(h.Header); name != "" {
-				pt.filename = name
-			}
-			pt.contentType, _, _ = h.ContentType()
-		default:
-			continue
-		}
-		if pt.kind == partAttachment && pt.contentType == "" {
-			pt.contentType = "application/octet-stream"
-		}
-		if !fn(pt) {
-			return
+			return out
 		}
 	}
+	return append(out, leaf{start, end})
+}
+
+// bodyStart returns where an entity's body starts: after the blank line
+// that ends its header, or at the end if there's none.
+func bodyStart(b []byte) int {
+	for i := 0; i < len(b); {
+		if b[i] == '\n' {
+			return i + 1
+		}
+		if b[i] == '\r' && i+1 < len(b) && b[i+1] == '\n' {
+			return i + 2
+		}
+		eol := bytes.IndexByte(b[i:], '\n')
+		if eol < 0 {
+			break
+		}
+		i += eol + 1
+	}
+	return len(b)
+}
+
+// multipartRanges returns the ranges of a multipart body's parts, between
+// its boundary lines. The line break before a boundary line is part of it,
+// as RFC 2046 says. Without a closing boundary, the last part runs to the
+// end.
+func multipartRanges(body []byte, boundary string) []leaf {
+	delim := []byte("--" + boundary)
+	var parts []leaf
+	start := -1
+	for i := 0; i < len(body); {
+		next := len(body)
+		if eol := bytes.IndexByte(body[i:], '\n'); eol >= 0 {
+			next = i + eol + 1
+		}
+		if line := body[i:next]; bytes.HasPrefix(line, delim) {
+			rest := bytes.TrimRight(line[len(delim):], " \t\r\n")
+			closing := string(rest) == "--"
+			if closing || len(rest) == 0 {
+				if start >= 0 {
+					end := i
+					if end > start && body[end-1] == '\n' {
+						end--
+					}
+					if end > start && body[end-1] == '\r' {
+						end--
+					}
+					parts = append(parts, leaf{start, end})
+				}
+				if closing {
+					return parts
+				}
+				start = next
+			}
+		}
+		i = next
+	}
+	if start >= 0 && start < len(body) {
+		parts = append(parts, leaf{start, len(body)})
+	}
+	return parts
+}
+
+// describe returns a part's media type, file name, Content-ID, and
+// disposition.
+func describe(h message.Header) db.Part {
+	var pt db.Part
+	ct, params, _ := h.ContentType()
+	disp, dparams, _ := h.ContentDisposition()
+	pt.Type, pt.Name, pt.Disposition = ct, dparams["filename"], strings.ToLower(disp)
+	if pt.Name == "" {
+		pt.Name = params["name"]
+	}
+	if name := filename(h); name != "" {
+		pt.Name = name
+	}
+	if id := strings.TrimSpace(h.Get("Content-Id")); id != "" {
+		pt.CID = strings.ToValidUTF8(strings.TrimSuffix(strings.TrimPrefix(id, "<"), ">"), "�")
+	}
+	if pt.Type == "" {
+		pt.Type = "application/octet-stream"
+	}
+	return pt
 }
 
 // headers returns h's fields in order, with names as written and values
@@ -235,11 +265,6 @@ func msgID(h mail.Header, key string) string {
 	}
 	first, _, _ := strings.Cut(strings.TrimSpace(h.Get(key)), " ")
 	return strings.ToValidUTF8(strings.Trim(first, "<>"), "�")
-}
-
-func readText(r io.Reader) string {
-	b, _ := io.ReadAll(r)
-	return strings.ToValidUTF8(string(b), "�")
 }
 
 func addressList(h mail.Header, key string) []db.Address {

@@ -228,7 +228,7 @@ func TestSession(t *testing.T) {
 
 func (e *testEnv) wantLabels(id, want string) {
 	e.t.Helper()
-	m, err := e.db.GetMessage(e.t.Context(), id, false)
+	m, err := e.db.GetMessage(e.t.Context(), id)
 	if err != nil {
 		e.t.Fatal(err)
 	}
