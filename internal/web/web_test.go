@@ -124,8 +124,11 @@ func TestPagesRender(t *testing.T) {
 	u.get("/keys", 200)
 
 	body := u.get("/"+id, 200)
-	if !strings.Contains(body, "sandbox=") || !strings.Contains(body, "img-src data:;") {
+	if !strings.Contains(body, "sandbox=") || !strings.Contains(body, "img-src &#39;self&#39; data:;") {
 		t.Errorf("message page doesn't sandbox the HTML body")
+	}
+	if !strings.Contains(body, `id="load-images"`) {
+		t.Error("a message with remote images can't load them")
 	}
 	if strings.Contains(body, `<img src="https://tracker.example`) {
 		t.Errorf("HTML body is not escaped into srcdoc")
@@ -251,6 +254,66 @@ func TestAttachments(t *testing.T) {
 	}
 	if rec := u.do("GET", "/"+m.ID+"?part=1", "", "", false); rec.Code != 401 {
 		t.Errorf("signed out: %d", rec.Code)
+	}
+}
+
+// Images the HTML body embeds by cid: load from their parts, and aren't
+// listed as attachments.
+func TestInlineImages(t *testing.T) {
+	u := newTestUI(t)
+	if _, err := u.svc.CreateAccount(u.asAdmin(), &boxyv1.CreateAccountRequest{Addresses: []string{"hello@boxy.sh"}}); err != nil {
+		t.Fatal(err)
+	}
+	raw := "Subject: news\r\nContent-Type: multipart/related; boundary=b\r\n\r\n" +
+		"--b\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:logo@x\"><img src=\"cid:missing@x\"><div style=\"background:url(CID:bg%40x)\"></div>\r\n" +
+		"--b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n" +
+		"--b\r\nContent-Type: image/png\r\nContent-ID: <bg@x>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n" +
+		"--b\r\nContent-Type: image/png\r\nContent-ID: <unused@x>\r\nContent-Disposition: attachment; filename=\"unused.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n--b--\r\n"
+	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := u.get("/"+m.ID, 200)
+	for _, want := range []string{
+		"src=&#34;/" + m.ID + "?part=1&#34;",
+		"url(/" + m.ID + "?part=2)",
+		"cid:missing@x", // unknown, left as is
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("message page doesn't have %s", want)
+		}
+	}
+	if strings.Contains(body, "?part=1&amp;download") || strings.Contains(body, "?part=2&amp;download") {
+		t.Error("inline images are listed as attachments")
+	}
+	if !strings.Contains(body, "?part=3&amp;download") {
+		t.Error("an image the HTML doesn't show isn't listed")
+	}
+	if strings.Contains(body, `id="load-images"`) {
+		t.Error("a message without remote images offers to load them")
+	}
+}
+
+func TestHasRemoteContent(t *testing.T) {
+	for html, want := range map[string]bool{
+		`<p>Hi</p>`:                                                 false,
+		`<img src="/abc?part=1">`:                                   false,
+		`<img src="data:image/png;base64,x">`:                       false,
+		`<a href="https://example.com">x</a>`:                       false, // a link, not loaded
+		`<img src="https://t.example/x.png">`:                       true,
+		`<img SRC='//t.example/x.png'>`:                             true,
+		`<img srcset="/a.png 1x, https://t.example/b.png 2x">`:      true,
+		`<td background="http://t.example/bg.jpg">`:                 true,
+		`<div style="background:url( 'https://t.example/bg.jpg')">`: true,
+		`<style>@import "https://t.example/a.css";</style>`:         true,
+		`<style>p { background: url(/abc?part=1) }</style>`:         false,
+		`<link rel="stylesheet" href="https://t.example/a.css">`:    true,
+		`<link rel="icon" href="https://t.example/f.ico">`:          false,
+	} {
+		if got := hasRemoteContent(html); got != want {
+			t.Errorf("hasRemoteContent(%s) = %v, want %v", html, got, want)
+		}
 	}
 }
 

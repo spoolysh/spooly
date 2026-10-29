@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	xhtml "golang.org/x/net/html"
 
 	"github.com/boxysh/boxy/internal/auth"
 	"github.com/boxysh/boxy/internal/db"
@@ -313,7 +314,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			Subject:     m.Subject,
 			Snippet:     m.Snippet,
 			Recipient:   m.Recipient,
-			Attachments: len(m.Parts.Attachments()),
+			Attachments: countAttachments(m.Parts),
 			ReceivedAt:  formatTime(m.ReceivedAt),
 			ReceivedISO: m.ReceivedAt.Local().Format(time.DateTime),
 		}
@@ -351,6 +352,10 @@ type messageData struct {
 	ReceivedAt string
 	HTMLDoc    string // the HTML body with remote content blocked
 	HTMLDocAll string // the HTML body as sent
+	HasRemote  bool   // whether the HTML body loads remote images or styles
+	// Attachments are the indexes of the parts to list as attachments: not
+	// a body, nor an image the HTML body shows.
+	Attachments []int
 }
 
 func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
@@ -436,16 +441,132 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 			data.UserLabels = append(data.UserLabels, l)
 		}
 	}
-	if m.HTML != "" {
+	html, shown := inlineParts(m)
+	for _, i := range m.Parts.AttachmentIndexes() {
+		if !shown[i] {
+			data.Attachments = append(data.Attachments, i)
+		}
+	}
+	if html != "" {
 		// The body is shown in a sandboxed iframe that can't run scripts.
 		// The CSP also blocks remote images and styles until the user loads
 		// them, so opening a message doesn't tell the sender; links open in
-		// a new tab.
+		// a new tab. Images embedded in the message load from Boxy ('self').
 		const head = `<base target="_blank"><meta http-equiv="Content-Security-Policy" content="script-src 'none'; default-src 'none'; `
-		data.HTMLDoc = head + `img-src data:; style-src 'unsafe-inline'">` + m.HTML
-		data.HTMLDocAll = head + `img-src * data:; style-src * 'unsafe-inline'; font-src *">` + m.HTML
+		data.HTMLDoc = head + `img-src 'self' data:; style-src 'unsafe-inline'">` + html
+		data.HTMLDocAll = head + `img-src * data:; style-src * 'unsafe-inline'; font-src *">` + html
+		data.HasRemote = hasRemoteContent(html)
 	}
 	h.render(w, "message", data)
+}
+
+// countAttachments counts the parts a list shows a paperclip for: not a
+// body, nor what looks like an image the HTML body embeds (one with a
+// Content-ID that isn't an attachment). The message page checks the HTML
+// itself.
+func countAttachments(parts db.Parts) int {
+	n := 0
+	for _, p := range parts.Attachments() {
+		if !(p.CID != "" && strings.HasPrefix(p.Type, "image/") && p.Disposition != "attachment") {
+			n++
+		}
+	}
+	return n
+}
+
+// cidURL matches a cid: URL (RFC 2392), as in <img src="cid:logo@x"> or
+// CSS url(cid:logo@x).
+var cidURL = regexp.MustCompile(`(?i)\bcid:([^"'\s)>]+)`)
+
+// inlineParts returns m's HTML body with its cid: URLs pointing at the parts
+// they name, and which parts those are. Unknown cid: URLs are left as they
+// are.
+func inlineParts(m *db.Message) (string, map[int]bool) {
+	byCID := map[string]int{}
+	for i, p := range m.Parts {
+		if _, ok := byCID[p.CID]; p.CID != "" && !ok {
+			byCID[p.CID] = i
+		}
+	}
+	shown := map[int]bool{}
+	if len(byCID) == 0 {
+		return m.HTML, shown
+	}
+	html := cidURL.ReplaceAllStringFunc(m.HTML, func(u string) string {
+		cid, err := url.PathUnescape(u[len("cid:"):])
+		if err != nil {
+			return u
+		}
+		i, ok := byCID[cid]
+		if !ok {
+			return u
+		}
+		shown[i] = true
+		return "/" + m.ID + "?part=" + strconv.Itoa(i)
+	})
+	return html, shown
+}
+
+// remoteURL matches a URL on another host: http:, https:, or
+// protocol-relative.
+var remoteURL = regexp.MustCompile(`(?i)^\s*(https?:)?//`)
+
+// cssRemoteURL matches a remote url(...) or @import in CSS.
+var cssRemoteURL = regexp.MustCompile(`(?i)(url\(\s*['"]?|@import\s+['"])\s*(https?:)?//`)
+
+// hasRemoteContent reports whether an HTML body loads anything the iframe
+// blocks until remote content is allowed: images, styles, or fonts from
+// another host.
+func hasRemoteContent(s string) bool {
+	z := xhtml.NewTokenizer(strings.NewReader(s))
+	inStyle := false
+	for {
+		switch z.Next() {
+		case xhtml.ErrorToken:
+			return false
+		case xhtml.TextToken:
+			if inStyle && cssRemoteURL.Match(z.Text()) {
+				return true
+			}
+		case xhtml.EndTagToken:
+			if name, _ := z.TagName(); string(name) == "style" {
+				inStyle = false
+			}
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			name, more := z.TagName()
+			if string(name) == "style" {
+				inStyle = true
+			}
+			var rel, href string
+			for more {
+				var key, val []byte
+				key, val, more = z.TagAttr()
+				switch string(key) {
+				case "src", "background", "poster":
+					if remoteURL.Match(val) {
+						return true
+					}
+				case "srcset":
+					for _, c := range strings.Split(string(val), ",") {
+						if remoteURL.MatchString(c) {
+							return true
+						}
+					}
+				case "style":
+					if cssRemoteURL.Match(val) {
+						return true
+					}
+				case "rel":
+					rel = strings.ToLower(string(val))
+				case "href":
+					href = string(val)
+				}
+			}
+			if string(name) == "link" && strings.Contains(rel, "stylesheet") && remoteURL.MatchString(href) {
+				return true
+			}
+		}
+	}
 }
 
 // viewable are the attachment types the browser may show rather than
