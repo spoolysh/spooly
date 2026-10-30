@@ -29,6 +29,10 @@ test:
 tidy:
     go mod tidy
 
+# List direct dependencies with newer versions
+deps:
+    @go list -m -u -f '{{"{{"}}if and .Update (not .Indirect){{"}}"}}{{"{{"}}.Path{{"}}"}}: {{"{{"}}.Version{{"}}"}} -> {{"{{"}}.Update.Version{{"}}"}}{{"{{"}}end{{"}}"}}' all
+
 # Lint proto files
 lint:
     buf lint
