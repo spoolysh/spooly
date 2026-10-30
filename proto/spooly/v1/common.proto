@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package boxy.v1;
+package spooly.v1;
 
 import "google/api/field_behavior.proto";
 
-option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
+option go_package = "github.com/spoolysh/spooly/gen/spooly/v1;spoolyv1";
 
 // Address from a From/To/Cc header, as the sender wrote it.
 message Address {

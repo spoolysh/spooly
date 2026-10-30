@@ -13,7 +13,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/boxysh/boxy/internal/db"
+	"github.com/spoolysh/spooly/internal/db"
 )
 
 const oauthNextCookieName = "oauth_next"

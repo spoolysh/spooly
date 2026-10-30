@@ -18,9 +18,9 @@ import (
 	"connectrpc.com/connect/v2"
 	xhtml "golang.org/x/net/html"
 
-	"github.com/boxysh/boxy/internal/auth"
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/service"
+	"github.com/spoolysh/spooly/internal/auth"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/service"
 )
 
 //go:embed templates/*.html
@@ -76,7 +76,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Messages open at /{id}, and their source at /{id}?raw. Fixed paths
 	// such as /accounts are more specific, so they win, and anything that
 	// isn't a message ID is a 404. A second path segment would clash with
-	// the API's /v1/ and /boxy.v1.*Service/ subtrees.
+	// the API's /v1/ and /spooly.v1.*Service/ subtrees.
 	page("GET /{id}", h.MessagePage)
 	page("GET /accounts", h.AccountsPage)
 	page("GET /accounts/{address}", h.AccountPage)
@@ -200,7 +200,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 		label = q.Get("label")
 	}
 	// The account is filtered by address, so URLs read well:
-	// /?account=hello@boxy.sh.
+	// /?account=hello@spooly.sh.
 	address := strings.ToLower(q.Get("account"))
 	var accountID string
 	if address != "" {
@@ -451,7 +451,7 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 		// The body is shown in a sandboxed iframe that can't run scripts.
 		// The CSP also blocks remote images and styles until the user loads
 		// them, so opening a message doesn't tell the sender; links open in
-		// a new tab. Images embedded in the message load from Boxy ('self').
+		// a new tab. Images embedded in the message load from Spooly ('self').
 		const head = `<base target="_blank"><meta http-equiv="Content-Security-Policy" content="script-src 'none'; default-src 'none'; `
 		data.HTMLDoc = head + `img-src 'self' data:; style-src 'unsafe-inline'">` + html
 		data.HTMLDocAll = head + `img-src * data:; style-src * 'unsafe-inline'; font-src *">` + html
@@ -1012,7 +1012,7 @@ func writeError(w http.ResponseWriter, op string, err error) {
 
 // listURL links to the message list for an account's address ("" for all)
 // and a label. It keeps "@" as is, so the URL reads like the address, as
-// /?account=hello@boxy.sh&label=inbox. Without a label, the list shows the
+// /?account=hello@spooly.sh&label=inbox. Without a label, the list shows the
 // inbox.
 func listURL(address string, label ...string) template.URL {
 	q := url.Values{}

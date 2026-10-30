@@ -5,7 +5,7 @@ set -e
 case "$1" in
 remove | 0)
 	if [ -d /run/systemd/system ]; then
-		systemctl disable --now boxy.service || true
+		systemctl disable --now spooly.service || true
 	fi
 	;;
 esac

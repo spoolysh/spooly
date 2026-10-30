@@ -20,9 +20,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/service"
-	"github.com/boxysh/boxy/internal/storage/memory"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/service"
+	"github.com/spoolysh/spooly/internal/storage/memory"
 )
 
 // The first message has LF line endings and a line starting with ".".
@@ -61,14 +61,14 @@ func newTestEnv(t *testing.T, opts Options) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateAccount(ctx, db.Account{ID: db.NewID(), Addresses: []string{"hello@boxy.sh"}}); err != nil {
+	if _, err := database.CreateAccount(ctx, db.Account{ID: db.NewID(), Addresses: []string{"hello@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 
 	svc := service.New(database, memory.New(), service.Options{Admins: []string{"vh@example.com"}})
 	env := &testEnv{t: t, db: database, key: key}
 	for _, raw := range []string{message1, message2, message3} {
-		m, err := svc.Store(ctx, service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)})
+		m, err := svc.Store(ctx, service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
 		if err != nil {
 			t.Fatalf("Store: %v", err)
 		}
@@ -160,7 +160,7 @@ func (c *client) multi(line string) []string {
 
 func (c *client) login(e *testEnv) {
 	c.t.Helper()
-	c.ok("USER hello@boxy.sh")
+	c.ok("USER hello@spooly.sh")
 	c.ok("PASS " + e.key)
 }
 
@@ -171,7 +171,7 @@ func TestSession(t *testing.T) {
 	if capa := c.multi("CAPA"); !slices.Contains(capa, "USER") || !slices.Contains(capa, "UIDL") || slices.Contains(capa, "STLS") {
 		t.Errorf("CAPA = %v", capa)
 	}
-	c.ok("USER hello@boxy.sh")
+	c.ok("USER hello@spooly.sh")
 	if got := c.cmd("PASS wrong"); !strings.HasPrefix(got, "-ERR [AUTH]") {
 		t.Errorf("wrong key: %s", got)
 	}
@@ -179,7 +179,7 @@ func TestSession(t *testing.T) {
 		t.Errorf("STAT before login: %s", got)
 	}
 	// A plus address logs in to its account.
-	c.ok("USER Hello+pop@boxy.sh")
+	c.ok("USER Hello+pop@spooly.sh")
 	c.ok("PASS " + e.key)
 
 	size := len(message1) + len(message2) + len(message3)
@@ -318,7 +318,7 @@ func TestConcurrentSessions(t *testing.T) {
 
 func TestAuthPlain(t *testing.T) {
 	e := newTestEnv(t, Options{})
-	plain := base64.StdEncoding.EncodeToString([]byte("\x00hello@boxy.sh\x00" + e.key))
+	plain := base64.StdEncoding.EncodeToString([]byte("\x00hello@spooly.sh\x00" + e.key))
 
 	c := e.dial()
 	c.ok("AUTH PLAIN " + plain)
@@ -328,7 +328,7 @@ func TestAuthPlain(t *testing.T) {
 	if got := c3.cmd("AUTH PLAIN"); got != "+ " {
 		t.Fatalf("AUTH PLAIN without initial response: %q", got)
 	}
-	if got := c3.cmd(base64.StdEncoding.EncodeToString([]byte("\x00hello@boxy.sh\x00wrong"))); !strings.HasPrefix(got, "-ERR [AUTH]") {
+	if got := c3.cmd(base64.StdEncoding.EncodeToString([]byte("\x00hello@spooly.sh\x00wrong"))); !strings.HasPrefix(got, "-ERR [AUTH]") {
 		t.Errorf("wrong key: %s", got)
 	}
 }
@@ -337,7 +337,7 @@ func TestTooManyFailuresCloses(t *testing.T) {
 	e := newTestEnv(t, Options{})
 	c := e.dial()
 	for range maxAuthFailures {
-		c.ok("USER hello@boxy.sh")
+		c.ok("USER hello@spooly.sh")
 		c.cmd("PASS wrong")
 	}
 	c.conn.SetReadDeadline(time.Now().Add(time.Second))
@@ -355,7 +355,7 @@ func TestSTLS(t *testing.T) {
 	if !slices.Contains(capa, "STLS") || slices.Contains(capa, "USER") {
 		t.Errorf("CAPA before TLS = %v", capa)
 	}
-	if got := c.cmd("USER hello@boxy.sh"); !strings.HasPrefix(got, "-ERR [AUTH]") {
+	if got := c.cmd("USER hello@spooly.sh"); !strings.HasPrefix(got, "-ERR [AUTH]") {
 		t.Errorf("USER before TLS: %s", got)
 	}
 	c.ok("STLS")

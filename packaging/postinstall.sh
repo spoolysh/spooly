@@ -1,12 +1,12 @@
 #!/bin/sh
 set -e
 
-if ! getent passwd boxy >/dev/null; then
-	useradd --system --user-group --home-dir /var/lib/boxy --no-create-home --shell /usr/sbin/nologin boxy
+if ! getent passwd spooly >/dev/null; then
+	useradd --system --user-group --home-dir /var/lib/spooly --no-create-home --shell /usr/sbin/nologin spooly
 fi
 
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload
-	# Upgrades restart a running boxy; a new install waits for its config
-	systemctl try-restart boxy.service
+	# Upgrades restart a running spooly; a new install waits for its config
+	systemctl try-restart spooly.service
 fi

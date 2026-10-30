@@ -13,7 +13,7 @@ import (
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/pressly/goose/v3"
 
-	"github.com/boxysh/boxy/internal/db/migrations"
+	"github.com/spoolysh/spooly/internal/db/migrations"
 )
 
 type User struct {

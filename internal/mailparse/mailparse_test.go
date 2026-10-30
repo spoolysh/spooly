@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxysh/boxy/internal/db"
+	"github.com/spoolysh/spooly/internal/db"
 )
 
 func crlf(s string) []byte {
@@ -16,7 +16,7 @@ func crlf(s string) []byte {
 
 func TestParseMultipart(t *testing.T) {
 	raw := crlf(`From: "Ann Lee" <Ann@Example.com>
-To: hello@boxy.sh, Bob <bob@example.com>
+To: hello@spooly.sh, Bob <bob@example.com>
 Cc: =?UTF-8?B?0JzQsNGI0LA=?= <masha@example.com>
 Subject: =?UTF-8?Q?Caf=C3=A9?= order
 Date: Mon, 26 Oct 2026 10:00:00 +0300

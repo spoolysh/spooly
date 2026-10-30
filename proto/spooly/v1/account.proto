@@ -1,13 +1,13 @@
 syntax = "proto3";
 
-package boxy.v1;
+package spooly.v1;
 
 import "buf/validate/validate.proto";
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
+option go_package = "github.com/spoolysh/spooly/gen/spooly/v1;spoolyv1";
 
 service AccountService {
   // Create an account. Admins only.
@@ -61,7 +61,7 @@ message Account {
       string: {pattern: "^[1-9][0-9]{0,18}$"}
     }
   ];
-  // Lowercased, in order, e.g. ["hello@boxy.sh"]. The first is primary:
+  // Lowercased, in order, e.g. ["hello@spooly.sh"]. The first is primary:
   // it's shown for the account. Mail to any of them reaches it.
   repeated string addresses = 2 [
     (google.api.field_behavior) = REQUIRED,

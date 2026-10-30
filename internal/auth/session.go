@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	sessionCookieName = "boxy_session"
+	sessionCookieName = "spooly_session"
 	sessionMaxAge     = 30 * 24 * time.Hour // 30 days
 )
 

@@ -7,13 +7,13 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 go build -o /boxy ./cmd/boxy
+RUN CGO_ENABLED=0 go build -o /spooly ./cmd/spooly
 
 FROM gcr.io/distroless/static-debian12
 
-COPY --from=build /boxy /boxy
+COPY --from=build /spooly /spooly
 COPY --from=build /src/public/ /public/
 
-ENTRYPOINT ["/boxy"]
+ENTRYPOINT ["/spooly"]
 
 CMD ["serve"]

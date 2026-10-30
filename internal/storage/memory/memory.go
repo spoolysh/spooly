@@ -7,7 +7,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/boxysh/boxy/internal/storage"
+	"github.com/spoolysh/spooly/internal/storage"
 )
 
 // Storage is an in-memory byte store. Useful for development and testing.

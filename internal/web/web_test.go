@@ -10,14 +10,14 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	boxyv1 "github.com/boxysh/boxy/gen/boxy/v1"
-	"github.com/boxysh/boxy/internal/auth"
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/service"
-	"github.com/boxysh/boxy/internal/storage/memory"
+	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
+	"github.com/spoolysh/spooly/internal/auth"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/service"
+	"github.com/spoolysh/spooly/internal/storage/memory"
 )
 
-const testMessage = "From: Ann <ann@example.com>\r\nTo: hello@boxy.sh\r\nSubject: Hello there\r\n" +
+const testMessage = "From: Ann <ann@example.com>\r\nTo: hello@spooly.sh\r\nSubject: Hello there\r\n" +
 	"Content-Type: text/html\r\n\r\n<p>Hi <img src=\"https://tracker.example/x.png\"></p>\r\n"
 
 type testUI struct {
@@ -53,7 +53,8 @@ func newTestUI(t *testing.T) *testUI {
 	svc := service.New(database, memory.New(), service.Options{Admins: []string{"vh@example.com"}})
 	mux := http.NewServeMux()
 	NewHandler(database, sessions, svc, "http://example.test", "dev").RegisterRoutes(mux)
-	// Mount the API too, as cmd/boxy does, so routes that clash with it panic.
+	// Mount the API too, as cmd/spooly does, so routes that clash with it
+	// panic.
 	if err := svc.Mount(mux); err != nil {
 		t.Fatalf("Mount: %v", err)
 	}
@@ -95,17 +96,17 @@ func TestPagesRender(t *testing.T) {
 		t.Errorf("empty messages page: %s", body)
 	}
 
-	if rec := u.do("POST", "/ui/accounts", "application/x-www-form-urlencoded", "address=hello@boxy.sh&name=Hello", true); rec.Code != 200 {
+	if rec := u.do("POST", "/ui/accounts", "application/x-www-form-urlencoded", "address=hello@spooly.sh&name=Hello", true); rec.Code != 200 {
 		t.Fatalf("create account: %d %s", rec.Code, rec.Body)
 	}
-	if rec := u.do("POST", "/ui/accounts", "application/x-www-form-urlencoded", "address=hello@boxy.sh", true); rec.Code != http.StatusConflict {
+	if rec := u.do("POST", "/ui/accounts", "application/x-www-form-urlencoded", "address=hello@spooly.sh", true); rec.Code != http.StatusConflict {
 		t.Errorf("duplicate account: %d %s", rec.Code, rec.Body)
 	}
 	if rec := u.do("POST", "/ui/labels", "application/x-www-form-urlencoded", "name=billing", true); rec.Code != http.StatusNoContent {
 		t.Fatalf("create label: %d %s", rec.Code, rec.Body)
 	}
 
-	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(testMessage)})
+	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(testMessage)})
 	if err != nil {
 		t.Fatalf("Store: %v", err)
 	}
@@ -114,10 +115,10 @@ func TestPagesRender(t *testing.T) {
 	if body := u.get("/", 200); !strings.Contains(body, "Hello there") || !strings.Contains(body, "Unread: ") {
 		t.Errorf("inbox doesn't list the unread message")
 	}
-	if body := u.get("/?label=&account=hello@boxy.sh", 200); !strings.Contains(body, "Hello there") {
+	if body := u.get("/?label=&account=hello@spooly.sh", 200); !strings.Contains(body, "Hello there") {
 		t.Error("account filter by address doesn't list its message")
 	}
-	u.get("/?account=nobody@boxy.sh", 404)
+	u.get("/?account=nobody@spooly.sh", 404)
 	u.get("/accounts", 200)
 	u.get("/labels", 200)
 	u.get("/users", 200)
@@ -219,14 +220,14 @@ func TestLabelTitle(t *testing.T) {
 
 func TestAttachments(t *testing.T) {
 	u := newTestUI(t)
-	if _, err := u.svc.CreateAccount(u.asAdmin(), &boxyv1.CreateAccountRequest{Addresses: []string{"hello@boxy.sh"}}); err != nil {
+	if _, err := u.svc.CreateAccount(u.asAdmin(), &spoolyv1.CreateAccountRequest{Addresses: []string{"hello@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 	raw := "Subject: files\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n" +
 		"--b\r\nContent-Type: text/plain\r\n\r\nbody\r\n" +
 		"--b\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=\"a.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n" +
 		"--b\r\nContent-Type: text/html\r\nContent-Disposition: attachment; filename=\"page.html\"\r\n\r\n<script>alert(1)</script>\r\n--b--\r\n"
-	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)})
+	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +262,7 @@ func TestAttachments(t *testing.T) {
 // listed as attachments.
 func TestInlineImages(t *testing.T) {
 	u := newTestUI(t)
-	if _, err := u.svc.CreateAccount(u.asAdmin(), &boxyv1.CreateAccountRequest{Addresses: []string{"hello@boxy.sh"}}); err != nil {
+	if _, err := u.svc.CreateAccount(u.asAdmin(), &spoolyv1.CreateAccountRequest{Addresses: []string{"hello@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 	raw := "Subject: news\r\nContent-Type: multipart/related; boundary=b\r\n\r\n" +
@@ -269,7 +270,7 @@ func TestInlineImages(t *testing.T) {
 		"--b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n" +
 		"--b\r\nContent-Type: image/png\r\nContent-ID: <bg@x>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n" +
 		"--b\r\nContent-Type: image/png\r\nContent-ID: <unused@x>\r\nContent-Disposition: attachment; filename=\"unused.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n--b--\r\n"
-	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)})
+	m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,13 +320,13 @@ func TestHasRemoteContent(t *testing.T) {
 
 func TestPagingAndBulkActions(t *testing.T) {
 	u := newTestUI(t)
-	if _, err := u.svc.CreateAccount(u.asAdmin(), &boxyv1.CreateAccountRequest{Addresses: []string{"hello@boxy.sh"}}); err != nil {
+	if _, err := u.svc.CreateAccount(u.asAdmin(), &spoolyv1.CreateAccountRequest{Addresses: []string{"hello@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 	var ids []string // oldest first
 	for i := range 120 {
 		raw := fmt.Sprintf("Subject: message %d\r\n\r\nbody\r\n", i)
-		m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)})
+		m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -399,15 +400,15 @@ func TestPagingAndBulkActions(t *testing.T) {
 // account's at once.
 func TestDeleteForever(t *testing.T) {
 	u := newTestUI(t)
-	hello, err := u.svc.CreateAccount(u.asAdmin(), &boxyv1.CreateAccountRequest{Addresses: []string{"hello@boxy.sh"}})
+	hello, err := u.svc.CreateAccount(u.asAdmin(), &spoolyv1.CreateAccountRequest{Addresses: []string{"hello@spooly.sh"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := u.svc.CreateAccount(u.asAdmin(), &boxyv1.CreateAccountRequest{Addresses: []string{"other@boxy.sh"}}); err != nil {
+	if _, err := u.svc.CreateAccount(u.asAdmin(), &spoolyv1.CreateAccountRequest{Addresses: []string{"other@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 	var ids []string
-	for i, to := range []string{"hello@boxy.sh", "hello@boxy.sh", "hello@boxy.sh", "other@boxy.sh"} {
+	for i, to := range []string{"hello@spooly.sh", "hello@spooly.sh", "hello@spooly.sh", "other@spooly.sh"} {
 		m, err := u.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: to, Raw: fmt.Appendf(nil, "Subject: message %d\r\n\r\nbody\r\n", i)})
 		if err != nil {
 			t.Fatal(err)
@@ -429,7 +430,7 @@ func TestDeleteForever(t *testing.T) {
 		t.Error("Trash for all accounts offers to empty it")
 	}
 	accountID := hello.Account.Id
-	if page := u.get("/?account=hello@boxy.sh&label=trash", 200); !strings.Contains(page, "Empty Trash") || !strings.Contains(page, "/ui/accounts/"+accountID+"/empty") || !strings.Contains(page, "Delete forever") {
+	if page := u.get("/?account=hello@spooly.sh&label=trash", 200); !strings.Contains(page, "Empty Trash") || !strings.Contains(page, "/ui/accounts/"+accountID+"/empty") || !strings.Contains(page, "Delete forever") {
 		t.Error("an account's Trash lacks Empty Trash or Delete forever")
 	}
 
@@ -466,12 +467,12 @@ func TestSharing(t *testing.T) {
 	u := newTestUI(t)
 	ctx := t.Context()
 	admin := u.asAdmin()
-	for _, address := range []string{"vh@boxy.sh", "support@boxy.sh"} {
-		if _, err := u.svc.CreateAccount(admin, &boxyv1.CreateAccountRequest{Addresses: []string{address}}); err != nil {
+	for _, address := range []string{"vh@spooly.sh", "support@spooly.sh"} {
+		if _, err := u.svc.CreateAccount(admin, &spoolyv1.CreateAccountRequest{Addresses: []string{address}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, address := range []string{"vh@boxy.sh", "support@boxy.sh"} {
+	for _, address := range []string{"vh@spooly.sh", "support@spooly.sh"} {
 		if _, err := u.svc.Store(ctx, service.Incoming{AccountIDOrAddress: address, Raw: []byte("Subject: to " + address + "\r\n\r\nhi\r\n")}); err != nil {
 			t.Fatal(err)
 		}
@@ -480,7 +481,7 @@ func TestSharing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	support, err := u.db.GetAccountByAddress(ctx, "support@boxy.sh")
+	support, err := u.db.GetAccountByAddress(ctx, "support@spooly.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,10 +493,10 @@ func TestSharing(t *testing.T) {
 	if rec := u.do("POST", "/ui/accounts/"+support.ID+"/access", "application/x-www-form-urlencoded", "email=nobody@example.com", true); rec.Code != 404 {
 		t.Errorf("share with someone who never signed in: %d %s", rec.Code, rec.Body)
 	}
-	if rec := u.do("POST", "/ui/accounts/"+support.ID, "application/json", `{"addresses": ["support@boxy.sh", "contact@domain2.com"]}`, true); rec.Code != 200 {
+	if rec := u.do("POST", "/ui/accounts/"+support.ID, "application/json", `{"addresses": ["support@spooly.sh", "contact@domain2.com"]}`, true); rec.Code != 200 {
 		t.Fatalf("add address: %d %s", rec.Code, rec.Body)
 	}
-	if body := u.get("/accounts/support@boxy.sh", 200); !strings.Contains(body, "maria@example.com") || !strings.Contains(body, "contact@domain2.com") {
+	if body := u.get("/accounts/support@spooly.sh", 200); !strings.Contains(body, "maria@example.com") || !strings.Contains(body, "contact@domain2.com") {
 		t.Error("account page lacks the share or the address")
 	}
 
@@ -513,15 +514,15 @@ func TestSharing(t *testing.T) {
 		return out
 	}
 	inbox := asMaria("GET", "/", "").Body.String()
-	if !strings.Contains(inbox, "to support@boxy.sh") || strings.Contains(inbox, "to vh@boxy.sh") {
+	if !strings.Contains(inbox, "to support@spooly.sh") || strings.Contains(inbox, "to vh@spooly.sh") {
 		t.Error("Maria's inbox shows the wrong accounts")
 	}
-	if code := asMaria("GET", "/?account=vh@boxy.sh", "").Code; code != 404 {
+	if code := asMaria("GET", "/?account=vh@spooly.sh", "").Code; code != 404 {
 		t.Errorf("Maria filtering by vh@: %d", code)
 	}
 	// Accounts, labels, and users are managed by admins only: Maria works
 	// with support@'s mail, but can't change the account or share it.
-	for _, path := range []string{"/accounts", "/accounts/support@boxy.sh", "/accounts/vh@boxy.sh", "/labels", "/users"} {
+	for _, path := range []string{"/accounts", "/accounts/support@spooly.sh", "/accounts/vh@spooly.sh", "/labels", "/users"} {
 		if code := asMaria("GET", path, "").Code; code != 404 {
 			t.Errorf("Maria opening %s: %d", path, code)
 		}
@@ -537,7 +538,7 @@ func TestSharing(t *testing.T) {
 	if code := asMaria("DELETE", "/ui/users/"+u.userID+"/keys", "").Code; code != 403 {
 		t.Errorf("Maria revoking keys: %d", code)
 	}
-	req := httptest.NewRequest("POST", "/ui/accounts", strings.NewReader("address=maria@boxy.sh"))
+	req := httptest.NewRequest("POST", "/ui/accounts", strings.NewReader("address=maria@spooly.sh"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(rec.Result().Cookies()[0])
 	created := httptest.NewRecorder()
@@ -552,7 +553,7 @@ func TestSharing(t *testing.T) {
 		t.Fatal(err)
 	}
 	users := u.get("/users", 200)
-	if !strings.Contains(users, "maria@example.com") || !strings.Contains(users, `href="/accounts/support@boxy.sh"`) || !strings.Contains(users, "Revoke keys") {
+	if !strings.Contains(users, "maria@example.com") || !strings.Contains(users, `href="/accounts/support@spooly.sh"`) || !strings.Contains(users, "Revoke keys") {
 		t.Error("Users lacks Maria, her account, or Revoke keys")
 	}
 	if rec := u.do("DELETE", "/ui/users/"+maria.ID+"/keys", "", "", true); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"revoked":1`) {
@@ -567,7 +568,7 @@ func TestSharing(t *testing.T) {
 	if keys, err := u.db.ListAPIKeys(ctx, maria.ID); err != nil || len(keys) != 0 {
 		t.Errorf("Maria's keys after revoking: %d, %v", len(keys), err)
 	}
-	if strings.Contains(asMaria("GET", "/", "").Body.String(), "to support@boxy.sh") {
+	if strings.Contains(asMaria("GET", "/", "").Body.String(), "to support@spooly.sh") {
 		t.Error("Maria still sees support@ after removing her access")
 	}
 }

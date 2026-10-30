@@ -1,13 +1,13 @@
 syntax = "proto3";
 
-package boxy.v1;
+package spooly.v1;
 
 import "buf/validate/validate.proto";
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
+option go_package = "github.com/spoolysh/spooly/gen/spooly/v1;spoolyv1";
 
 service LabelService {
   // Create a user label. Admins only: labels are shared by every account.

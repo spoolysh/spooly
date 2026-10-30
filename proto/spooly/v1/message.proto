@@ -1,16 +1,16 @@
 syntax = "proto3";
 
-package boxy.v1;
+package spooly.v1;
 
-import "boxy/v1/common.proto";
 import "buf/validate/validate.proto";
 import "gnostic/openapi/v3/annotations.proto";
 import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
 import "google/api/httpbody.proto";
 import "google/protobuf/timestamp.proto";
+import "spooly/v1/common.proto";
 
-option go_package = "github.com/boxysh/boxy/gen/boxy/v1;boxyv1";
+option go_package = "github.com/spoolysh/spooly/gen/spooly/v1;spoolyv1";
 
 service MessageService {
   // Store an incoming message. Over REST, the body is the raw message
@@ -262,7 +262,7 @@ message Message {
   // Sender header. Empty for bounces.
   string mail_from = 3 [(google.api.field_behavior) = REQUIRED];
   // SMTP envelope recipient (RCPT TO) it was delivered to, e.g.
-  // "hello+news@boxy.sh". The account's address when created by account ID.
+  // "hello+news@spooly.sh". The account's address when created by account ID.
   string rcpt_to = 4 [(google.api.field_behavior) = REQUIRED];
 
   // First address of the From header. Empty when there's none.

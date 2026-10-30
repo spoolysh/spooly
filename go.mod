@@ -1,4 +1,4 @@
-module github.com/boxysh/boxy
+module github.com/spoolysh/spooly
 
 go 1.26.1
 

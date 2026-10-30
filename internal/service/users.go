@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"github.com/boxysh/boxy/internal/db"
+	"github.com/spoolysh/spooly/internal/db"
 )
 
 // UserInfo is a user as admins see them.

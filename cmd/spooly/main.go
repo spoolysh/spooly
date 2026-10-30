@@ -19,17 +19,17 @@ import (
 	gcsapi "google.golang.org/api/storage/v1"
 	_ "modernc.org/sqlite"
 
-	"github.com/boxysh/boxy/internal/auth"
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/imap"
-	"github.com/boxysh/boxy/internal/pop3"
-	"github.com/boxysh/boxy/internal/service"
-	"github.com/boxysh/boxy/internal/storage"
-	"github.com/boxysh/boxy/internal/storage/gcs"
-	"github.com/boxysh/boxy/internal/storage/local"
-	"github.com/boxysh/boxy/internal/storage/memory"
-	s3storage "github.com/boxysh/boxy/internal/storage/s3"
-	"github.com/boxysh/boxy/internal/web"
+	"github.com/spoolysh/spooly/internal/auth"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/imap"
+	"github.com/spoolysh/spooly/internal/pop3"
+	"github.com/spoolysh/spooly/internal/service"
+	"github.com/spoolysh/spooly/internal/storage"
+	"github.com/spoolysh/spooly/internal/storage/gcs"
+	"github.com/spoolysh/spooly/internal/storage/local"
+	"github.com/spoolysh/spooly/internal/storage/memory"
+	s3storage "github.com/spoolysh/spooly/internal/storage/s3"
+	"github.com/spoolysh/spooly/internal/web"
 )
 
 var Version = "dev"
@@ -50,7 +50,7 @@ func envRequired(key string) string {
 }
 
 // newStorage returns the backend for raw messages. The default is local
-// disk: memory loses mail on restart, so it's only for trying Boxy out.
+// disk: memory loses mail on restart, so it's only for trying Spooly out.
 func newStorage() (storage.Storage, error) {
 	switch backend := env("STORAGE_BACKEND", "local"); backend {
 	case "gcs":
@@ -196,7 +196,7 @@ func driverFromDSN(dsn string) string {
 }
 
 func databaseURL() string {
-	return env("DATABASE_URL", "file:boxy.db")
+	return env("DATABASE_URL", "file:spooly.db")
 }
 
 func openDB() (*db.DB, error) {
@@ -204,7 +204,7 @@ func openDB() (*db.DB, error) {
 	return db.New(context.Background(), driverFromDSN(dsn), dsn)
 }
 
-var usage = "Usage: boxy " + Version + ` <command>
+var usage = "Usage: spooly " + Version + ` <command>
 
 Commands:
   serve [--migrate] [--mail]   Start the API and dashboard (default);
@@ -236,13 +236,13 @@ func main() {
 		cmdServe(migrate, mail)
 	case "mail":
 		if migrate {
-			log.Fatal("boxy mail doesn't migrate: run boxy migrate, or boxy serve --migrate")
+			log.Fatal("spooly mail doesn't migrate: run spooly migrate, or spooly serve --migrate")
 		}
 		cmdMail()
 	case "migrate":
 		cmdMigrate()
 	case "version", "-v", "--version":
-		fmt.Println("boxy " + Version)
+		fmt.Println("spooly " + Version)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -303,11 +303,11 @@ func openBackend(migrate bool) (*db.DB, storage.Storage) {
 // must share a PostgreSQL database and S3 or GCS storage.
 func cmdMail() {
 	if driverFromDSN(databaseURL()) == "sqlite" {
-		log.Println("warning: SQLite is shared only with a boxy serve on this host; use PostgreSQL when it runs elsewhere")
+		log.Println("warning: SQLite is shared only with a spooly serve on this host; use PostgreSQL when it runs elsewhere")
 	}
 	switch backend := env("STORAGE_BACKEND", "local"); backend {
 	case "local", "memory":
-		log.Printf("warning: %s storage is shared only with a boxy serve on this host; use S3 or GCS when it runs elsewhere", backend)
+		log.Printf("warning: %s storage is shared only with a spooly serve on this host; use S3 or GCS when it runs elsewhere", backend)
 	}
 
 	database, store := openBackend(false)
@@ -361,7 +361,7 @@ func cmdServe(migrate, mail bool) {
 
 	publicFS := http.FileServer(http.Dir("public"))
 	if spec, err := os.ReadFile("public/openapi.yaml"); err == nil {
-		spec = bytes.ReplaceAll(spec, []byte("https://boxy.example.com"), []byte(hostname))
+		spec = bytes.ReplaceAll(spec, []byte("https://spooly.example.com"), []byte(hostname))
 		mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 			w.Write(spec)

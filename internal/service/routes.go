@@ -12,12 +12,12 @@ import (
 	"connectrpc.com/validate"
 	"connectrpc.com/vanguard"
 
-	"github.com/boxysh/boxy/gen/boxy/v1/boxyv1connect"
-	"github.com/boxysh/boxy/internal/auth"
+	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
+	"github.com/spoolysh/spooly/internal/auth"
 )
 
 // Mount registers the API on mux: Connect, gRPC, and gRPC-Web under
-// /boxy.v1.*Service/, and REST under /v1/. Every route authenticates with
+// /spooly.v1.*Service/, and REST under /v1/. Every route authenticates with
 // API keys.
 func (s *Service) Mount(mux *http.ServeMux) error {
 	return s.mount(mux, s.requireAPIKey)
@@ -44,9 +44,9 @@ func (s *Service) requireAPIKey(next http.Handler) http.Handler {
 // mount is Mount with the authentication supplied, so tests can skip it.
 func (s *Service) mount(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) error {
 	server := connect.NewServer(validate.NewServerInterceptor())
-	boxyv1connect.RegisterAccountServiceHandler(server, s)
-	boxyv1connect.RegisterLabelServiceHandler(server, s)
-	boxyv1connect.RegisterMessageServiceHandler(server, s)
+	spoolyv1connect.RegisterAccountServiceHandler(server, s)
+	spoolyv1connect.RegisterLabelServiceHandler(server, s)
+	spoolyv1connect.RegisterMessageServiceHandler(server, s)
 
 	connecthttp.Mount(wrappingMux{mux, authenticate}, server)
 

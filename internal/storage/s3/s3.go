@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"github.com/boxysh/boxy/internal/storage"
+	"github.com/spoolysh/spooly/internal/storage"
 )
 
 // Storage stores file bytes in Amazon S3 or S3-compatible storage.

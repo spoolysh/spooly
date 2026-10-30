@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/boxysh/boxy/internal/storage"
+	"github.com/spoolysh/spooly/internal/storage"
 )
 
 // Storage stores objects on the local filesystem, one file per id.

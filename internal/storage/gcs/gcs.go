@@ -10,7 +10,7 @@ import (
 	"google.golang.org/api/googleapi"
 	gcsapi "google.golang.org/api/storage/v1"
 
-	"github.com/boxysh/boxy/internal/storage"
+	"github.com/spoolysh/spooly/internal/storage"
 )
 
 // Storage stores file bytes in Google Cloud Storage, through its JSON API.

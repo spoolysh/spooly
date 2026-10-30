@@ -14,9 +14,9 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	_ "modernc.org/sqlite"
 
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/service"
-	"github.com/boxysh/boxy/internal/storage/memory"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/service"
+	"github.com/spoolysh/spooly/internal/storage/memory"
 )
 
 type testEnv struct {
@@ -48,7 +48,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateAccount(ctx, db.Account{ID: db.NewID(), Addresses: []string{"hello@boxy.sh"}}); err != nil {
+	if _, err := database.CreateAccount(ctx, db.Account{ID: db.NewID(), Addresses: []string{"hello@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.CreateLabel(ctx, "billing"); err != nil {
@@ -74,8 +74,8 @@ func newTestEnv(t *testing.T) *testEnv {
 
 func (e *testEnv) deliver(subject string) string {
 	e.t.Helper()
-	raw := "From: Ann <ann@example.com>\r\nTo: hello@boxy.sh\r\nSubject: " + subject + "\r\n\r\nHello, " + subject + "\r\n"
-	m, err := e.svc.Store(e.t.Context(), service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)})
+	raw := "From: Ann <ann@example.com>\r\nTo: hello@spooly.sh\r\nSubject: " + subject + "\r\n\r\nHello, " + subject + "\r\n"
+	m, err := e.svc.Store(e.t.Context(), service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func (e *testEnv) dial(handler *imapclient.UnilateralDataHandler) *imapclient.Cl
 		e.t.Fatal(err)
 	}
 	e.t.Cleanup(func() { c.Close() })
-	if err := c.Login("hello@boxy.sh", e.key).Wait(); err != nil {
+	if err := c.Login("hello@spooly.sh", e.key).Wait(); err != nil {
 		e.t.Fatalf("Login: %v", err)
 	}
 	return c
@@ -138,10 +138,10 @@ func TestLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if err := c.Login("hello@boxy.sh", "wrong").Wait(); err == nil {
+	if err := c.Login("hello@spooly.sh", "wrong").Wait(); err == nil {
 		t.Error("login with a wrong key succeeded")
 	}
-	if err := c.Login("Hello+imap@boxy.sh", e.key).Wait(); err != nil {
+	if err := c.Login("Hello+imap@spooly.sh", e.key).Wait(); err != nil {
 		t.Errorf("login with a plus address: %v", err)
 	}
 }
@@ -234,9 +234,9 @@ func TestReadAndFlags(t *testing.T) {
 // header block and still answer in full.
 func TestFetchHeaders(t *testing.T) {
 	e := newTestEnv(t)
-	raw := "From: Ann <ann@example.com>\r\nTo: hello@boxy.sh\r\nSubject: Re: plan\r\n" +
+	raw := "From: Ann <ann@example.com>\r\nTo: hello@spooly.sh\r\nSubject: Re: plan\r\n" +
 		"Message-ID: <reply@example.com>\r\nIn-Reply-To: <plan@example.com> <other@example.com>\r\n\r\nSounds good.\r\n"
-	if _, err := e.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@boxy.sh", Raw: []byte(raw)}); err != nil {
+	if _, err := e.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)}); err != nil {
 		t.Fatal(err)
 	}
 	c := e.dial(nil)
@@ -450,7 +450,7 @@ func TestAnswered(t *testing.T) {
 func TestDrafts(t *testing.T) {
 	e := newTestEnv(t)
 	c := e.dial(nil)
-	raw := "From: hello@boxy.sh\r\nTo: ann@example.com\r\nSubject: Half-written reply\r\n\r\nDear Ann,\r\n"
+	raw := "From: hello@spooly.sh\r\nTo: ann@example.com\r\nSubject: Half-written reply\r\n\r\nDear Ann,\r\n"
 	cmd := c.Append("Drafts", int64(len(raw)), &goimap.AppendOptions{Flags: []goimap.Flag{goimap.FlagSeen, goimap.FlagDraft}})
 	cmd.Write([]byte(raw))
 	cmd.Close()
@@ -512,7 +512,7 @@ func TestSearch(t *testing.T) {
 func TestAppend(t *testing.T) {
 	e := newTestEnv(t)
 	c := e.dial(nil)
-	raw := "From: hello@boxy.sh\r\nTo: ann@example.com\r\nSubject: Re: Message 0\r\n\r\nThanks!\r\n"
+	raw := "From: hello@spooly.sh\r\nTo: ann@example.com\r\nSubject: Re: Message 0\r\n\r\nThanks!\r\n"
 	cmd := c.Append("Sent", int64(len(raw)), &goimap.AppendOptions{Flags: []goimap.Flag{goimap.FlagSeen}})
 	cmd.Write([]byte(raw))
 	cmd.Close()
@@ -596,18 +596,18 @@ func TestLoginNeedsAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if err := c.Login("hello@boxy.sh", key).Wait(); err == nil {
+	if err := c.Login("hello@spooly.sh", key).Wait(); err == nil {
 		t.Fatal("logged in to an account not shared with the user")
 	}
 
-	a, err := e.db.GetAccountByAddress(ctx, "hello@boxy.sh")
+	a, err := e.db.GetAccountByAddress(ctx, "hello@spooly.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := e.db.AddUser(ctx, a.ID, bob.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Login("hello@boxy.sh", key).Wait(); err != nil {
+	if err := c.Login("hello@spooly.sh", key).Wait(); err != nil {
 		t.Fatalf("Login once shared: %v", err)
 	}
 	if sel := selectBox(t, c, "INBOX"); sel.NumMessages != 3 {

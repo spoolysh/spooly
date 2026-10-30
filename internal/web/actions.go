@@ -10,7 +10,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
-	boxyv1 "github.com/boxysh/boxy/gen/boxy/v1"
+	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
 )
 
 // The dashboard calls the service directly rather than over HTTP, so it
@@ -40,7 +40,7 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
-	req := &boxyv1.CreateAccountRequest{Addresses: []string{r.FormValue("address")}}
+	req := &spoolyv1.CreateAccountRequest{Addresses: []string{r.FormValue("address")}}
 	if name := r.FormValue("name"); name != "" {
 		req.Name = &name
 	}
@@ -70,7 +70,7 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	req := &boxyv1.UpdateAccountRequest{
+	req := &spoolyv1.UpdateAccountRequest{
 		IdOrAddress: r.PathValue("id"),
 		Name:        body.Name,
 		Addresses:   body.Addresses,
@@ -115,7 +115,7 @@ func (h *Handler) createLabel(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
-	req := &boxyv1.CreateLabelRequest{Name: r.FormValue("name")}
+	req := &spoolyv1.CreateLabelRequest{Name: r.FormValue("name")}
 	if err := validate(req); err != nil {
 		writeError(w, "createLabel", err)
 		return
@@ -131,7 +131,7 @@ func (h *Handler) deleteLabel(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
-	req := &boxyv1.DeleteLabelRequest{Name: r.PathValue("name")}
+	req := &spoolyv1.DeleteLabelRequest{Name: r.PathValue("name")}
 	if err := validate(req); err != nil {
 		writeError(w, "deleteLabel", err)
 		return
@@ -157,7 +157,7 @@ func (h *Handler) updateLabels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	req := &boxyv1.UpdateMessageRequest{Id: r.PathValue("id"), AddLabels: body.AddLabels, RemoveLabels: body.RemoveLabels}
+	req := &spoolyv1.UpdateMessageRequest{Id: r.PathValue("id"), AddLabels: body.AddLabels, RemoveLabels: body.RemoveLabels}
 	if err := validate(req); err != nil {
 		writeError(w, "updateLabels", err)
 		return
@@ -193,9 +193,9 @@ func (h *Handler) updateManyLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Check every request first, so a bad one changes nothing.
-	reqs := make([]*boxyv1.UpdateMessageRequest, len(body.IDs))
+	reqs := make([]*spoolyv1.UpdateMessageRequest, len(body.IDs))
 	for i, id := range body.IDs {
-		reqs[i] = &boxyv1.UpdateMessageRequest{Id: id, AddLabels: body.AddLabels, RemoveLabels: body.RemoveLabels}
+		reqs[i] = &spoolyv1.UpdateMessageRequest{Id: id, AddLabels: body.AddLabels, RemoveLabels: body.RemoveLabels}
 		if err := validate(reqs[i]); err != nil {
 			writeError(w, "updateManyLabels", err)
 			return
@@ -259,9 +259,9 @@ func (h *Handler) deleteMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("select 1 to %d messages", maxBulk), http.StatusBadRequest)
 		return
 	}
-	reqs := make([]*boxyv1.DeleteMessageRequest, len(body.IDs))
+	reqs := make([]*spoolyv1.DeleteMessageRequest, len(body.IDs))
 	for i, id := range body.IDs {
-		reqs[i] = &boxyv1.DeleteMessageRequest{Id: id}
+		reqs[i] = &spoolyv1.DeleteMessageRequest{Id: id}
 		if err := validate(reqs[i]); err != nil {
 			writeError(w, "deleteMessages", err)
 			return

@@ -3,15 +3,15 @@ default:
 
 # Run the API and dashboard, and the mail protocols (POP3, IMAP)
 serve:
-    go run ./cmd/boxy serve --migrate --mail
+    go run ./cmd/spooly serve --migrate --mail
 
 # Run only the mail protocols (POP3, IMAP)
 mail:
-    go run ./cmd/boxy mail
+    go run ./cmd/spooly mail
 
 # Build the binary
 build:
-    go build -o boxy ./cmd/boxy
+    go build -o spooly ./cmd/spooly
 
 # Generate proto code
 generate:
@@ -19,7 +19,7 @@ generate:
 
 # Run database migrations
 migrate:
-    go run ./cmd/boxy migrate
+    go run ./cmd/spooly migrate
 
 # Run tests
 test:
@@ -43,5 +43,5 @@ vuln:
 
 # Clean build artifacts
 clean:
-    rm -f boxy
+    rm -f spooly
     rm -f *.db *.db-journal *.db-wal *.db-shm

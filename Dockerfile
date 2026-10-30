@@ -4,9 +4,9 @@ ARG TARGETPLATFORM
 
 WORKDIR /
 
-COPY ${TARGETPLATFORM}/boxy /boxy
+COPY ${TARGETPLATFORM}/spooly /spooly
 COPY public/ /public/
 
-ENTRYPOINT ["/boxy"]
+ENTRYPOINT ["/spooly"]
 
 CMD ["serve"]

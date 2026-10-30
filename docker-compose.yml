@@ -1,5 +1,5 @@
 services:
-  boxy:
+  spooly:
     build:
       dockerfile: Dockerfile.dev
     ports:
@@ -8,7 +8,7 @@ services:
       - "1143:1143"
     environment:
       - PORT=8080
-      - DATABASE_URL=file:/data/boxy.db
+      - DATABASE_URL=file:/data/spooly.db
       - STORAGE_BACKEND=local
       - LOCAL_STORAGE_DIR=/data/storage
       - SESSION_SECRET=${SESSION_SECRET}
@@ -16,7 +16,7 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - HOSTNAME=${HOSTNAME:-http://localhost:8080}
     volumes:
-      - boxy-data:/data
+      - spooly-data:/data
 
 volumes:
-  boxy-data:
+  spooly-data:

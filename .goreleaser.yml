@@ -3,8 +3,8 @@ before:
   hooks:
     - buf generate
 builds:
-  - main: ./cmd/boxy
-    binary: boxy
+  - main: ./cmd/spooly
+    binary: spooly
     env:
       - CGO_ENABLED=0
     flags:
@@ -20,8 +20,8 @@ builds:
       - windows
 dockers_v2:
   - images:
-      - ghcr.io/boxysh/boxy
-      - boxysh/boxy
+      - ghcr.io/spoolysh/spooly
+      - spoolysh/spooly
     extra_files:
       - public/
     tags:
@@ -34,21 +34,21 @@ dockers_v2:
       "org.opencontainers.image.version": "{{ .Version }}"
       "org.opencontainers.image.source": "{{ .GitURL }}"
 nfpms:
-  - package_name: boxy
+  - package_name: spooly
     description: Self-hosted mail backend
-    homepage: https://boxy.sh
-    maintainer: Boxy <contact@boxy.sh>
+    homepage: https://spooly.sh
+    maintainer: Spooly <contact@spooly.sh>
     formats:
       - deb
       - rpm
     bindir: /usr/bin
     contents:
       - src: public/
-        dst: /usr/share/boxy/public
-      - src: packaging/boxy.service
-        dst: /usr/lib/systemd/system/boxy.service
-      - src: packaging/boxy.env
-        dst: /etc/boxy/boxy.env
+        dst: /usr/share/spooly/public
+      - src: packaging/spooly.service
+        dst: /usr/lib/systemd/system/spooly.service
+      - src: packaging/spooly.env
+        dst: /etc/spooly/spooly.env
         type: config|noreplace
         file_info:
           mode: 0600
@@ -65,10 +65,10 @@ nfpms:
         key_file: '{{ index .Env "GPG_KEY_FILE" }}'
 brews:
   - repository:
-      owner: boxysh
+      owner: spoolysh
       name: homebrew-tap
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     description: "Self-hosted mail backend"
-    homepage: "https://boxy.sh"
+    homepage: "https://spooly.sh"
 changelog:
   disable: true

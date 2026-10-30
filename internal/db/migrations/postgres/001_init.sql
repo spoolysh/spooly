@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS messages (
     parts TEXT NOT NULL,
     -- The Message-ID, and the parent's: the first In-Reply-To ID. Without
     -- angle brackets; empty when missing. A reply's in_reply_to is its
-    -- parent's message_id, which Boxy looks up for replies and threads.
+    -- parent's message_id, which Spooly looks up for replies and threads.
     message_id TEXT NOT NULL DEFAULT '',
     in_reply_to TEXT NOT NULL DEFAULT '',
     metadata TEXT NOT NULL,

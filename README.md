@@ -1,4 +1,4 @@
-# Boxy
+# Spooly
 
 Mail backend. Incoming mail is stored per account, raw and parsed, organized
 with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
@@ -28,7 +28,7 @@ export GOOGLE_CLIENT_ID="your-client-id"
 export GOOGLE_CLIENT_SECRET="your-client-secret"
 
 just serve
-# or: go run ./cmd/boxy serve --migrate --mail
+# or: go run ./cmd/spooly serve --migrate --mail
 ```
 
 Visit `http://localhost:8080` to sign in, create an account, and generate an
@@ -42,7 +42,7 @@ An inbound worker posts the raw message as the body, with the envelope in the
 query string:
 
 ```bash
-curl -X POST "https://boxy.example.com/v1/accounts/hello@boxy.sh/messages?mail_from=bounce@example.com" \
+curl -X POST "https://spooly.example.com/v1/accounts/hello@spooly.sh/messages?mail_from=bounce@example.com" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: message/rfc822" \
   -H "Idempotency-Key: 9b2f…" \
@@ -51,8 +51,8 @@ curl -X POST "https://boxy.example.com/v1/accounts/hello@boxy.sh/messages?mail_f
 
 The address in the path is the envelope recipient (Cloudflare's
 `message.to`) and is kept as the message's `rcpt_to`. Plus addresses reach
-the base account: `hello+news@boxy.sh` lands in `hello@boxy.sh` with
-`rcpt_to` `hello+news@boxy.sh`. An unknown address gets `404`, so the worker
+the base account: `hello+news@spooly.sh` lands in `hello@spooly.sh` with
+`rcpt_to` `hello+news@spooly.sh`. An unknown address gets `404`, so the worker
 can reject the mail. Send an `Idempotency-Key` header to make retries safe: a repeat with the same key, in the same
 account, returns the stored message.
 New messages get the `inbox` and `unread` labels.
@@ -65,7 +65,7 @@ idempotency key, such as `gmail-18f3c2a9b7d41e05`, so syncing again never
 duplicates, and its date as
 `received_at`, so mail sorts by when it really arrived.
 
-A Cloudflare Email Routing worker that delivers to Boxy. Cloudflare gives no
+A Cloudflare Email Routing worker that delivers to Spooly. Cloudflare gives no
 delivery ID, so the idempotency key is the recipient and Message-ID, which
 stay the same when the sending server retries. A hash of the raw bytes is
 only the fallback: Cloudflare adds its own headers, which may differ between
@@ -84,17 +84,17 @@ export default {
     const raw = await new Response(message.raw).arrayBuffer();
     const to = encodeURIComponent(message.to);
     const query = new URLSearchParams({ mail_from: message.from });
-    const resp = await fetch(`${env.BOXY_URL}/v1/accounts/${to}/messages?${query}`, {
+    const resp = await fetch(`${env.SPOOLY_URL}/v1/accounts/${to}/messages?${query}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${env.BOXY_KEY}`,
+        Authorization: `Bearer ${env.SPOOLY_KEY}`,
         "Content-Type": "message/rfc822",
         "Idempotency-Key": await idempotencyKey(message, raw),
       },
       body: raw,
     });
     if (resp.status === 404) message.setReject("Unknown address");
-    else if (!resp.ok) throw new Error(`Boxy answered ${resp.status}`); // Cloudflare retries
+    else if (!resp.ok) throw new Error(`Spooly answered ${resp.status}`); // Cloudflare retries
   },
 };
 ```
@@ -107,7 +107,7 @@ accounts, so `billing` means the same across every address. The system
 labels `inbox`, `unread`, `starred`, `answered`, `sent`, `draft`,
 `spam`, and `trash` always exist. Combine a label with an account to get,
 say, one address's inbox:
-`GET /v1/accounts/support@boxy.sh/messages?label=inbox`. As in Gmail, spam
+`GET /v1/accounts/support@spooly.sh/messages?label=inbox`. As in Gmail, spam
 and trash are listed only under `label=spam` and `label=trash`, so a trashed
 message drops out of `starred` and `billing` until it's restored.
 
@@ -121,12 +121,12 @@ Common actions are label changes:
 | Trash | add `trash`, remove `inbox` |
 
 ```bash
-curl -X PATCH "https://boxy.example.com/v1/messages/$ID" \
+curl -X PATCH "https://spooly.example.com/v1/messages/$ID" \
   -H "Authorization: Bearer $KEY" \
   -d '{"remove_labels": ["unread", "inbox"]}'
 ```
 
-Trash is only a label: Boxy keeps trashed mail until it's deleted for good,
+Trash is only a label: Spooly keeps trashed mail until it's deleted for good,
 with `DELETE /v1/messages/{id}`, from a mail client, or with the dashboard's
 **Delete forever**, and **Empty Trash** or **Delete all spam** for one
 account. Deleting removes the raw source too, for everyone
@@ -209,11 +209,11 @@ numbers only grow, as IMAP requires.
 
 | Command | Runs | Where |
 |---|---|---|
-| `boxy serve` | API and dashboard | Anywhere, such as Cloud Run |
-| `boxy serve --mail` | API, dashboard, and mail protocols | A single server, or local development (`just serve`) |
-| `boxy mail` | Mail protocols only: POP3 and IMAP | A host that takes raw TCP, such as a small VM; no Google or session settings |
+| `spooly serve` | API and dashboard | Anywhere, such as Cloud Run |
+| `spooly serve --mail` | API, dashboard, and mail protocols | A single server, or local development (`just serve`) |
+| `spooly mail` | Mail protocols only: POP3 and IMAP | A host that takes raw TCP, such as a small VM; no Google or session settings |
 
-Cloud Run takes only HTTP, so pair `boxy serve` there with `boxy mail` on a
+Cloud Run takes only HTTP, so pair `spooly serve` there with `spooly mail` on a
 VM.
 
 Both need the same PostgreSQL database and S3 or GCS bucket, so mail
@@ -294,7 +294,7 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 |---|---|---|
 | `PORT` | Server listen port | `8080` |
 | `HOSTNAME` | Public base URL | `http://localhost:$PORT` |
-| `DATABASE_URL` | `file:boxy.db` for SQLite, `postgres://user:pass@host/db` for PostgreSQL | `file:boxy.db` |
+| `DATABASE_URL` | `file:spooly.db` for SQLite, `postgres://user:pass@host/db` for PostgreSQL | `file:spooly.db` |
 | `STORAGE_BACKEND` | Where raw messages go: `local`, `s3`, `gcs`, or `memory` (lost on restart) | `local` |
 | `LOCAL_STORAGE_DIR` | Directory for `local` storage | `./storage` |
 | `S3_BUCKET` | Bucket for `s3`: Amazon S3, Cloudflare R2, MinIO; credentials from the usual `AWS_*` variables | — |
@@ -314,7 +314,7 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `ALLOWED_DOMAINS` | Comma-separated list of email domains that can sign in | — (all allowed) |
 
 Migrations are managed by [goose](https://github.com/pressly/goose): run
-`boxy migrate`, or start with `boxy serve --migrate`. See
+`spooly migrate`, or start with `spooly serve --migrate`. See
 [Where the mail protocols run](#where-the-mail-protocols-run) for
 `serve --mail` and `mail`.
 
@@ -336,7 +336,7 @@ their access.
 
 An account receives mail for every one of its addresses, which are in
 order: the first is primary, shown for the account. Each address belongs to
-one account. A relay that forwards a whole domain to Boxy, such as a
+one account. A relay that forwards a whole domain to Spooly, such as a
 Cloudflare catch-all rule, works:
 mail to an address no account has is rejected before it's read. The relay
 uses an admin's API key, so it can deliver to every account.
@@ -346,19 +346,19 @@ of someone with access.
 
 ## Development
 
-API definitions are in [proto/boxy/v1](proto/boxy/v1). Code is generated with
+API definitions are in [proto/spooly/v1](proto/spooly/v1). Code is generated with
 [buf](https://buf.build):
 
 ```bash
 just generate   # buf generate: Go + Connect into gen/, OpenAPI into public/
 just lint       # buf lint
 just test       # go test ./...
-just build      # build the boxy binary
+just build      # build the spooly binary
 ```
 
 | Package | |
 |---|---|
-| [cmd/boxy](cmd/boxy) | Entry point: `serve`, `mail`, and `migrate` |
+| [cmd/spooly](cmd/spooly) | Entry point: `serve`, `mail`, and `migrate` |
 | [internal/service](internal/service) | The API: Account, Label, and Message services, mounted for Connect, gRPC, and REST |
 | [internal/mailparse](internal/mailparse) | Parses raw messages into header fields, bodies, a snippet, and attachments |
 | [internal/db](internal/db) | SQLite and PostgreSQL storage, with migrations |

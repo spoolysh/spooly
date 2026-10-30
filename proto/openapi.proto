@@ -2,15 +2,15 @@ syntax = "proto3";
 
 import "gnostic/openapi/v3/annotations.proto";
 
-option go_package = "github.com/boxysh/boxy/gen;boxy";
+option go_package = "github.com/spoolysh/spooly/gen;spooly";
 option (gnostic.openapi.v3.document) = {
   info: {
-    title: "Boxy API"
+    title: "Spooly API"
     version: "1.0.0"
   }
   servers: {
-    url: "https://boxy.example.com"
-    description: "Your Boxy instance"
+    url: "https://spooly.example.com"
+    description: "Your Spooly instance"
   }
   components: {
     security_schemes: {

@@ -16,12 +16,12 @@ import (
 	"google.golang.org/genproto/googleapis/api/httpbody"
 	_ "modernc.org/sqlite"
 
-	boxyv1 "github.com/boxysh/boxy/gen/boxy/v1"
-	"github.com/boxysh/boxy/gen/boxy/v1/boxyv1connect"
-	"github.com/boxysh/boxy/internal/auth"
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/storage"
-	"github.com/boxysh/boxy/internal/storage/memory"
+	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
+	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
+	"github.com/spoolysh/spooly/internal/auth"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/storage"
+	"github.com/spoolysh/spooly/internal/storage/memory"
 )
 
 func newTestDB(t *testing.T) *db.DB {
@@ -39,7 +39,7 @@ func newTestDB(t *testing.T) *db.DB {
 	return database
 }
 
-// newTestServer serves the API as cmd/boxy does, minus authentication.
+// newTestServer serves the API as cmd/spooly does, minus authentication.
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
@@ -111,7 +111,7 @@ type messageJSON struct {
 	} `json:"parts"`
 }
 
-const testMessage = "From: Ann <ann@example.com>\r\nTo: hello@boxy.sh\r\nSubject: Hi %d\r\n\r\nHello %d\r\n"
+const testMessage = "From: Ann <ann@example.com>\r\nTo: hello@spooly.sh\r\nSubject: Hi %d\r\n\r\nHello %d\r\n"
 
 func rawMessage(n int) string {
 	return fmt.Sprintf(testMessage, n, n)
@@ -139,25 +139,25 @@ func TestAccounts(t *testing.T) {
 		Addresses []string
 		Name      string
 	}
-	call(t, srv, "POST", "/v1/accounts", "application/json", `{"addresses": ["Hello@Boxy.sh"], "name": "Hello"}`, 200, &a)
-	if strings.Join(a.Addresses, ",") != "hello@boxy.sh" || a.Name != "Hello" || a.ID != "1" {
+	call(t, srv, "POST", "/v1/accounts", "application/json", `{"addresses": ["Hello@Spooly.sh"], "name": "Hello"}`, 200, &a)
+	if strings.Join(a.Addresses, ",") != "hello@spooly.sh" || a.Name != "Hello" || a.ID != "1" {
 		t.Errorf("created %+v", a)
 	}
 
-	call(t, srv, "POST", "/v1/accounts", "application/json", `{"addresses": ["hello@boxy.sh"]}`, 409, nil)
-	call(t, srv, "POST", "/v1/accounts", "application/json", `{"addresses": ["hello+x@boxy.sh"]}`, 400, nil)
+	call(t, srv, "POST", "/v1/accounts", "application/json", `{"addresses": ["hello@spooly.sh"]}`, 409, nil)
+	call(t, srv, "POST", "/v1/accounts", "application/json", `{"addresses": ["hello+x@spooly.sh"]}`, 400, nil)
 	call(t, srv, "POST", "/v1/accounts", "application/json", `{"addresses": ["not an address"]}`, 400, nil)
 
-	for _, idOrAddress := range []string{a.ID, "hello@boxy.sh", "HELLO+news@boxy.sh"} {
+	for _, idOrAddress := range []string{a.ID, "hello@spooly.sh", "HELLO+news@spooly.sh"} {
 		var got struct{ ID string }
 		call(t, srv, "GET", "/v1/accounts/"+url.PathEscape(idOrAddress), "", "", 200, &got)
 		if got.ID != a.ID {
 			t.Errorf("GET %s = %s, want %s", idOrAddress, got.ID, a.ID)
 		}
 	}
-	call(t, srv, "GET", "/v1/accounts/nobody@boxy.sh", "", "", 404, nil)
+	call(t, srv, "GET", "/v1/accounts/nobody@spooly.sh", "", "", 404, nil)
 
-	second := createAccount(t, srv, "second@boxy.sh")
+	second := createAccount(t, srv, "second@spooly.sh")
 	var page []struct{ ID string }
 	call(t, srv, "GET", "/v1/accounts?limit=1", "", "", 200, &page)
 	if len(page) != 1 || page[0].ID != second {
@@ -171,7 +171,7 @@ func TestAccounts(t *testing.T) {
 
 func TestCreateMessageREST(t *testing.T) {
 	srv := newTestServer(t)
-	accountID := createAccount(t, srv, "hello@boxy.sh")
+	accountID := createAccount(t, srv, "hello@spooly.sh")
 
 	// post delivers rawMessage(n) to an address with an Idempotency-Key.
 	post := func(to, query, key string, n, want int) messageJSON {
@@ -192,8 +192,8 @@ func TestCreateMessageREST(t *testing.T) {
 		return got
 	}
 
-	m := post("hello+news@boxy.sh", "?mail_from=bounce@example.com", "k1", 1, 200)
-	if m.AccountID != accountID || m.RcptTo != "hello+news@boxy.sh" || m.MailFrom != "bounce@example.com" {
+	m := post("hello+news@spooly.sh", "?mail_from=bounce@example.com", "k1", 1, 200)
+	if m.AccountID != accountID || m.RcptTo != "hello+news@spooly.sh" || m.MailFrom != "bounce@example.com" {
 		t.Errorf("envelope = %+v", m)
 	}
 	if m.Subject != "Hi 1" || m.From.Address != "ann@example.com" || m.Snippet != "Hello 1" {
@@ -210,21 +210,21 @@ func TestCreateMessageREST(t *testing.T) {
 	}
 
 	// A retry with the same key returns the stored message.
-	if again := post("hello@boxy.sh", "", "k1", 2, 200); again.ID != m.ID {
+	if again := post("hello@spooly.sh", "", "k1", 2, 200); again.ID != m.ID {
 		t.Errorf("retry stored a new message %s, want %s", again.ID, m.ID)
 	}
-	post("hello@boxy.sh", "", strings.Repeat("k", 129), 3, 400)
+	post("hello@spooly.sh", "", strings.Repeat("k", 129), 3, 400)
 
 	// By account ID, rcpt_to is the account's address.
 	var byID messageJSON
 	call(t, srv, "POST", "/v1/messages?account_id_or_address="+accountID, "message/rfc822", rawMessage(3), 200, &byID)
-	if byID.RcptTo != "hello@boxy.sh" {
+	if byID.RcptTo != "hello@spooly.sh" {
 		t.Errorf("rcpt_to by ID = %q", byID.RcptTo)
 	}
 
-	call(t, srv, "POST", "/v1/accounts/nobody@boxy.sh/messages", "message/rfc822", rawMessage(4), 404, nil)
+	call(t, srv, "POST", "/v1/accounts/nobody@spooly.sh/messages", "message/rfc822", rawMessage(4), 404, nil)
 	call(t, srv, "POST", "/v1/messages", "message/rfc822", rawMessage(5), 400, nil)
-	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages", "message/rfc822", "", 400, nil)
+	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages", "message/rfc822", "", 400, nil)
 
 	var got messageJSON
 	call(t, srv, "GET", "/v1/messages/"+m.ID, "", "", 200, &got)
@@ -233,7 +233,7 @@ func TestCreateMessageREST(t *testing.T) {
 	}
 	var headers []struct{ Name, Value string }
 	call(t, srv, "GET", "/v1/messages/"+m.ID+"/headers", "", "", 200, &headers)
-	if fmt.Sprint(headers) != "[{From Ann <ann@example.com>} {To hello@boxy.sh} {Subject Hi 1}]" {
+	if fmt.Sprint(headers) != "[{From Ann <ann@example.com>} {To hello@spooly.sh} {Subject Hi 1}]" {
 		t.Errorf("headers = %v", headers)
 	}
 
@@ -253,23 +253,23 @@ func TestCreateMessageREST(t *testing.T) {
 
 func TestCreateMessageConnectStream(t *testing.T) {
 	srv := newTestServer(t)
-	createAccount(t, srv, "hello@boxy.sh")
+	createAccount(t, srv, "hello@spooly.sh")
 
-	client := boxyv1connect.NewMessageServiceClient(connect.NewClient(connecthttp.NewTransport(srv.Client(), srv.URL)))
+	client := spoolyv1connect.NewMessageServiceClient(connect.NewClient(connecthttp.NewTransport(srv.Client(), srv.URL)))
 	stream, err := client.CreateMessage(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw := rawMessage(1)
-	first := &boxyv1.CreateMessageRequest{
-		AccountIdOrAddress: "hello@boxy.sh",
+	first := &spoolyv1.CreateMessageRequest{
+		AccountIdOrAddress: "hello@spooly.sh",
 		MailFrom:           "bounce@example.com",
 		Raw:                &httpbody.HttpBody{ContentType: "message/rfc822", Data: []byte(raw[:10])},
 	}
 	if err := stream.Send(first); err != nil {
 		t.Fatal(err)
 	}
-	if err := stream.Send(&boxyv1.CreateMessageRequest{Raw: &httpbody.HttpBody{Data: []byte(raw[10:])}}); err != nil {
+	if err := stream.Send(&spoolyv1.CreateMessageRequest{Raw: &httpbody.HttpBody{Data: []byte(raw[10:])}}); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := stream.CloseAndReceive()
@@ -289,7 +289,7 @@ func TestCreateMessageConnectStream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := stream.Send(&boxyv1.CreateMessageRequest{AccountIdOrAddress: "hello@boxy.sh", Raw: &httpbody.HttpBody{Data: []byte(raw)}}); err != nil {
+		if err := stream.Send(&spoolyv1.CreateMessageRequest{AccountIdOrAddress: "hello@spooly.sh", Raw: &httpbody.HttpBody{Data: []byte(raw)}}); err != nil {
 			t.Fatal(err)
 		}
 		resp, err := stream.CloseAndReceive()
@@ -305,13 +305,13 @@ func TestCreateMessageConnectStream(t *testing.T) {
 
 func TestListMessages(t *testing.T) {
 	srv := newTestServer(t)
-	createAccount(t, srv, "a@boxy.sh")
-	createAccount(t, srv, "b@boxy.sh")
+	createAccount(t, srv, "a@spooly.sh")
+	createAccount(t, srv, "b@spooly.sh")
 	var ids []string
 	for i := range 3 {
-		ids = append(ids, deliver(t, srv, "a@boxy.sh", "", i).ID)
+		ids = append(ids, deliver(t, srv, "a@spooly.sh", "", i).ID)
 	}
-	other := deliver(t, srv, "b@boxy.sh", "", 9)
+	other := deliver(t, srv, "b@spooly.sh", "", 9)
 
 	var all []messageJSON
 	call(t, srv, "GET", "/v1/messages", "", "", 200, &all)
@@ -320,17 +320,17 @@ func TestListMessages(t *testing.T) {
 	}
 
 	var page []messageJSON
-	call(t, srv, "GET", "/v1/accounts/a@boxy.sh/messages?limit=2", "", "", 200, &page)
+	call(t, srv, "GET", "/v1/accounts/a@spooly.sh/messages?limit=2", "", "", 200, &page)
 	if len(page) != 2 || page[0].ID != ids[2] || page[1].ID != ids[1] {
 		t.Fatalf("page 1 = %+v", page)
 	}
-	call(t, srv, "GET", "/v1/accounts/a@boxy.sh/messages?limit=2&after="+page[1].ID, "", "", 200, &page)
+	call(t, srv, "GET", "/v1/accounts/a@spooly.sh/messages?limit=2&after="+page[1].ID, "", "", 200, &page)
 	if len(page) != 1 || page[0].ID != ids[0] {
 		t.Fatalf("page 2 = %+v", page)
 	}
 
 	call(t, srv, "PATCH", "/v1/messages/"+ids[0], "application/json", `{"remove_labels": ["inbox"]}`, 200, nil)
-	call(t, srv, "GET", "/v1/messages?account_id_or_address=a@boxy.sh&label=inbox", "", "", 200, &page)
+	call(t, srv, "GET", "/v1/messages?account_id_or_address=a@spooly.sh&label=inbox", "", "", 200, &page)
 	if len(page) != 2 {
 		t.Errorf("inbox after archiving one = %d messages", len(page))
 	}
@@ -349,7 +349,7 @@ func TestListMessages(t *testing.T) {
 		"&label=spam":    1,
 		"&label=trash":   1,
 	} {
-		call(t, srv, "GET", "/v1/messages?account_id_or_address=a@boxy.sh"+query, "", "", 200, &page)
+		call(t, srv, "GET", "/v1/messages?account_id_or_address=a@spooly.sh"+query, "", "", 200, &page)
 		if len(page) != want {
 			t.Errorf("%q listed %d messages, want %d", query, len(page), want)
 		}
@@ -358,8 +358,8 @@ func TestListMessages(t *testing.T) {
 
 func TestUpdateMessage(t *testing.T) {
 	srv := newTestServer(t)
-	createAccount(t, srv, "hello@boxy.sh")
-	m := deliver(t, srv, "hello@boxy.sh", "", 1)
+	createAccount(t, srv, "hello@spooly.sh")
+	m := deliver(t, srv, "hello@spooly.sh", "", 1)
 	path := "/v1/messages/" + m.ID
 
 	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "billing"}`, 200, nil)
@@ -407,8 +407,8 @@ func TestUpdateMessage(t *testing.T) {
 
 func TestDeleteMessage(t *testing.T) {
 	srv := newTestServer(t)
-	createAccount(t, srv, "hello@boxy.sh")
-	m := deliver(t, srv, "hello@boxy.sh", "", 1)
+	createAccount(t, srv, "hello@spooly.sh")
+	m := deliver(t, srv, "hello@spooly.sh", "", 1)
 	call(t, srv, "DELETE", "/v1/messages/"+m.ID, "", "", 200, nil)
 	call(t, srv, "GET", "/v1/messages/"+m.ID, "", "", 404, nil)
 	call(t, srv, "DELETE", "/v1/messages/"+m.ID, "", "", 404, nil)
@@ -465,11 +465,11 @@ func TestStoreKeepsRawInStorage(t *testing.T) {
 	database := newTestDB(t)
 	store := &countingStore{memory.New(), map[string]bool{}}
 	svc := New(database, store, Options{})
-	if _, err := database.CreateAccount(t.Context(), db.Account{ID: db.NewID(), Addresses: []string{"hello@boxy.sh"}}); err != nil {
+	if _, err := database.CreateAccount(t.Context(), db.Account{ID: db.NewID(), Addresses: []string{"hello@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	in := Incoming{AccountIDOrAddress: "hello@boxy.sh", IdempotencyKey: "k", Raw: []byte(rawMessage(1))}
+	in := Incoming{AccountIDOrAddress: "hello@spooly.sh", IdempotencyKey: "k", Raw: []byte(rawMessage(1))}
 	m, err := svc.Store(t.Context(), in)
 	if err != nil {
 		t.Fatalf("Store: %v", err)
@@ -505,10 +505,10 @@ func TestStoreKeepsRawInStorage(t *testing.T) {
 
 func TestRawMessageLargerThanAChunk(t *testing.T) {
 	srv := newTestServer(t)
-	createAccount(t, srv, "hello@boxy.sh")
+	createAccount(t, srv, "hello@spooly.sh")
 	raw := "Subject: big\r\n\r\n" + strings.Repeat("0123456789abcdef", 3*chunkSize/16+5)
 	var m messageJSON
-	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages", "message/rfc822", raw, 200, &m)
+	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages", "message/rfc822", raw, 200, &m)
 
 	resp, err := srv.Client().Get(srv.URL + "/v1/messages/" + m.ID + "/raw")
 	if err != nil {
@@ -523,14 +523,14 @@ func TestRawMessageLargerThanAChunk(t *testing.T) {
 
 func TestGetMessagePart(t *testing.T) {
 	srv := newTestServer(t)
-	createAccount(t, srv, "hello@boxy.sh")
+	createAccount(t, srv, "hello@spooly.sh")
 	raw := "Subject: files\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n" +
 		"--b\r\nContent-Type: text/plain\r\n\r\nbody\r\n" +
 		"--b\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Disposition: attachment; filename*=iso-8859-1''caf%E9.txt\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\ncaf=E9\r\n" +
 		"--b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Disposition: inline\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n" +
 		"--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"invoice.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQ=\r\n--b--\r\n"
 	var m messageJSON
-	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages", "message/rfc822", raw, 200, &m)
+	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages", "message/rfc822", raw, 200, &m)
 	var kinds []string
 	for _, p := range m.Parts {
 		kinds = append(kinds, p.Disposition+":"+p.Name+":"+p.CID)
@@ -633,10 +633,10 @@ func TestAccess(t *testing.T) {
 	}
 
 	// Only admins create accounts.
-	as("alice", "POST", "/v1/accounts", "application/json", `{"addresses": ["x@boxy.sh"]}`, 403, nil)
+	as("alice", "POST", "/v1/accounts", "application/json", `{"addresses": ["x@spooly.sh"]}`, 403, nil)
 	var support, personal struct{ ID string }
-	as("admin", "POST", "/v1/accounts", "application/json", `{"addresses": ["support@boxy.sh"]}`, 200, &support)
-	as("admin", "POST", "/v1/accounts", "application/json", `{"addresses": ["vh@boxy.sh"]}`, 200, &personal)
+	as("admin", "POST", "/v1/accounts", "application/json", `{"addresses": ["support@spooly.sh"]}`, 200, &support)
+	as("admin", "POST", "/v1/accounts", "application/json", `{"addresses": ["vh@spooly.sh"]}`, 200, &personal)
 	if err := svc.Share(auth.ContextWithUserID(ctx, userIDs["admin"]), support.ID, "Alice@Example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -644,15 +644,15 @@ func TestAccess(t *testing.T) {
 	// The admin's key delivers to any account, and unknown addresses are
 	// rejected; Alice delivers only to hers.
 	var toSupport, toPersonal messageJSON
-	as("admin", "POST", "/v1/accounts/support@boxy.sh/messages", "message/rfc822", rawMessage(1), 200, &toSupport)
-	as("admin", "POST", "/v1/accounts/vh@boxy.sh/messages", "message/rfc822", rawMessage(2), 200, &toPersonal)
-	as("admin", "POST", "/v1/accounts/nobody@boxy.sh/messages", "message/rfc822", rawMessage(3), 404, nil)
-	as("alice", "POST", "/v1/accounts/vh@boxy.sh/messages", "message/rfc822", rawMessage(3), 404, nil)
+	as("admin", "POST", "/v1/accounts/support@spooly.sh/messages", "message/rfc822", rawMessage(1), 200, &toSupport)
+	as("admin", "POST", "/v1/accounts/vh@spooly.sh/messages", "message/rfc822", rawMessage(2), 200, &toPersonal)
+	as("admin", "POST", "/v1/accounts/nobody@spooly.sh/messages", "message/rfc822", rawMessage(3), 404, nil)
+	as("alice", "POST", "/v1/accounts/vh@spooly.sh/messages", "message/rfc822", rawMessage(3), 404, nil)
 
 	// Alice sees support@ only; vh@ doesn't exist for her. Bob sees nothing.
 	var accounts []struct{ Addresses []string }
 	as("alice", "GET", "/v1/accounts", "", "", 200, &accounts)
-	if len(accounts) != 1 || accounts[0].Addresses[0] != "support@boxy.sh" {
+	if len(accounts) != 1 || accounts[0].Addresses[0] != "support@spooly.sh" {
 		t.Errorf("alice sees accounts %+v", accounts)
 	}
 	var messages []messageJSON
@@ -660,7 +660,7 @@ func TestAccess(t *testing.T) {
 	if len(messages) != 1 || messages[0].ID != toSupport.ID {
 		t.Errorf("alice sees messages %+v", messages)
 	}
-	as("alice", "GET", "/v1/accounts/vh@boxy.sh", "", "", 404, nil)
+	as("alice", "GET", "/v1/accounts/vh@spooly.sh", "", "", 404, nil)
 	as("alice", "GET", "/v1/messages/"+toPersonal.ID, "", "", 404, nil)
 	as("alice", "GET", "/v1/messages/"+toSupport.ID+"/raw", "", "", 200, nil)
 	as("alice", "PATCH", "/v1/messages/"+toSupport.ID, "application/json", `{"add_labels": ["starred"]}`, 200, nil)
@@ -682,16 +682,16 @@ func TestAccess(t *testing.T) {
 
 	// More addresses route mail to the account, each to one account only.
 	// Only admins manage accounts; Alice can't, though she has access.
-	as("alice", "PATCH", "/v1/accounts/support@boxy.sh", "application/json", `{"name": "Mine"}`, 403, nil)
+	as("alice", "PATCH", "/v1/accounts/support@spooly.sh", "application/json", `{"name": "Mine"}`, 403, nil)
 	var updated struct{ Addresses []string }
-	as("admin", "PATCH", "/v1/accounts/support@boxy.sh", "application/json", `{"addresses": ["support@boxy.sh", "contact@domain2.com", "Help@Boxy.sh"]}`, 200, &updated)
-	if strings.Join(updated.Addresses, ",") != "support@boxy.sh,contact@domain2.com,help@boxy.sh" {
+	as("admin", "PATCH", "/v1/accounts/support@spooly.sh", "application/json", `{"addresses": ["support@spooly.sh", "contact@domain2.com", "Help@Spooly.sh"]}`, 200, &updated)
+	if strings.Join(updated.Addresses, ",") != "support@spooly.sh,contact@domain2.com,help@spooly.sh" {
 		t.Errorf("addresses = %v", updated.Addresses)
 	}
-	as("admin", "PATCH", "/v1/accounts/vh@boxy.sh", "application/json", `{"addresses": ["vh@boxy.sh", "contact@domain2.com"]}`, 409, nil)
-	as("admin", "PATCH", "/v1/accounts/vh@boxy.sh", "application/json", `{"addresses": ["vh@boxy.sh", "vh+x@boxy.sh"]}`, 400, nil)
-	as("admin", "PATCH", "/v1/accounts/vh@boxy.sh", "application/json", `{"addresses": ["vh@boxy.sh", "VH@boxy.sh"]}`, 400, nil)
-	as("bob", "PATCH", "/v1/accounts/support@boxy.sh", "application/json", `{"name": "Mine"}`, 404, nil)
+	as("admin", "PATCH", "/v1/accounts/vh@spooly.sh", "application/json", `{"addresses": ["vh@spooly.sh", "contact@domain2.com"]}`, 409, nil)
+	as("admin", "PATCH", "/v1/accounts/vh@spooly.sh", "application/json", `{"addresses": ["vh@spooly.sh", "vh+x@spooly.sh"]}`, 400, nil)
+	as("admin", "PATCH", "/v1/accounts/vh@spooly.sh", "application/json", `{"addresses": ["vh@spooly.sh", "VH@spooly.sh"]}`, 400, nil)
+	as("bob", "PATCH", "/v1/accounts/support@spooly.sh", "application/json", `{"name": "Mine"}`, 404, nil)
 	var routed messageJSON
 	as("admin", "POST", "/v1/accounts/contact+web@domain2.com/messages", "message/rfc822", rawMessage(4), 200, &routed)
 	if routed.AccountID != support.ID || routed.RcptTo != "contact+web@domain2.com" {
@@ -705,18 +705,18 @@ func TestAccess(t *testing.T) {
 
 	// Reordering changes which address is shown; removing one rejects its
 	// mail.
-	as("admin", "PATCH", "/v1/accounts/support@boxy.sh", "application/json", `{"addresses": ["help@boxy.sh", "support@boxy.sh", "contact@domain2.com"]}`, 200, &updated)
-	if updated.Addresses[0] != "help@boxy.sh" {
+	as("admin", "PATCH", "/v1/accounts/support@spooly.sh", "application/json", `{"addresses": ["help@spooly.sh", "support@spooly.sh", "contact@domain2.com"]}`, 200, &updated)
+	if updated.Addresses[0] != "help@spooly.sh" {
 		t.Errorf("after reordering: %+v", updated)
 	}
-	as("admin", "PATCH", "/v1/accounts/help@boxy.sh", "application/json", `{"addresses": ["help@boxy.sh", "contact@domain2.com"]}`, 200, nil)
-	as("admin", "POST", "/v1/accounts/support@boxy.sh/messages", "message/rfc822", rawMessage(5), 404, nil)
+	as("admin", "PATCH", "/v1/accounts/help@spooly.sh", "application/json", `{"addresses": ["help@spooly.sh", "contact@domain2.com"]}`, 200, nil)
+	as("admin", "POST", "/v1/accounts/support@spooly.sh/messages", "message/rfc822", rawMessage(5), 404, nil)
 
 	// Mail clients log in with access only.
-	if _, _, err := svc.LoginMail(ctx, "vh@boxy.sh", keys["alice"]); err == nil {
+	if _, _, err := svc.LoginMail(ctx, "vh@spooly.sh", keys["alice"]); err == nil {
 		t.Error("alice logged in to an account not shared with her")
 	}
-	if _, _, err := svc.LoginMail(ctx, "help@boxy.sh", keys["alice"]); err != nil {
+	if _, _, err := svc.LoginMail(ctx, "help@spooly.sh", keys["alice"]); err != nil {
 		t.Errorf("alice's login: %v", err)
 	}
 }
@@ -725,7 +725,7 @@ func TestAccess(t *testing.T) {
 // by its real date, and pages follow that order.
 func TestListOrderByReceived(t *testing.T) {
 	srv := newTestServer(t)
-	createAccount(t, srv, "hello@boxy.sh")
+	createAccount(t, srv, "hello@spooly.sh")
 	// Delivered in this order, received at these times.
 	times := []string{
 		"2026-10-20T10:00:00Z",
@@ -737,7 +737,7 @@ func TestListOrderByReceived(t *testing.T) {
 	ids := map[string]string{}
 	for i, at := range times {
 		var m messageJSON
-		call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages?received_at="+at, "message/rfc822", rawMessage(i), 200, &m)
+		call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?received_at="+at, "message/rfc822", rawMessage(i), 200, &m)
 		ids[m.ID] = at
 	}
 	want := []string{"2026-10-25T10:00:00.5Z", "2026-10-25T10:00:00.25Z", "2026-10-25T10:00:00Z", "2026-10-20T10:00:00Z", "2026-10-01T09:00:00Z"}
@@ -768,21 +768,21 @@ func TestListOrderByReceived(t *testing.T) {
 // labels instead of the inbox defaults.
 func TestCreateMessageLabels(t *testing.T) {
 	srv := newTestServer(t)
-	createAccount(t, srv, "hello@boxy.sh")
+	createAccount(t, srv, "hello@spooly.sh")
 
 	var sent messageJSON
-	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages?labels=sent", "message/rfc822", rawMessage(1), 200, &sent)
+	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?labels=sent", "message/rfc822", rawMessage(1), 200, &sent)
 	if strings.Join(sent.Labels, ",") != "sent" {
 		t.Errorf("sent mail labels = %v", sent.Labels)
 	}
 	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "billing"}`, 200, nil)
 	var starred messageJSON
-	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages?labels=inbox&labels=starred&labels=billing", "message/rfc822", rawMessage(2), 200, &starred)
+	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?labels=inbox&labels=starred&labels=billing", "message/rfc822", rawMessage(2), 200, &starred)
 	if strings.Join(starred.Labels, ",") != "inbox,starred,billing" {
 		t.Errorf("labels = %v", starred.Labels)
 	}
-	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages?labels=nope", "message/rfc822", rawMessage(3), 400, nil)
-	call(t, srv, "POST", "/v1/accounts/hello@boxy.sh/messages?labels=Not%20A%20Slug", "message/rfc822", rawMessage(3), 400, nil)
+	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?labels=nope", "message/rfc822", rawMessage(3), 400, nil)
+	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?labels=Not%20A%20Slug", "message/rfc822", rawMessage(3), 400, nil)
 
 	var inSent []messageJSON
 	call(t, srv, "GET", "/v1/messages?label=sent", "", "", 200, &inSent)

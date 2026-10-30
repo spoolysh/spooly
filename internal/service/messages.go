@@ -16,10 +16,10 @@ import (
 	"google.golang.org/genproto/googleapis/api/httpbody"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	boxyv1 "github.com/boxysh/boxy/gen/boxy/v1"
-	"github.com/boxysh/boxy/gen/boxy/v1/boxyv1connect"
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/mailparse"
+	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
+	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/mailparse"
 )
 
 const (
@@ -29,20 +29,20 @@ const (
 	chunkSize      = 64 * 1024
 )
 
-func addressProto(a db.Address) *boxyv1.Address {
-	return &boxyv1.Address{Name: a.Name, Address: a.Address}
+func addressProto(a db.Address) *spoolyv1.Address {
+	return &spoolyv1.Address{Name: a.Name, Address: a.Address}
 }
 
-func addressesProto(list []db.Address) []*boxyv1.Address {
-	out := make([]*boxyv1.Address, 0, len(list))
+func addressesProto(list []db.Address) []*spoolyv1.Address {
+	out := make([]*spoolyv1.Address, 0, len(list))
 	for _, a := range list {
 		out = append(out, addressProto(a))
 	}
 	return out
 }
 
-func messageProto(m *db.Message) *boxyv1.Message {
-	p := &boxyv1.Message{
+func messageProto(m *db.Message) *spoolyv1.Message {
+	p := &spoolyv1.Message{
 		Id:         m.ID,
 		AccountId:  m.AccountID,
 		MailFrom:   m.MailFrom,
@@ -53,7 +53,7 @@ func messageProto(m *db.Message) *boxyv1.Message {
 		Subject:    m.Subject,
 		Snippet:    m.Snippet,
 		Size:       m.Size,
-		Parts:      make([]*boxyv1.MessagePart, 0, len(m.Parts)),
+		Parts:      make([]*spoolyv1.MessagePart, 0, len(m.Parts)),
 		Labels:     m.Labels,
 		Metadata:   m.Metadata,
 		ReceivedAt: timestamppb.New(m.ReceivedAt),
@@ -62,7 +62,7 @@ func messageProto(m *db.Message) *boxyv1.Message {
 		p.Date = timestamppb.New(*m.Date)
 	}
 	for _, pt := range m.Parts {
-		p.Parts = append(p.Parts, &boxyv1.MessagePart{
+		p.Parts = append(p.Parts, &spoolyv1.MessagePart{
 			Type: pt.Type, Name: pt.Name, Size: pt.Size, Cid: pt.CID,
 			Disposition: pt.Disposition,
 		})
@@ -153,7 +153,7 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	return m, nil
 }
 
-func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.MessageServiceCreateMessageServerStream) (*boxyv1.CreateMessageResponse, error) {
+func (s *Service) CreateMessage(ctx context.Context, stream spoolyv1connect.MessageServiceCreateMessageServerStream) (*spoolyv1.CreateMessageResponse, error) {
 	var in Incoming
 	var raw bytes.Buffer
 	first := true
@@ -195,7 +195,7 @@ func (s *Service) CreateMessage(ctx context.Context, stream boxyv1connect.Messag
 	if err != nil {
 		return nil, err
 	}
-	return &boxyv1.CreateMessageResponse{Message: messageProto(m)}, nil
+	return &spoolyv1.CreateMessageResponse{Message: messageProto(m)}, nil
 }
 
 // MaxIdempotencyKeyLength is the longest idempotency key, in bytes.
@@ -247,7 +247,7 @@ func (s *Service) requireMessage(ctx context.Context, id string) (*db.Message, e
 	return m, nil
 }
 
-func (s *Service) ListMessages(ctx context.Context, req *boxyv1.ListMessagesRequest) (*boxyv1.ListMessagesResponse, error) {
+func (s *Service) ListMessages(ctx context.Context, req *spoolyv1.ListMessagesRequest) (*spoolyv1.ListMessagesResponse, error) {
 	// As in the dashboard and IMAP, spam and trash show only under their
 	// own labels.
 	f := db.MessageFilter{Label: req.GetLabel(), NotLabels: db.HiddenFrom(req.GetLabel()), After: req.GetAfter(), Limit: listLimit(req.Limit)}
@@ -271,14 +271,14 @@ func (s *Service) ListMessages(ctx context.Context, req *boxyv1.ListMessagesRequ
 	if err != nil {
 		return nil, dbError(err)
 	}
-	resp := &boxyv1.ListMessagesResponse{Messages: make([]*boxyv1.Message, 0, len(messages))}
+	resp := &spoolyv1.ListMessagesResponse{Messages: make([]*spoolyv1.Message, 0, len(messages))}
 	for _, m := range messages {
 		resp.Messages = append(resp.Messages, messageProto(m))
 	}
 	return resp, nil
 }
 
-func (s *Service) UpdateMessage(ctx context.Context, req *boxyv1.UpdateMessageRequest) (*boxyv1.UpdateMessageResponse, error) {
+func (s *Service) UpdateMessage(ctx context.Context, req *spoolyv1.UpdateMessageRequest) (*spoolyv1.UpdateMessageResponse, error) {
 	for _, l := range req.AddLabels {
 		if slices.Contains(req.RemoveLabels, l) {
 			return nil, connect.Errorf(connect.CodeInvalidArgument, "label %q is both added and removed", l)
@@ -295,18 +295,18 @@ func (s *Service) UpdateMessage(ctx context.Context, req *boxyv1.UpdateMessageRe
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &boxyv1.UpdateMessageResponse{Message: messageProto(m)}, nil
+	return &spoolyv1.UpdateMessageResponse{Message: messageProto(m)}, nil
 }
 
-func (s *Service) GetMessage(ctx context.Context, req *boxyv1.GetMessageRequest) (*boxyv1.GetMessageResponse, error) {
+func (s *Service) GetMessage(ctx context.Context, req *spoolyv1.GetMessageRequest) (*spoolyv1.GetMessageResponse, error) {
 	m, err := s.requireMessage(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
-	return &boxyv1.GetMessageResponse{Message: messageProto(m)}, nil
+	return &spoolyv1.GetMessageResponse{Message: messageProto(m)}, nil
 }
 
-func (s *Service) GetMessageHeaders(ctx context.Context, req *boxyv1.GetMessageHeadersRequest) (*boxyv1.GetMessageHeadersResponse, error) {
+func (s *Service) GetMessageHeaders(ctx context.Context, req *spoolyv1.GetMessageHeadersRequest) (*spoolyv1.GetMessageHeadersResponse, error) {
 	if _, err := s.requireMessage(ctx, req.Id); err != nil {
 		return nil, err
 	}
@@ -314,9 +314,9 @@ func (s *Service) GetMessageHeaders(ctx context.Context, req *boxyv1.GetMessageH
 	if err != nil {
 		return nil, err
 	}
-	resp := &boxyv1.GetMessageHeadersResponse{Headers: make([]*boxyv1.MessageHeader, 0, len(headers))}
+	resp := &spoolyv1.GetMessageHeadersResponse{Headers: make([]*spoolyv1.MessageHeader, 0, len(headers))}
 	for _, h := range headers {
-		resp.Headers = append(resp.Headers, &boxyv1.MessageHeader{Name: h.Name, Value: h.Value})
+		resp.Headers = append(resp.Headers, &spoolyv1.MessageHeader{Name: h.Name, Value: h.Value})
 	}
 	return resp, nil
 }
@@ -428,7 +428,7 @@ func EmlFilename(m *db.Message) string {
 	return name + ".eml"
 }
 
-func (s *Service) GetRawMessage(ctx context.Context, req *boxyv1.GetRawMessageRequest, stream boxyv1connect.MessageServiceGetRawMessageServerStream) error {
+func (s *Service) GetRawMessage(ctx context.Context, req *spoolyv1.GetRawMessageRequest, stream spoolyv1connect.MessageServiceGetRawMessageServerStream) error {
 	if _, err := s.requireMessage(ctx, req.Id); err != nil {
 		return err
 	}
@@ -443,7 +443,7 @@ func (s *Service) GetRawMessage(ctx context.Context, req *boxyv1.GetRawMessageRe
 	}
 
 	return sendChunks(rc, "message/rfc822", func(chunk *httpbody.HttpBody) error {
-		return stream.Send(&boxyv1.GetRawMessageResponse{Raw: chunk})
+		return stream.Send(&spoolyv1.GetRawMessageResponse{Raw: chunk})
 	})
 }
 
@@ -507,7 +507,7 @@ func ContentDisposition(disposition, filename string) string {
 	return disposition
 }
 
-func (s *Service) GetMessagePart(ctx context.Context, req *boxyv1.GetMessagePartRequest, stream boxyv1connect.MessageServiceGetMessagePartServerStream) error {
+func (s *Service) GetMessagePart(ctx context.Context, req *spoolyv1.GetMessagePartRequest, stream spoolyv1connect.MessageServiceGetMessagePartServerStream) error {
 	m, err := s.requireMessage(ctx, req.Id)
 	if err != nil {
 		return err
@@ -533,18 +533,18 @@ func (s *Service) GetMessagePart(ctx context.Context, req *boxyv1.GetMessagePart
 		info.ResponseHeader().Set("X-Content-Type-Options", "nosniff")
 	}
 	return sendChunks(rc, part.Type, func(chunk *httpbody.HttpBody) error {
-		return stream.Send(&boxyv1.GetMessagePartResponse{Content: chunk})
+		return stream.Send(&spoolyv1.GetMessagePartResponse{Content: chunk})
 	})
 }
 
-func (s *Service) DeleteMessage(ctx context.Context, req *boxyv1.DeleteMessageRequest) (*boxyv1.DeleteMessageResponse, error) {
+func (s *Service) DeleteMessage(ctx context.Context, req *spoolyv1.DeleteMessageRequest) (*spoolyv1.DeleteMessageResponse, error) {
 	if _, err := s.requireMessage(ctx, req.Id); err != nil {
 		return nil, err
 	}
 	if err := s.PurgeMessage(ctx, req.Id); err != nil {
 		return nil, err
 	}
-	return &boxyv1.DeleteMessageResponse{}, nil
+	return &spoolyv1.DeleteMessageResponse{}, nil
 }
 
 // EmptyLabel deletes for good every message of an account in the view of

@@ -8,8 +8,8 @@ import (
 
 	"connectrpc.com/connect/v2"
 
-	"github.com/boxysh/boxy/internal/auth"
-	"github.com/boxysh/boxy/internal/db"
+	"github.com/spoolysh/spooly/internal/auth"
+	"github.com/spoolysh/spooly/internal/db"
 )
 
 // IsAdmin reports whether email belongs to an admin: they see every
@@ -93,7 +93,7 @@ func (s *Service) Share(ctx context.Context, accountID, email string) error {
 	}
 	u, err := s.db.GetUserByEmail(ctx, strings.TrimSpace(email))
 	if errors.Is(err, db.ErrUserNotFound) {
-		return connect.Errorf(connect.CodeNotFound, "no user signs in as %s: they need to sign in to Boxy once first", email)
+		return connect.Errorf(connect.CodeNotFound, "no user signs in as %s: they need to sign in to Spooly once first", email)
 	}
 	if err != nil {
 		return dbError(err)

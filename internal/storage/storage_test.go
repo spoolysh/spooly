@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boxysh/boxy/internal/storage"
-	"github.com/boxysh/boxy/internal/storage/local"
-	"github.com/boxysh/boxy/internal/storage/memory"
+	"github.com/spoolysh/spooly/internal/storage"
+	"github.com/spoolysh/spooly/internal/storage/local"
+	"github.com/spoolysh/spooly/internal/storage/memory"
 )
 
 // helloCRC32C is the CRC32C of "hello" as GCS and S3 report it.

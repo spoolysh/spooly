@@ -1,4 +1,4 @@
-// Package service implements the Boxy API: AccountService, LabelService, and
+// Package service implements the Spooly API: AccountService, LabelService, and
 // MessageService.
 package service
 
@@ -11,15 +11,15 @@ import (
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	boxyv1 "github.com/boxysh/boxy/gen/boxy/v1"
-	"github.com/boxysh/boxy/gen/boxy/v1/boxyv1connect"
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/storage"
+	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
+	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/storage"
 )
 
 const defaultListLimit = 50
 
-// Service implements all three Boxy services. The database holds everything
+// Service implements all three Spooly services. The database holds everything
 // but raw messages, which are in store.
 type Service struct {
 	db     *db.DB
@@ -28,9 +28,9 @@ type Service struct {
 }
 
 var (
-	_ boxyv1connect.AccountServiceHandler = (*Service)(nil)
-	_ boxyv1connect.LabelServiceHandler   = (*Service)(nil)
-	_ boxyv1connect.MessageServiceHandler = (*Service)(nil)
+	_ spoolyv1connect.AccountServiceHandler = (*Service)(nil)
+	_ spoolyv1connect.LabelServiceHandler   = (*Service)(nil)
+	_ spoolyv1connect.MessageServiceHandler = (*Service)(nil)
 )
 
 // Options configure a Service.
@@ -78,8 +78,8 @@ func listLimit(limit *int32) int {
 
 // Accounts
 
-func accountProto(a *db.Account) *boxyv1.Account {
-	return &boxyv1.Account{Id: a.ID, Addresses: a.Addresses, Name: a.Name, CreatedAt: timestamppb.New(a.CreatedAt)}
+func accountProto(a *db.Account) *spoolyv1.Account {
+	return &spoolyv1.Account{Id: a.ID, Addresses: a.Addresses, Name: a.Name, CreatedAt: timestamppb.New(a.CreatedAt)}
 }
 
 // checkAddresses lowercases an account's addresses and rejects
@@ -100,7 +100,7 @@ func checkAddresses(addresses []string) ([]string, error) {
 	return out, nil
 }
 
-func (s *Service) CreateAccount(ctx context.Context, req *boxyv1.CreateAccountRequest) (*boxyv1.CreateAccountResponse, error) {
+func (s *Service) CreateAccount(ctx context.Context, req *spoolyv1.CreateAccountRequest) (*spoolyv1.CreateAccountResponse, error) {
 	if err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -112,10 +112,10 @@ func (s *Service) CreateAccount(ctx context.Context, req *boxyv1.CreateAccountRe
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &boxyv1.CreateAccountResponse{Account: accountProto(a)}, nil
+	return &spoolyv1.CreateAccountResponse{Account: accountProto(a)}, nil
 }
 
-func (s *Service) ListAccounts(ctx context.Context, req *boxyv1.ListAccountsRequest) (*boxyv1.ListAccountsResponse, error) {
+func (s *Service) ListAccounts(ctx context.Context, req *spoolyv1.ListAccountsRequest) (*spoolyv1.ListAccountsResponse, error) {
 	userID, admin, err := s.caller(ctx)
 	if err != nil {
 		return nil, err
@@ -128,14 +128,14 @@ func (s *Service) ListAccounts(ctx context.Context, req *boxyv1.ListAccountsRequ
 	if err != nil {
 		return nil, dbError(err)
 	}
-	resp := &boxyv1.ListAccountsResponse{Accounts: make([]*boxyv1.Account, 0, len(accounts))}
+	resp := &spoolyv1.ListAccountsResponse{Accounts: make([]*spoolyv1.Account, 0, len(accounts))}
 	for i := range accounts {
 		resp.Accounts = append(resp.Accounts, accountProto(&accounts[i]))
 	}
 	return resp, nil
 }
 
-func (s *Service) GetAccount(ctx context.Context, req *boxyv1.GetAccountRequest) (*boxyv1.GetAccountResponse, error) {
+func (s *Service) GetAccount(ctx context.Context, req *spoolyv1.GetAccountRequest) (*spoolyv1.GetAccountResponse, error) {
 	a, _, err := s.resolveAccount(ctx, req.IdOrAddress)
 	if err != nil {
 		return nil, err
@@ -143,10 +143,10 @@ func (s *Service) GetAccount(ctx context.Context, req *boxyv1.GetAccountRequest)
 	if err := s.Require(ctx, a.ID); err != nil {
 		return nil, err
 	}
-	return &boxyv1.GetAccountResponse{Account: accountProto(a)}, nil
+	return &spoolyv1.GetAccountResponse{Account: accountProto(a)}, nil
 }
 
-func (s *Service) UpdateAccount(ctx context.Context, req *boxyv1.UpdateAccountRequest) (*boxyv1.UpdateAccountResponse, error) {
+func (s *Service) UpdateAccount(ctx context.Context, req *spoolyv1.UpdateAccountRequest) (*spoolyv1.UpdateAccountResponse, error) {
 	a, _, err := s.resolveAccount(ctx, req.IdOrAddress)
 	if err != nil {
 		return nil, err
@@ -164,7 +164,7 @@ func (s *Service) UpdateAccount(ctx context.Context, req *boxyv1.UpdateAccountRe
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &boxyv1.UpdateAccountResponse{Account: accountProto(a)}, nil
+	return &spoolyv1.UpdateAccountResponse{Account: accountProto(a)}, nil
 }
 
 // resolveAccount finds an account by ID, or by address if idOrAddress contains
@@ -190,8 +190,8 @@ func (s *Service) resolveAccount(ctx context.Context, idOrAddress string) (*db.A
 
 // Labels
 
-func labelProto(l *db.Label) *boxyv1.Label {
-	p := &boxyv1.Label{Name: l.Name, System: l.System}
+func labelProto(l *db.Label) *spoolyv1.Label {
+	p := &spoolyv1.Label{Name: l.Name, System: l.System}
 	if l.CreatedAt != nil {
 		p.CreatedAt = timestamppb.New(*l.CreatedAt)
 	}
@@ -199,7 +199,7 @@ func labelProto(l *db.Label) *boxyv1.Label {
 }
 
 // CreateLabel is for admins only: a label is shared by every account.
-func (s *Service) CreateLabel(ctx context.Context, req *boxyv1.CreateLabelRequest) (*boxyv1.CreateLabelResponse, error) {
+func (s *Service) CreateLabel(ctx context.Context, req *spoolyv1.CreateLabelRequest) (*spoolyv1.CreateLabelResponse, error) {
 	if err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -207,10 +207,10 @@ func (s *Service) CreateLabel(ctx context.Context, req *boxyv1.CreateLabelReques
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &boxyv1.CreateLabelResponse{Label: labelProto(l)}, nil
+	return &spoolyv1.CreateLabelResponse{Label: labelProto(l)}, nil
 }
 
-func (s *Service) ListLabels(ctx context.Context, _ *boxyv1.ListLabelsRequest) (*boxyv1.ListLabelsResponse, error) {
+func (s *Service) ListLabels(ctx context.Context, _ *spoolyv1.ListLabelsRequest) (*spoolyv1.ListLabelsResponse, error) {
 	if _, _, err := s.caller(ctx); err != nil {
 		return nil, err
 	}
@@ -218,7 +218,7 @@ func (s *Service) ListLabels(ctx context.Context, _ *boxyv1.ListLabelsRequest) (
 	if err != nil {
 		return nil, dbError(err)
 	}
-	resp := &boxyv1.ListLabelsResponse{Labels: make([]*boxyv1.Label, 0, len(labels))}
+	resp := &spoolyv1.ListLabelsResponse{Labels: make([]*spoolyv1.Label, 0, len(labels))}
 	for i := range labels {
 		resp.Labels = append(resp.Labels, labelProto(&labels[i]))
 	}
@@ -227,12 +227,12 @@ func (s *Service) ListLabels(ctx context.Context, _ *boxyv1.ListLabelsRequest) (
 
 // DeleteLabel is for admins only: a label is shared by all accounts, so
 // deleting it takes it off messages in accounts others can't see.
-func (s *Service) DeleteLabel(ctx context.Context, req *boxyv1.DeleteLabelRequest) (*boxyv1.DeleteLabelResponse, error) {
+func (s *Service) DeleteLabel(ctx context.Context, req *spoolyv1.DeleteLabelRequest) (*spoolyv1.DeleteLabelResponse, error) {
 	if err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.db.DeleteLabel(ctx, req.Name); err != nil {
 		return nil, dbError(err)
 	}
-	return &boxyv1.DeleteLabelResponse{}, nil
+	return &spoolyv1.DeleteLabelResponse{}, nil
 }

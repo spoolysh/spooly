@@ -30,9 +30,9 @@ import (
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-message/textproto"
 
-	boxyv1 "github.com/boxysh/boxy/gen/boxy/v1"
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/service"
+	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/service"
 )
 
 // Options configure a Server.
@@ -319,7 +319,7 @@ func (c *session) Create(name string, options *goimap.CreateOptions) error {
 	}
 	// The API checks label names in its interceptor; here, check the same
 	// rules directly.
-	req := &boxyv1.CreateLabelRequest{Name: name}
+	req := &spoolyv1.CreateLabelRequest{Name: name}
 	if err := protovalidate.Validate(req); err != nil {
 		return noErr("Folder names are labels: lowercase letters and digits, separated by - or _")
 	}
@@ -332,7 +332,7 @@ func (c *session) Create(name string, options *goimap.CreateOptions) error {
 // Delete refuses: a label is shared by all accounts, so deleting it from
 // one mail client would remove it everywhere. Delete labels in the dashboard.
 func (c *session) Delete(name string) error {
-	return noErr("Folders are labels shared by all accounts; delete them in the Boxy dashboard")
+	return noErr("Folders are labels shared by all accounts; delete them in the Spooly dashboard")
 }
 
 func (c *session) Rename(name, newName string, options *goimap.RenameOptions) error {

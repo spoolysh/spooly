@@ -1,4 +1,4 @@
-// Package mailparse extracts the fields Boxy stores from a raw RFC 5322
+// Package mailparse extracts the fields Spooly stores from a raw RFC 5322
 // message: header fields, text and HTML bodies, a snippet, and attachments.
 package mailparse
 
@@ -19,14 +19,14 @@ import (
 	"github.com/emersion/go-message/mail"
 	"golang.org/x/net/html"
 
-	"github.com/boxysh/boxy/internal/db"
+	"github.com/spoolysh/spooly/internal/db"
 )
 
 // SnippetLength is the most characters a snippet has.
 const SnippetLength = 200
 
 // Parsed holds what Parse extracts. Text, HTML, and Headers are for the
-// snippet and tests; Boxy reads them from the raw message when shown.
+// snippet and tests; Spooly reads them from the raw message when shown.
 type Parsed struct {
 	From      db.Address // empty when there's no From header
 	To        []db.Address

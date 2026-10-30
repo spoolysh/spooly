@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/boxysh/boxy/internal/db"
-	"github.com/boxysh/boxy/internal/service"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/service"
 )
 
 const (
@@ -120,7 +120,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	sess := &session{s: s, conn: conn, tls: isTLS}
 	sess.setConn(conn)
 
-	sess.reply("+OK Boxy POP3 ready")
+	sess.reply("+OK Spooly POP3 ready")
 	for sess.w.Flush() == nil {
 		conn.SetReadDeadline(time.Now().Add(idleTimeout))
 		line, err := sess.readLine()
@@ -279,7 +279,7 @@ func (c *session) capa() {
 		}
 	}
 	c.reply("EXPIRE NEVER")
-	c.reply("IMPLEMENTATION Boxy")
+	c.reply("IMPLEMENTATION Spooly")
 	c.reply(".")
 }
 
