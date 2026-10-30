@@ -5,66 +5,73 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 
-	gcstorage "cloud.google.com/go/storage"
+	"google.golang.org/api/googleapi"
+	gcsapi "google.golang.org/api/storage/v1"
 
 	"github.com/boxysh/boxy/internal/storage"
 )
 
-// Storage stores file bytes in Google Cloud Storage.
+// Storage stores file bytes in Google Cloud Storage, through its JSON API.
 type Storage struct {
-	bucket *gcstorage.BucketHandle
+	objects *gcsapi.ObjectsService
+	bucket  string
 }
 
-func New(client *gcstorage.Client, bucketName string) *Storage {
-	return &Storage{bucket: client.Bucket(bucketName)}
+func New(service *gcsapi.Service, bucket string) *Storage {
+	return &Storage{objects: service.Objects, bucket: bucket}
 }
 
 func (s *Storage) Put(ctx context.Context, id, contentType string, r io.Reader) (storage.Stored, error) {
-	w := s.bucket.Object(id).NewWriter(ctx)
-	w.ContentType = contentType
-
-	n, err := io.Copy(w, r)
+	var opts []googleapi.MediaOption
+	if contentType != "" {
+		opts = append(opts, googleapi.ContentType(contentType))
+	}
+	obj, err := s.objects.Insert(s.bucket, &gcsapi.Object{Name: id, ContentType: contentType}).
+		Media(r, opts...).Context(ctx).Do()
 	if err != nil {
-		w.Close()
 		return storage.Stored{}, fmt.Errorf("writing to GCS: %w", err)
 	}
-
-	if err := w.Close(); err != nil {
-		return storage.Stored{}, fmt.Errorf("closing GCS writer: %w", err)
-	}
 	// GCS computes a CRC32C for every object.
-	return storage.Stored{Size: n, Checksum: storage.EncodeCRC32C(w.Attrs().CRC32C)}, nil
+	return storage.Stored{Size: int64(obj.Size), Checksum: obj.Crc32c}, nil
 }
 
 func (s *Storage) Get(ctx context.Context, id string) (io.ReadCloser, error) {
-	r, err := s.bucket.Object(id).NewReader(ctx)
+	resp, err := s.objects.Get(s.bucket, id).Context(ctx).Download()
 	if err != nil {
-		if errors.Is(err, gcstorage.ErrObjectNotExist) {
+		if isNotFound(err) {
 			return nil, fmt.Errorf("%w: %s", storage.ErrNotFound, id)
 		}
 		return nil, fmt.Errorf("opening GCS reader: %w", err)
 	}
-	return r, nil
+	return resp.Body, nil
 }
 
 func (s *Storage) GetRange(ctx context.Context, id string, start, length int64) (io.ReadCloser, error) {
-	r, err := s.bucket.Object(id).NewRangeReader(ctx, start, length)
+	call := s.objects.Get(s.bucket, id).Context(ctx)
+	call.Header().Set("Range", fmt.Sprintf("bytes=%d-%d", start, start+length-1))
+	resp, err := call.Download()
 	if err != nil {
-		if errors.Is(err, gcstorage.ErrObjectNotExist) {
+		if isNotFound(err) {
 			return nil, fmt.Errorf("%w: %s", storage.ErrNotFound, id)
 		}
 		return nil, fmt.Errorf("opening GCS range reader: %w", err)
 	}
-	return r, nil
+	return resp.Body, nil
 }
 
 func (s *Storage) Delete(ctx context.Context, id string) error {
-	if err := s.bucket.Object(id).Delete(ctx); err != nil {
-		if errors.Is(err, gcstorage.ErrObjectNotExist) {
+	if err := s.objects.Delete(s.bucket, id).Context(ctx).Do(); err != nil {
+		if isNotFound(err) {
 			return nil
 		}
 		return fmt.Errorf("deleting object: %w", err)
 	}
 	return nil
+}
+
+func isNotFound(err error) bool {
+	var gerr *googleapi.Error
+	return errors.As(err, &gerr) && gerr.Code == http.StatusNotFound
 }

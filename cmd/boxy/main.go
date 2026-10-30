@@ -12,11 +12,11 @@ import (
 	"strconv"
 	"strings"
 
-	gcstorage "cloud.google.com/go/storage"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
+	gcsapi "google.golang.org/api/storage/v1"
 	_ "modernc.org/sqlite"
 
 	"github.com/boxysh/boxy/internal/auth"
@@ -54,11 +54,11 @@ func envRequired(key string) string {
 func newStorage() (storage.Storage, error) {
 	switch backend := env("STORAGE_BACKEND", "local"); backend {
 	case "gcs":
-		client, err := gcstorage.NewClient(context.Background())
+		service, err := gcsapi.NewService(context.Background())
 		if err != nil {
 			return nil, err
 		}
-		return gcs.New(client, envRequired("GCS_BUCKET")), nil
+		return gcs.New(service, envRequired("GCS_BUCKET")), nil
 	case "s3":
 		cfg, err := config.LoadDefaultConfig(context.Background())
 		if err != nil {
