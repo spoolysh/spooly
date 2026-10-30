@@ -7,7 +7,7 @@ serve:
 
 # Run only the mail protocols (POP3, IMAP)
 mail:
-    go run ./cmd/boxy mail --migrate
+    go run ./cmd/boxy mail
 
 # Build the binary
 build:

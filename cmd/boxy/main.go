@@ -195,8 +195,12 @@ func driverFromDSN(dsn string) string {
 	}
 }
 
+func databaseURL() string {
+	return env("DATABASE_URL", "file:boxy.db")
+}
+
 func openDB() (*db.DB, error) {
-	dsn := env("DATABASE_URL", "file:boxy.db")
+	dsn := databaseURL()
 	return db.New(context.Background(), driverFromDSN(dsn), dsn)
 }
 
@@ -205,7 +209,7 @@ var usage = "Usage: boxy " + Version + ` <command>
 Commands:
   serve [--migrate] [--mail]   Start the API and dashboard (default);
                                --mail also starts the mail protocols
-  mail [--migrate]             Start only the mail protocols: POP3, IMAP
+  mail                         Start only the mail protocols: POP3, IMAP
   migrate                      Run database migrations and exit
 `
 
@@ -231,7 +235,10 @@ func main() {
 	case "serve":
 		cmdServe(migrate, mail)
 	case "mail":
-		cmdMail(migrate)
+		if migrate {
+			log.Fatal("boxy mail doesn't migrate: run boxy migrate, or boxy serve --migrate")
+		}
+		cmdMail()
 	case "migrate":
 		cmdMigrate()
 	case "version", "-v", "--version":
@@ -294,8 +301,16 @@ func openBackend(migrate bool) (*db.DB, storage.Storage) {
 // cmdMail serves only the mail-client protocols, for hosts that take raw TCP
 // when the API runs where only HTTP gets through, such as Cloud Run. Both
 // must share a PostgreSQL database and S3 or GCS storage.
-func cmdMail(migrate bool) {
-	database, store := openBackend(migrate)
+func cmdMail() {
+	if driverFromDSN(databaseURL()) == "sqlite" {
+		log.Println("warning: SQLite is shared only with a boxy serve on this host; use PostgreSQL when it runs elsewhere")
+	}
+	switch backend := env("STORAGE_BACKEND", "local"); backend {
+	case "local", "memory":
+		log.Printf("warning: %s storage is shared only with a boxy serve on this host; use S3 or GCS when it runs elsewhere", backend)
+	}
+
+	database, store := openBackend(false)
 	defer database.Close(context.Background())
 
 	startMail(database, newService(database, store))
