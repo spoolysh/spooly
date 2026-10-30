@@ -205,7 +205,7 @@ service MessageService {
   }
 
   // Get a message's raw source.
-  rpc GetRawMessage(GetRawMessageRequest) returns (stream GetRawMessageResponse) {
+  rpc GetMessageRaw(GetMessageRawRequest) returns (stream GetMessageRawResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
     option (google.api.http) = {
       get: "/v1/messages/{id}/raw"
@@ -508,13 +508,13 @@ message GetMessagePartResponse {
   google.api.HttpBody content = 1 [(buf.validate.field).required = true];
 }
 
-message GetRawMessageRequest {
+message GetMessageRawRequest {
   string id = 1 [(buf.validate.field) = {
     required: true
     string: {pattern: "^[A-Za-z0-9_-]{21}$"}
   }];
 }
 
-message GetRawMessageResponse {
+message GetMessageRawResponse {
   google.api.HttpBody raw = 1 [(buf.validate.field).required = true];
 }

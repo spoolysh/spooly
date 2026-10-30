@@ -428,7 +428,7 @@ func EmlFilename(m *db.Message) string {
 	return name + ".eml"
 }
 
-func (s *Service) GetRawMessage(ctx context.Context, req *spoolyv1.GetRawMessageRequest, stream spoolyv1connect.MessageServiceGetRawMessageServerStream) error {
+func (s *Service) GetMessageRaw(ctx context.Context, req *spoolyv1.GetMessageRawRequest, stream spoolyv1connect.MessageServiceGetMessageRawServerStream) error {
 	if _, err := s.requireMessage(ctx, req.Id); err != nil {
 		return err
 	}
@@ -443,7 +443,7 @@ func (s *Service) GetRawMessage(ctx context.Context, req *spoolyv1.GetRawMessage
 	}
 
 	return sendChunks(rc, "message/rfc822", func(chunk *httpbody.HttpBody) error {
-		return stream.Send(&spoolyv1.GetRawMessageResponse{Raw: chunk})
+		return stream.Send(&spoolyv1.GetMessageRawResponse{Raw: chunk})
 	})
 }
 
