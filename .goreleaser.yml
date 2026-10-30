@@ -1,0 +1,74 @@
+version: 2
+before:
+  hooks:
+    - buf generate
+builds:
+  - main: ./cmd/boxy
+    binary: boxy
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.Version={{ .Version }}
+    goarch:
+      - amd64
+      - arm64
+    goos:
+      - linux
+      - darwin
+      - windows
+dockers_v2:
+  - images:
+      - ghcr.io/boxysh/boxy
+      - boxysh/boxy
+    extra_files:
+      - public/
+    tags:
+      - "{{ .Tag }}"
+      - latest
+    labels:
+      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.name": "{{ .ProjectName }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.source": "{{ .GitURL }}"
+nfpms:
+  - package_name: boxy
+    description: Self-hosted mail backend
+    homepage: https://boxy.sh
+    maintainer: Boxy <contact@boxy.sh>
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
+      - src: public/
+        dst: /usr/share/boxy/public
+      - src: packaging/boxy.service
+        dst: /usr/lib/systemd/system/boxy.service
+      - src: packaging/boxy.env
+        dst: /etc/boxy/boxy.env
+        type: config|noreplace
+        file_info:
+          mode: 0600
+    scripts:
+      postinstall: packaging/postinstall.sh
+      preremove: packaging/preremove.sh
+      postremove: packaging/postremove.sh
+    deb:
+      compression: xz
+    rpm:
+      compression: xz
+      signature:
+        # Unsigned when unset, as in local snapshots
+        key_file: '{{ index .Env "GPG_KEY_FILE" }}'
+brews:
+  - repository:
+      owner: boxysh
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    description: "Self-hosted mail backend"
+    homepage: "https://boxy.sh"
+changelog:
+  disable: true

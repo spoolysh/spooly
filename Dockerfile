@@ -4,7 +4,7 @@ ARG TARGETPLATFORM
 
 WORKDIR /
 
-COPY ${TARGETPLATFORM}/stashy /stashy
+COPY ${TARGETPLATFORM}/boxy /boxy
 COPY public/ /public/
 
 ENTRYPOINT ["/boxy"]
