@@ -90,8 +90,19 @@ func (ps Parts) Attachments() []Part {
 	return list
 }
 
+// Flags are a message's state, wherever it is, as IMAP's \Seen, \Answered,
+// \Flagged, \Draft, and $Forwarded, in that order.
+type Flags struct {
+	Seen      bool // read
+	Answered  bool // replied to
+	Flagged   bool // starred
+	Draft     bool // not finished
+	Forwarded bool
+}
+
 // Message is a stored message. Its raw source is in object storage under its
-// ID; everything here is parsed from it, except the envelope and labels.
+// ID; everything here is parsed from it, except the envelope, folder,
+// labels, and flags.
 type Message struct {
 	ID        string
 	AccountID string
@@ -112,35 +123,35 @@ type Message struct {
 	Headers        []Header
 	MessageID      string // Message-ID, without angle brackets
 	InReplyTo      string // the first In-Reply-To ID, without angle brackets
+	Folder         string // where it is: one of Folders
 	Labels         []string
-	Metadata       map[string]string
 	IdempotencyKey string // empty when not set
 	ReceivedAt     time.Time
+	Flags
 }
-
-// MaxMetadataKeys is how many metadata keys a message can have.
-const MaxMetadataKeys = 50
 
 var (
 	// ErrMessageNotFound reports that no message has the requested ID.
 	ErrMessageNotFound = errors.New("message not found")
 	// ErrUnknownLabel reports a label name that doesn't exist.
 	ErrUnknownLabel = errors.New("unknown label")
-	// ErrMetadataLimit reports an update that would leave too many metadata keys.
-	ErrMetadataLimit = fmt.Errorf("a message can have at most %d metadata keys", MaxMetadataKeys)
+	// ErrUnknownFolder reports a folder name that isn't one of Folders.
+	ErrUnknownFolder = errors.New("unknown folder")
 )
 
 // messageColumns are the columns of a message.
 const messageColumns = `id, account_id, mail_from, rcpt_to, from_name, from_address, to_addresses, cc_addresses,
-	subject, date, snippet, size, parts, metadata, idempotency_key, received_at`
+	subject, date, snippet, size, parts, folder, seen, answered, flagged, draft, forwarded,
+	idempotency_key, received_at`
 
 func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, error) {
 	var m Message
-	var to, cc, parts, metadata string
+	var to, cc, parts string
 	var date sql.NullTime
 	var key sql.NullString
 	dest := []any{&m.ID, &m.AccountID, &m.MailFrom, &m.RcptTo, &m.From.Name, &m.From.Address, &to, &cc,
-		&m.Subject, &date, &m.Snippet, &m.Size, &parts, &metadata, &key, &m.ReceivedAt}
+		&m.Subject, &date, &m.Snippet, &m.Size, &parts, &m.Folder, &m.Seen, &m.Answered, &m.Flagged, &m.Draft, &m.Forwarded,
+		&key, &m.ReceivedAt}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
 	}
@@ -151,7 +162,7 @@ func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, e
 	for _, f := range []struct {
 		src string
 		dst any
-	}{{to, &m.To}, {cc, &m.Cc}, {parts, &m.Parts}, {metadata, &m.Metadata}} {
+	}{{to, &m.To}, {cc, &m.Cc}, {parts, &m.Parts}} {
 		if err := json.Unmarshal([]byte(f.src), f.dst); err != nil {
 			return nil, fmt.Errorf("decoding message %s: %w", m.ID, err)
 		}
@@ -167,10 +178,13 @@ func marshalJSON(v any) string {
 	return string(b)
 }
 
-// CreateMessage stores m with the given labels. If m has an idempotency key
-// that its account already used, the stored message is returned instead,
-// with created false.
+// CreateMessage stores m in its folder, with its flags and the given labels.
+// If m has an idempotency key that its account already used, the stored
+// message is returned instead, with created false.
 func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (stored *Message, created bool, err error) {
+	if !IsFolder(m.Folder) {
+		return nil, false, fmt.Errorf("%w: %q", ErrUnknownFolder, m.Folder)
+	}
 	if m.IdempotencyKey != "" {
 		existing, err := d.messageByIdempotencyKey(ctx, m.AccountID, m.IdempotencyKey)
 		if err == nil {
@@ -189,9 +203,6 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 	}
 	if m.Parts == nil {
 		m.Parts = Parts{}
-	}
-	if m.Metadata == nil {
-		m.Metadata = map[string]string{}
 	}
 	var key sql.NullString
 	if m.IdempotencyKey != "" {
@@ -212,11 +223,12 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 	if err != nil {
 		return nil, false, err
 	}
-	query := d.q(`INSERT INTO messages (` + messageColumns + `, message_id, in_reply_to, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	query := d.q(`INSERT INTO messages (` + messageColumns + `, message_id, in_reply_to, folder_seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err = tx.ExecContext(ctx, query,
 		m.ID, m.AccountID, m.MailFrom, m.RcptTo, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
-		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Parts), marshalJSON(m.Metadata), key, m.ReceivedAt.UTC(),
+		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Parts), m.Folder,
+		m.Seen, m.Answered, m.Flagged, m.Draft, m.Forwarded, key, m.ReceivedAt.UTC(),
 		m.MessageID, m.InReplyTo, seq)
 	if err != nil {
 		tx.Rollback()
@@ -288,15 +300,29 @@ type MessageFilter struct {
 	// AccountIDs, if not nil, limits messages to these accounts, such as
 	// the ones shared with a user. Empty matches nothing.
 	AccountIDs []string
+	Folder     string
+	NotFolders []string // folders messages must not be in
 	Label      string
-	Labels     []string // more labels messages must all have
-	NotLabels  []string // labels messages must not have
+	// Seen and Flagged, if not nil, match messages with that flag set so.
+	Seen    *bool
+	Flagged *bool
 	// After and Before are message IDs, page cursors in list order: newest
 	// received first, ties broken by ID. After selects the messages that
 	// come after that one (older), Before the ones before it (newer).
 	After  string
 	Before string
 	Limit  int
+}
+
+// View returns the filter for a folder's messages, or with no folder, for
+// All Mail: every folder but junk and trash, which show only in their own,
+// as in Gmail. A label, if set, narrows it to messages with that label.
+func View(folder, label string) MessageFilter {
+	f := MessageFilter{Folder: folder, Label: label}
+	if folder == "" {
+		f.NotFolders = Unlisted
+	}
+	return f
 }
 
 // where returns the WHERE clause and arguments that select f's messages.
@@ -317,18 +343,27 @@ func (f MessageFilter) where() (string, []any) {
 			}
 		}
 	}
-	for _, label := range append([]string{f.Label}, f.Labels...) {
-		if label == "" {
-			continue
-		}
-		where += ` AND id IN (SELECT message_id FROM message_labels WHERE label = ?)`
-		args = append(args, label)
+	if f.Folder != "" {
+		where += ` AND folder = ?`
+		args = append(args, f.Folder)
 	}
-	if len(f.NotLabels) > 0 {
-		where += ` AND id NOT IN (SELECT message_id FROM message_labels WHERE label IN (` + placeholders(len(f.NotLabels)) + `))`
-		for _, label := range f.NotLabels {
-			args = append(args, label)
+	if len(f.NotFolders) > 0 {
+		where += ` AND folder NOT IN (` + placeholders(len(f.NotFolders)) + `)`
+		for _, folder := range f.NotFolders {
+			args = append(args, folder)
 		}
+	}
+	if f.Label != "" {
+		where += ` AND id IN (SELECT message_id FROM message_labels WHERE label = ?)`
+		args = append(args, f.Label)
+	}
+	if f.Seen != nil {
+		where += ` AND seen = ?`
+		args = append(args, *f.Seen)
+	}
+	if f.Flagged != nil {
+		where += ` AND flagged = ?`
+		args = append(args, *f.Flagged)
 	}
 	// A cursor that names no message matches nothing.
 	if f.After != "" {
@@ -383,7 +418,7 @@ func (d *DB) ListMessages(ctx context.Context, f MessageFilter) ([]*Message, err
 	return messages, nil
 }
 
-// loadLabels sets the labels of messages, in display order.
+// loadLabels sets the labels of messages, by name.
 func (d *DB) loadLabels(ctx context.Context, q querier, messages []*Message) error {
 	if len(messages) == 0 {
 		return nil
@@ -409,17 +444,28 @@ func (d *DB) loadLabels(ctx context.Context, q querier, messages []*Message) err
 		byID[id].Labels = append(byID[id].Labels, label)
 	}
 	for _, m := range messages {
-		SortLabels(m.Labels)
+		slices.Sort(m.Labels)
 	}
 	return rows.Err()
 }
 
-// MessageUpdate changes a message's labels and metadata. Metadata is merged;
-// an empty value deletes the key.
+// MessageUpdate changes a message's folder, labels, and flags. An empty
+// folder or a nil flag is left alone.
 type MessageUpdate struct {
+	Folder       string
 	AddLabels    []string
 	RemoveLabels []string
-	Metadata     map[string]string
+	Seen         *bool
+	Answered     *bool
+	Flagged      *bool
+	Draft        *bool
+	Forwarded    *bool
+}
+
+// IsZero reports whether u changes nothing.
+func (u MessageUpdate) IsZero() bool {
+	return u.Folder == "" && len(u.AddLabels) == 0 && len(u.RemoveLabels) == 0 &&
+		u.Seen == nil && u.Answered == nil && u.Flagged == nil && u.Draft == nil && u.Forwarded == nil
 }
 
 // UpdateMessage applies u to message id and returns the updated message.
@@ -431,10 +477,6 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 	defer tx.Rollback()
 
 	m, err := getMessage(ctx, d, tx, id)
-	if err != nil {
-		return nil, err
-	}
-	before, err := d.labelsOf(ctx, tx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -457,36 +499,37 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 			return nil, fmt.Errorf("removing label: %w", err)
 		}
 	}
-	// Back from spam or trash, the message rejoins All Mail and its other
-	// labels' views, so it needs new sequence numbers there. Labels just
-	// added have new ones already.
-	after, err := d.labelsOf(ctx, tx, id)
-	if err != nil {
-		return nil, err
-	}
-	wasIn := views(before)
-	for _, v := range views(after) {
-		if slices.Contains(wasIn, v) || (v != AllMail && !slices.Contains(before, v)) {
-			continue
+
+	// A message coming into a folder gets the next number there. Back from
+	// junk or trash, it also rejoins its labels' views, and needs new numbers
+	// in those too.
+	if u.Folder != "" && u.Folder != m.Folder {
+		if !IsFolder(u.Folder) {
+			return nil, fmt.Errorf("%w: %q", ErrUnknownFolder, u.Folder)
 		}
-		if err := d.renumber(ctx, tx, m.AccountID, id, v); err != nil {
+		seq, err := d.nextSeq(ctx, tx, m.AccountID)
+		if err != nil {
 			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, d.q(`UPDATE messages SET folder = ?, folder_seq = ? WHERE id = ?`), u.Folder, seq, id); err != nil {
+			return nil, fmt.Errorf("moving message: %w", err)
+		}
+		if slices.Contains(Unlisted, m.Folder) && !slices.Contains(Unlisted, u.Folder) {
+			if err := d.relist(ctx, tx, m.AccountID, id); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	if len(u.Metadata) > 0 {
-		for k, v := range u.Metadata {
-			if v == "" {
-				delete(m.Metadata, k)
-			} else {
-				m.Metadata[k] = v
-			}
+	for _, f := range []struct {
+		column string
+		value  *bool
+	}{{"seen", u.Seen}, {"answered", u.Answered}, {"flagged", u.Flagged}, {"draft", u.Draft}, {"forwarded", u.Forwarded}} {
+		if f.value == nil {
+			continue
 		}
-		if len(m.Metadata) > MaxMetadataKeys {
-			return nil, ErrMetadataLimit
-		}
-		if _, err := tx.ExecContext(ctx, d.q(`UPDATE messages SET metadata = ? WHERE id = ?`), marshalJSON(m.Metadata), id); err != nil {
-			return nil, fmt.Errorf("updating metadata: %w", err)
+		if _, err := tx.ExecContext(ctx, d.q(`UPDATE messages SET `+f.column+` = ? WHERE id = ?`), *f.value, id); err != nil {
+			return nil, fmt.Errorf("updating flags: %w", err)
 		}
 	}
 
@@ -513,11 +556,11 @@ type MaildropEntry struct {
 }
 
 // ListMaildrop returns the IDs and sizes of the newest received limit
-// messages of an account with label, oldest first, as POP3 numbers them.
-func (d *DB) ListMaildrop(ctx context.Context, accountID, label string, limit int) ([]MaildropEntry, error) {
+// messages of an account in folder, oldest first, as POP3 numbers them.
+func (d *DB) ListMaildrop(ctx context.Context, accountID, folder string, limit int) ([]MaildropEntry, error) {
 	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT id, size FROM messages
-		WHERE account_id = ? AND id IN (SELECT message_id FROM message_labels WHERE label = ?)
-		ORDER BY received_at DESC, id DESC LIMIT ?`), accountID, label, limit)
+		WHERE account_id = ? AND folder = ?
+		ORDER BY received_at DESC, id DESC LIMIT ?`), accountID, folder, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing maildrop: %w", err)
 	}

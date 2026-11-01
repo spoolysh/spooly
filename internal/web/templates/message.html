@@ -3,28 +3,28 @@
 <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
   <a href="{{listURL .Account.Address}}" class="text-sm text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; {{.Account.Address}}</a>
   <div class="flex flex-wrap items-center gap-2" role="toolbar" aria-label="Message actions">
-    {{if .Has.inbox}}
-    <button type="button" onclick="changeLabels([], ['inbox'])" class="btn">Archive</button>
+    {{if eq $m.Folder "inbox"}}
+    <button type="button" onclick="update({ folder: 'archive' })" class="btn">Archive</button>
     {{else}}
-    <button type="button" onclick="changeLabels(['inbox'], ['trash', 'spam'])" class="btn">Move to inbox</button>
+    <button type="button" onclick="update({ folder: 'inbox' })" class="btn">Move to inbox</button>
     {{end}}
-    <button type="button" onclick="changeLabels(['unread'], [], '{{listURL .Account.Address}}')" class="btn">Mark unread</button>
-    {{if .Has.starred}}
-    <button type="button" onclick="changeLabels([], ['starred'])" class="btn"><span class="text-amber-500">&#9733;</span> Unstar</button>
+    <button type="button" onclick="update({ seen: false }, '{{listURL .Account.Address}}')" class="btn">Mark unread</button>
+    {{if $m.Flagged}}
+    <button type="button" onclick="update({ flagged: false })" class="btn"><span class="text-amber-500">&#9733;</span> Unstar</button>
     {{else}}
-    <button type="button" onclick="changeLabels(['starred'], [])" class="btn">&#9734; Star</button>
+    <button type="button" onclick="update({ flagged: true })" class="btn">&#9734; Star</button>
     {{end}}
-    {{if not .Has.spam}}<button type="button" onclick="changeLabels(['spam'], ['inbox'])" class="btn">Spam</button>{{end}}
-    {{if .Has.trash}}
-    <button type="button" onclick="changeLabels(['inbox'], ['trash'])" class="btn">Restore</button>
+    {{if ne $m.Folder "junk"}}<button type="button" onclick="update({ folder: 'junk' })" class="btn">Junk</button>{{end}}
+    {{if eq $m.Folder "trash"}}
+    <button type="button" onclick="update({ folder: 'inbox' })" class="btn">Restore</button>
     {{else}}
-    <button type="button" onclick="changeLabels(['trash'], ['inbox'])" class="btn btn-danger">Trash</button>
+    <button type="button" onclick="update({ folder: 'trash' })" class="btn btn-danger">Trash</button>
     {{end}}
     <label for="add-label" class="sr-only">Add label</label>
     <select id="add-label" onchange="if (this.value) changeLabels([this.value], [])"
       class="select !py-1.5">
       <option value="">Add label&hellip;</option>
-      {{range .AllLabels}}{{if and (not .System) (not (index $.Has .Name))}}<option value="{{.Name}}">{{labelTitle .Name}}</option>{{end}}{{end}}
+      {{range .AllLabels}}{{if not (index $.Has .Name)}}<option value="{{.Name}}">{{labelTitle .Name}}</option>{{end}}{{end}}
     </select>
   </div>
 </div>
@@ -32,10 +32,11 @@
 <div class="mb-6">
   <h2 id="subject" class="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight text-balance break-words line-clamp-3" title="{{$m.Subject}}">{{if $m.Subject}}{{$m.Subject}}{{else}}(no subject){{end}}</h2>
   <div class="mt-2 flex flex-wrap items-center gap-1.5" id="label-chips">
+    <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium border bg-brand-50 text-brand-700 border-brand-200" title="Folder">{{labelTitle $m.Folder}}</span>
     {{range $m.Labels}}
-    <span class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium border {{if isSystem .}}bg-brand-50 text-brand-700 border-brand-200{{else}}bg-gray-100 text-gray-600 border-gray-200{{end}}">
+    <span class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium border bg-gray-100 text-gray-600 border-gray-200">
       {{labelTitle .}}
-      {{if not (isSystem .)}}<button type="button" onclick="changeLabels([], ['{{.}}'])" class="text-gray-400 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded" aria-label="Remove label {{labelTitle .}}">&times;</button>{{end}}
+      <button type="button" onclick="changeLabels([], ['{{.}}'])" class="text-gray-400 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded" aria-label="Remove label {{labelTitle .}}">&times;</button>
     </span>
     {{end}}
   </div>
@@ -70,17 +71,6 @@
       <dd class="font-mono text-xs text-gray-700">{{$m.ID}}</dd>
     </dl>
   </details>
-  {{if $m.Metadata}}
-  <details class="border-t border-gray-200 px-6 py-3 text-sm">
-    <summary class="cursor-pointer text-gray-500 hover:text-gray-900">Metadata <span class="text-gray-400">({{len $m.Metadata}})</span></summary>
-    <dl class="mt-3 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1.5">
-      {{range $k, $v := $m.Metadata}}
-      <dt class="font-mono text-xs text-gray-500">{{$k}}</dt>
-      <dd class="min-w-0 break-words font-mono text-xs text-gray-800">{{if isWebURL $v}}<a href="{{$v}}" target="_blank" rel="noopener noreferrer" class="text-brand-600 hover:text-brand-800 hover:underline">{{$v}}</a>{{else}}{{$v}}{{end}}</dd>
-      {{end}}
-    </dl>
-  </details>
-  {{end}}
   {{if $m.Headers}}
   <details class="border-t border-gray-200 px-6 py-3 text-sm">
     <summary class="cursor-pointer text-gray-500 hover:text-gray-900">Headers <span class="text-gray-400">({{len $m.Headers}})</span></summary>
@@ -147,16 +137,22 @@
 </style>
 
 <script>
-  async function changeLabels(add, remove, next) {
+  function changeLabels(add, remove) {
+    update({ add_labels: add, remove_labels: remove });
+  }
+
+  // update changes the message's labels and flags, as in PATCH
+  // /v1/messages/{id}, then goes to next or reloads.
+  async function update(body, next) {
     document.querySelectorAll('.btn').forEach((b) => b.disabled = true);
-    const resp = await fetch('/ui/messages/{{$m.ID}}/labels', {
+    const resp = await fetch('/ui/messages/{{$m.ID}}/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ add_labels: add, remove_labels: remove }),
+      body: JSON.stringify(body),
     });
     if (resp.ok) {
-      // Leaving the inbox (archive, trash, spam) goes back to it.
-      location.href = next || (remove.includes('inbox') ? '{{listURL .Account.Address}}' : location.pathname);
+      // Moving the message (archive, trash, junk) goes back to the inbox.
+      location.href = next || (body.folder ? '{{listURL .Account.Address}}' : location.pathname);
       return;
     }
     const status = document.getElementById('action-status');

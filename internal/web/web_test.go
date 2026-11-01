@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -115,10 +116,11 @@ func TestPagesRender(t *testing.T) {
 	if body := u.get("/", 200); !strings.Contains(body, "Hello there") || !strings.Contains(body, "Unread: ") {
 		t.Errorf("inbox doesn't list the unread message")
 	}
-	if body := u.get("/?label=&account=hello@spooly.sh", 200); !strings.Contains(body, "Hello there") {
+	if body := u.get("/?folder=&account=hello@spooly.sh", 200); !strings.Contains(body, "Hello there") {
 		t.Error("account filter by address doesn't list its message")
 	}
 	u.get("/?account=nobody@spooly.sh", 404)
+	u.get("/?folder=nope", 404)
 	u.get("/accounts", 200)
 	u.get("/labels", 200)
 	u.get("/users", 200)
@@ -137,29 +139,26 @@ func TestPagesRender(t *testing.T) {
 	if !strings.Contains(body, "Headers <span class=\"text-gray-400\">(4)</span>") || !strings.Contains(body, "text/html</dd>") {
 		t.Errorf("message page doesn't list the header fields")
 	}
-	if _, err := u.db.UpdateMessage(t.Context(), id, db.MessageUpdate{Metadata: map[string]string{
-		"ticket_id": "T-123", "crm": "https://crm.example.com/c/1", "script": "javascript:alert(1)",
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	body = u.get("/"+id, 200)
-	if !strings.Contains(body, "T-123") || !strings.Contains(body, `href="https://crm.example.com/c/1"`) || strings.Contains(body, `href="javascript:`) {
-		t.Errorf("message page doesn't show metadata, or links a non-web value")
-	}
 	// Opening a message marks it read.
 	got, err := u.db.GetMessage(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got.Labels, ",") != "inbox" {
-		t.Errorf("labels after opening = %v", got.Labels)
+	if got.Folder != "inbox" || !got.Seen {
+		t.Errorf("after opening: folder %q, seen %t", got.Folder, got.Seen)
 	}
 
-	rec := u.do("POST", "/ui/messages/"+id+"/labels", "application/json", `{"add_labels": ["billing"], "remove_labels": ["inbox"]}`, true)
+	rec := u.do("POST", "/ui/messages/"+id+"/update", "application/json", `{"folder": "archive", "add_labels": ["billing"], "seen": false, "flagged": true}`, true)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "billing") {
-		t.Errorf("update labels: %d %s", rec.Code, rec.Body)
+		t.Errorf("update: %d %s", rec.Code, rec.Body)
 	}
-	if rec := u.do("POST", "/ui/messages/"+id+"/labels", "application/json", `{"add_labels": ["nope"]}`, true); rec.Code != 400 {
+	if got, err := u.db.GetMessage(t.Context(), id); err != nil || got.Folder != "archive" || got.Seen || !got.Flagged {
+		t.Errorf("after update: %+v, %v", got, err)
+	}
+	if body := u.get("/?flagged=true", 200); !strings.Contains(body, "Hello there") || !strings.Contains(body, `title="Starred"`) {
+		t.Error("Starred doesn't list the starred message")
+	}
+	if rec := u.do("POST", "/ui/messages/"+id+"/update", "application/json", `{"add_labels": ["nope"]}`, true); rec.Code != 400 {
 		t.Errorf("unknown label: %d %s", rec.Code, rec.Body)
 	}
 
@@ -183,8 +182,8 @@ func TestPagesRender(t *testing.T) {
 	if rec := u.do("DELETE", "/ui/labels/billing", "", "", true); rec.Code != http.StatusNoContent {
 		t.Errorf("delete label: %d %s", rec.Code, rec.Body)
 	}
-	if rec := u.do("DELETE", "/ui/labels/inbox", "", "", true); rec.Code != http.StatusConflict {
-		t.Errorf("delete system label: %d %s", rec.Code, rec.Body)
+	if rec := u.do("DELETE", "/ui/labels/inbox", "", "", true); rec.Code != http.StatusNotFound {
+		t.Errorf("delete a folder as a label: %d %s", rec.Code, rec.Body)
 	}
 }
 
@@ -201,6 +200,36 @@ func TestActionsRejectCrossOrigin(t *testing.T) {
 	}
 }
 
+// A list's URL has the API's parameters, and reads back as the same view.
+func TestListURL(t *testing.T) {
+	for v, want := range map[view]string{
+		{Folder: "inbox"}:                   "/",
+		{}:                                  "/?folder=",
+		{Folder: "archive"}:                 "/?folder=archive",
+		{Label: "billing"}:                  "/?label=billing",
+		{Flagged: true}:                     "/?flagged=true",
+		{Folder: "inbox", Label: "billing"}: "/?folder=inbox&label=billing",
+	} {
+		got := string(listURL("", v))
+		if got != want {
+			t.Errorf("listURL(%+v) = %s, want %s", v, got, want)
+		}
+		u, err := url.Parse(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back, ok := viewOf(u.Query()); !ok || back != v {
+			t.Errorf("%s reads back as %+v, %t", got, back, ok)
+		}
+	}
+	if got := listURL("hello@spooly.sh", view{Label: "billing"}); got != "/?account=hello@spooly.sh&label=billing" {
+		t.Errorf("with an account: %s", got)
+	}
+	if _, ok := viewOf(url.Values{"folder": {"nope"}}); ok {
+		t.Error("an unknown folder is a view")
+	}
+}
+
 func TestLabelTitle(t *testing.T) {
 	for name, want := range map[string]string{
 		"":                 "All Mail",
@@ -212,9 +241,6 @@ func TestLabelTitle(t *testing.T) {
 		if got := labelTitle(name); got != want {
 			t.Errorf("labelTitle(%q) = %q, want %q", name, got, want)
 		}
-	}
-	if got := folderTitle("draft"); got != "Drafts" {
-		t.Errorf(`folderTitle("draft") = %q, want "Drafts"`, got)
 	}
 }
 
@@ -333,27 +359,27 @@ func TestPagingAndBulkActions(t *testing.T) {
 		ids = append(ids, m.ID)
 	}
 
-	// All Mail leaves out spam and trash, as the IMAP folder does.
-	body := fmt.Sprintf(`{"ids": [%q, %q], "add_labels": ["trash"], "remove_labels": ["inbox"]}`, ids[118], ids[119])
-	if rec := u.do("POST", "/ui/messages/labels", "application/json", body, true); rec.Code != 200 {
+	// All Mail leaves out junk and trash.
+	body := fmt.Sprintf(`{"ids": [%q, %q], "folder": "trash"}`, ids[118], ids[119])
+	if rec := u.do("POST", "/ui/messages/update", "application/json", body, true); rec.Code != 200 {
 		t.Fatalf("trash: %d %s", rec.Code, rec.Body)
 	}
-	if all := u.get("/?label=", 200); !strings.Contains(all, "1&ndash;50 of 118") || strings.Contains(all, "message 119<") {
+	if all := u.get("/?folder=", 200); !strings.Contains(all, "1&ndash;50 of 118") || strings.Contains(all, "message 119<") {
 		t.Errorf("All Mail includes trashed messages")
 	}
 	// Outside the inbox, rows show an Inbox tag; inside, they don't.
 	tag := `border-brand-200">Inbox</span>`
-	if all := u.get("/?label=", 200); !strings.Contains(all, tag) {
+	if all := u.get("/?folder=", 200); !strings.Contains(all, tag) {
 		t.Error("All Mail doesn't tag inbox messages")
 	}
 	if inbox := u.get("/", 200); strings.Contains(inbox, tag) {
 		t.Error("Inbox tags its own messages")
 	}
-	if trash := u.get("/?label=trash", 200); !strings.Contains(trash, "1&ndash;2 of 2") {
+	if trash := u.get("/?folder=trash", 200); !strings.Contains(trash, "1&ndash;2 of 2") {
 		t.Errorf("Trash doesn't list the trashed messages")
 	}
-	body = fmt.Sprintf(`{"ids": [%q, %q], "add_labels": ["inbox"], "remove_labels": ["trash"]}`, ids[118], ids[119])
-	if rec := u.do("POST", "/ui/messages/labels", "application/json", body, true); rec.Code != 200 {
+	body = fmt.Sprintf(`{"ids": [%q, %q], "folder": "inbox"}`, ids[118], ids[119])
+	if rec := u.do("POST", "/ui/messages/update", "application/json", body, true); rec.Code != 200 {
 		t.Fatalf("restore: %d %s", rec.Code, rec.Body)
 	}
 
@@ -361,22 +387,22 @@ func TestPagingAndBulkActions(t *testing.T) {
 	if !strings.Contains(first, "1&ndash;50 of 120") || !strings.Contains(first, "after="+ids[70]) || strings.Contains(first, "before=") {
 		t.Errorf("first page lacks its range or older link")
 	}
-	second := u.get("/?label=inbox&after="+ids[70], 200)
+	second := u.get("/?folder=inbox&after="+ids[70], 200)
 	if !strings.Contains(second, "51&ndash;100 of 120") || !strings.Contains(second, "before="+ids[69]) || !strings.Contains(second, "after="+ids[20]) {
 		t.Errorf("second page lacks its range or links")
 	}
 	// Newer from the second page is the first page again.
-	back := u.get("/?label=inbox&before="+ids[69], 200)
+	back := u.get("/?folder=inbox&before="+ids[69], 200)
 	if !strings.Contains(back, "1&ndash;50 of 120") || !strings.Contains(back, "message 119") || strings.Contains(back, "message 69<") {
 		t.Errorf("newer page isn't the first page")
 	}
-	last := u.get("/?label=inbox&after="+ids[20], 200)
+	last := u.get("/?folder=inbox&after="+ids[20], 200)
 	if !strings.Contains(last, "101&ndash;120 of 120") || strings.Contains(last, "after=") {
 		t.Errorf("last page has an older link or wrong range")
 	}
 
-	body = fmt.Sprintf(`{"ids": [%q, %q], "remove_labels": ["inbox"], "add_labels": ["starred"]}`, ids[0], ids[1])
-	if rec := u.do("POST", "/ui/messages/labels", "application/json", body, true); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"updated":2`) {
+	body = fmt.Sprintf(`{"ids": [%q, %q], "folder": "archive", "flagged": true}`, ids[0], ids[1])
+	if rec := u.do("POST", "/ui/messages/update", "application/json", body, true); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"updated":2`) {
 		t.Fatalf("bulk: %d %s", rec.Code, rec.Body)
 	}
 	for _, id := range ids[:2] {
@@ -384,19 +410,19 @@ func TestPagingAndBulkActions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.Join(m.Labels, ","); got != "unread,starred" {
-			t.Errorf("labels after bulk = %s", got)
+		if m.Folder != "archive" || !m.Flagged || m.Seen {
+			t.Errorf("after bulk: folder %q, flagged %t, seen %t", m.Folder, m.Flagged, m.Seen)
 		}
 	}
-	if rec := u.do("POST", "/ui/messages/labels", "application/json", `{"ids": [], "add_labels": ["starred"]}`, true); rec.Code != 400 {
+	if rec := u.do("POST", "/ui/messages/update", "application/json", `{"ids": [], "flagged": true}`, true); rec.Code != 400 {
 		t.Errorf("empty bulk: %d", rec.Code)
 	}
-	if rec := u.do("POST", "/ui/messages/labels", "application/json", fmt.Sprintf(`{"ids": [%q], "add_labels": ["nope"]}`, ids[2]), true); rec.Code != 400 {
+	if rec := u.do("POST", "/ui/messages/update", "application/json", fmt.Sprintf(`{"ids": [%q], "add_labels": ["nope"]}`, ids[2]), true); rec.Code != 400 {
 		t.Errorf("unknown label: %d", rec.Code)
 	}
 }
 
-// Trash and spam can be deleted for good, a selection or all of an
+// Trash and junk can be deleted for good, a selection or all of an
 // account's at once.
 func TestDeleteForever(t *testing.T) {
 	u := newTestUI(t)
@@ -415,22 +441,22 @@ func TestDeleteForever(t *testing.T) {
 		}
 		ids = append(ids, m.ID)
 	}
-	label := func(id, l string) {
+	move := func(id, folder string) {
 		t.Helper()
-		if _, err := u.db.UpdateMessage(t.Context(), id, db.MessageUpdate{AddLabels: []string{l}, RemoveLabels: []string{db.LabelInbox}}); err != nil {
+		if _, err := u.db.UpdateMessage(t.Context(), id, db.MessageUpdate{Folder: folder}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	label(ids[0], db.LabelTrash)
-	label(ids[1], db.LabelTrash)
-	label(ids[2], db.LabelSpam)
-	label(ids[3], db.LabelTrash)
+	move(ids[0], db.FolderTrash)
+	move(ids[1], db.FolderTrash)
+	move(ids[2], db.FolderJunk)
+	move(ids[3], db.FolderTrash)
 
-	if page := u.get("/?label=trash", 200); !strings.Contains(page, "Choose an account to empty its trash.") || strings.Contains(page, "Empty Trash") {
+	if page := u.get("/?folder=trash", 200); !strings.Contains(page, "Choose an account to empty its trash.") || strings.Contains(page, "Empty Trash") {
 		t.Error("Trash for all accounts offers to empty it")
 	}
 	accountID := hello.Account.Id
-	if page := u.get("/?account=hello@spooly.sh&label=trash", 200); !strings.Contains(page, "Empty Trash") || !strings.Contains(page, "/ui/accounts/"+accountID+"/empty") || !strings.Contains(page, "Delete forever") {
+	if page := u.get("/?account=hello@spooly.sh&folder=trash", 200); !strings.Contains(page, "Empty Trash") || !strings.Contains(page, "/ui/accounts/"+accountID+"/empty") || !strings.Contains(page, "Delete forever") {
 		t.Error("an account's Trash lacks Empty Trash or Delete forever")
 	}
 
@@ -441,13 +467,13 @@ func TestDeleteForever(t *testing.T) {
 		t.Error("deleted message still opens")
 	}
 
-	if rec := u.do("POST", "/ui/accounts/"+accountID+"/empty", "application/json", `{"label": "inbox"}`, true); rec.Code != 400 {
+	if rec := u.do("POST", "/ui/accounts/"+accountID+"/empty", "application/json", `{"folder": "inbox"}`, true); rec.Code != 400 {
 		t.Errorf("emptying the inbox: %d", rec.Code)
 	}
-	if rec := u.do("POST", "/ui/accounts/"+accountID+"/empty", "application/json", `{"label": "trash"}`, true); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"deleted":1`) {
+	if rec := u.do("POST", "/ui/accounts/"+accountID+"/empty", "application/json", `{"folder": "trash"}`, true); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"deleted":1`) {
 		t.Fatalf("empty trash: %d %s", rec.Code, rec.Body)
 	}
-	// Only that account's trash goes: its spam and the other's trash stay.
+	// Only that account's trash goes: its junk and the other's trash stay.
 	for i, want := range []bool{false, false, true, true} {
 		_, err := u.db.GetMessage(t.Context(), ids[i])
 		if got := err == nil; got != want {

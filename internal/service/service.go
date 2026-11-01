@@ -61,9 +61,7 @@ func dbError(err error) error {
 		code = connect.CodeAlreadyExists
 	case errors.Is(err, db.ErrNoAddresses):
 		code = connect.CodeInvalidArgument
-	case errors.Is(err, db.ErrSystemLabel):
-		code = connect.CodeFailedPrecondition
-	case errors.Is(err, db.ErrUnknownLabel), errors.Is(err, db.ErrMetadataLimit):
+	case errors.Is(err, db.ErrUnknownLabel), errors.Is(err, db.ErrUnknownFolder), errors.Is(err, db.ErrReservedLabel):
 		code = connect.CodeInvalidArgument
 	}
 	return connect.NewError(code, err.Error()).WithCause(err)
@@ -191,11 +189,7 @@ func (s *Service) resolveAccount(ctx context.Context, idOrAddress string) (*db.A
 // Labels
 
 func labelProto(l *db.Label) *spoolyv1.Label {
-	p := &spoolyv1.Label{Name: l.Name, System: l.System}
-	if l.CreatedAt != nil {
-		p.CreatedAt = timestamppb.New(*l.CreatedAt)
-	}
-	return p
+	return &spoolyv1.Label{Name: l.Name, CreatedAt: timestamppb.New(l.CreatedAt)}
 }
 
 // CreateLabel is for admins only: a label is shared by every account.

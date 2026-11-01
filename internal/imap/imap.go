@@ -2,14 +2,23 @@
 // MOVE, UIDPLUS, and SPECIAL-USE extensions, on top of go-imap's server.
 //
 // The username is an account's address and the password is an API key, as
-// for POP3. Folders are labels, as in Gmail: INBOX, Starred, Sent, Drafts,
-// Spam, Trash, every user label, and All Mail. A message with two labels is
-// in both folders, though spam and trash show only in their own. \Seen is
-// the absence of the unread label, and \Flagged, \Answered, and \Draft are
-// the starred, answered, and draft labels. Copying adds the destination's
-// label; moving also removes the source's. Deleting works as in Gmail, at
-// once rather than on expunge: the message loses the folder's label, or in
-// All Mail goes to the trash, and in Trash and Drafts it's deleted for good.
+// for POP3. The IMAP folders are Spooly's folders (INBOX, Archive, Sent,
+// Drafts, Junk, Trash), then a folder per label, as Proton Mail Bridge shows
+// its folders and labels. There's no All Mail, which would have clients
+// download every message twice. A message is in exactly one of
+// Spooly's folders, and in the folder of each of its labels too, though
+// junk and trash show only in their own. \Seen, \Answered, \Flagged,
+// \Draft, and $Forwarded are the message's flags of those names, wherever
+// it is; clients show flagged mail themselves, so there's no Starred folder.
+//
+// Copying or moving to one of Spooly's folders moves the message there; to
+// a label's folder, it adds the label. Moving also takes it out of where it
+// was: a label's folder loses the label, and from Spooly's folders, unless
+// it's going to another, it goes to the archive. Deleting works as in
+// Gmail, at once rather than on expunge: from Trash and Drafts the message
+// is deleted for good, from the inbox it's archived, from Spooly's other
+// folders it goes to the trash, and from a label's folder it loses the
+// label.
 package imap
 
 import (
@@ -92,20 +101,20 @@ func (s *Server) Close() error {
 // folder is a mailbox as clients see it.
 type folder struct {
 	name  string // IMAP name
-	key   string // db mailbox key: a label, or db.AllMail
+	key   string // db view: a folder or a label
 	attrs []goimap.MailboxAttr
 }
 
-// systemFolders are listed first, in this order. Clients find them by their
-// special-use attributes (RFC 6154), whatever their names.
+// systemFolders, Spooly's folders, are listed first, in this order. Clients
+// find them by their special-use attributes (RFC 6154), whatever their
+// names.
 var systemFolders = []folder{
-	{name: "INBOX", key: db.LabelInbox},
-	{name: "Starred", key: db.LabelStarred, attrs: []goimap.MailboxAttr{goimap.MailboxAttrFlagged}},
-	{name: "Sent", key: db.LabelSent, attrs: []goimap.MailboxAttr{goimap.MailboxAttrSent}},
-	{name: "Drafts", key: db.LabelDraft, attrs: []goimap.MailboxAttr{goimap.MailboxAttrDrafts}},
-	{name: "Spam", key: db.LabelSpam, attrs: []goimap.MailboxAttr{goimap.MailboxAttrJunk}},
-	{name: "Trash", key: db.LabelTrash, attrs: []goimap.MailboxAttr{goimap.MailboxAttrTrash}},
-	{name: "All Mail", key: db.AllMail, attrs: []goimap.MailboxAttr{goimap.MailboxAttrAll}},
+	{name: "INBOX", key: db.FolderInbox},
+	{name: "Archive", key: db.FolderArchive, attrs: []goimap.MailboxAttr{goimap.MailboxAttrArchive}},
+	{name: "Sent", key: db.FolderSent, attrs: []goimap.MailboxAttr{goimap.MailboxAttrSent}},
+	{name: "Drafts", key: db.FolderDrafts, attrs: []goimap.MailboxAttr{goimap.MailboxAttrDrafts}},
+	{name: "Junk", key: db.FolderJunk, attrs: []goimap.MailboxAttr{goimap.MailboxAttrJunk}},
+	{name: "Trash", key: db.FolderTrash, attrs: []goimap.MailboxAttr{goimap.MailboxAttrTrash}},
 }
 
 const delim = '/'
@@ -128,17 +137,20 @@ type msg struct {
 
 func (m *msg) flags() []goimap.Flag {
 	flags := []goimap.Flag{}
-	if !m.Unread {
+	if m.Seen {
 		flags = append(flags, goimap.FlagSeen)
-	}
-	if m.Starred {
-		flags = append(flags, goimap.FlagFlagged)
 	}
 	if m.Answered {
 		flags = append(flags, goimap.FlagAnswered)
 	}
+	if m.Flagged {
+		flags = append(flags, goimap.FlagFlagged)
+	}
 	if m.Draft {
 		flags = append(flags, goimap.FlagDraft)
+	}
+	if m.Forwarded {
+		flags = append(flags, goimap.FlagForwarded)
 	}
 	if m.deleted {
 		flags = append(flags, goimap.FlagDeleted)
@@ -175,8 +187,7 @@ func (c *session) Login(username, password string) error {
 	return nil
 }
 
-// folders returns every folder: the system ones, then a folder per user
-// label.
+// folders returns every folder: the system ones, then a folder per label.
 func (c *session) folders() ([]folder, error) {
 	labels, err := c.s.db.ListLabels(context.Background())
 	if err != nil {
@@ -184,9 +195,7 @@ func (c *session) folders() ([]folder, error) {
 	}
 	folders := slices.Clone(systemFolders)
 	for _, l := range labels {
-		if !l.System {
-			folders = append(folders, folder{name: l.Name, key: l.Name})
-		}
+		folders = append(folders, folder{name: l.Name, key: l.Name})
 	}
 	return folders, nil
 }
@@ -257,7 +266,7 @@ func (c *session) status(f *folder, options *goimap.StatusOptions) (*goimap.Stat
 	if options.NumUnseen {
 		n := uint32(0)
 		for _, m := range mb.Messages {
-			if m.Unread {
+			if !m.Seen {
 				n++
 			}
 		}
@@ -291,11 +300,11 @@ func (c *session) Select(name string, options *goimap.SelectOptions) (*goimap.Se
 	var firstUnseen uint32
 	for i, m := range mb.Messages {
 		c.msgs[i] = &msg{SeqMessage: m}
-		if m.Unread && firstUnseen == 0 {
+		if !m.Seen && firstUnseen == 0 {
 			firstUnseen = uint32(i) + 1
 		}
 	}
-	flags := []goimap.Flag{goimap.FlagSeen, goimap.FlagFlagged, goimap.FlagAnswered, goimap.FlagDraft, goimap.FlagDeleted}
+	flags := []goimap.Flag{goimap.FlagSeen, goimap.FlagAnswered, goimap.FlagFlagged, goimap.FlagDraft, goimap.FlagForwarded, goimap.FlagDeleted}
 	return &goimap.SelectData{
 		Flags:             flags,
 		PermanentFlags:    flags,
@@ -343,51 +352,80 @@ func (c *session) Rename(name, newName string, options *goimap.RenameOptions) er
 func (c *session) Subscribe(name string) error   { return nil }
 func (c *session) Unsubscribe(name string) error { return nil }
 
-// labelsFor returns what putting a message into folder f means: the labels
-// to add and remove.
-func labelsFor(f *folder) (add, remove []string) {
-	switch f.key {
-	case db.AllMail:
-		// Out of spam and trash, where All Mail can't show it.
-		return nil, []string{db.LabelSpam, db.LabelTrash}
-	case db.LabelTrash, db.LabelSpam:
-		return []string{f.key}, []string{db.LabelInbox}
+// shownIn reports whether message m shows in folder f.
+func shownIn(f *folder, m *db.Message) bool {
+	switch {
+	case db.IsFolder(f.key):
+		return m.Folder == f.key
 	default:
-		return []string{f.key}, nil
+		return !slices.Contains(db.Unlisted, m.Folder) && slices.Contains(m.Labels, f.key)
 	}
 }
 
-// removeFrom returns what deleting a message from folder f means, as in
-// Gmail: from Trash or Drafts it's deleted for good; from All Mail it goes
-// to the trash; from any other folder it loses that folder's label.
-func removeFrom(f *folder) (add, remove []string, forGood bool) {
-	switch f.key {
-	case db.LabelTrash, db.LabelDraft:
-		return nil, nil, true
-	case db.AllMail:
-		return []string{db.LabelTrash}, []string{db.LabelInbox}, false
+// into returns the update that puts a message into folder f: one of
+// Spooly's folders becomes its folder, and a label's folder adds the label.
+func into(f *folder) db.MessageUpdate {
+	if db.IsFolder(f.key) {
+		return db.MessageUpdate{Folder: f.key}
+	}
+	return db.MessageUpdate{AddLabels: []string{f.key}}
+}
+
+// leave adds to u taking a message out of folder f, as moving does: a
+// label's folder loses its label, and from one of Spooly's folders, unless
+// u moves it to another, it goes to the archive.
+func leave(f *folder, u *db.MessageUpdate) {
+	switch {
+	case !db.IsFolder(f.key):
+		u.RemoveLabels = append(u.RemoveLabels, f.key)
+	case u.Folder == "":
+		u.Folder = db.FolderArchive
+	}
+}
+
+// removeFrom returns what deleting message m from folder f does, as in
+// Gmail: from Trash or Drafts it's deleted for good; from the inbox it's
+// archived; from Spooly's other folders it goes to the trash; and from a
+// label's folder it loses the label. A message that has left f
+// already, such as one copied from the inbox to the archive, is left alone.
+func removeFrom(f *folder, m *db.Message) (u db.MessageUpdate, forGood bool) {
+	switch {
+	case !shownIn(f, m):
+		return db.MessageUpdate{}, false
+	case f.key == db.FolderTrash, f.key == db.FolderDrafts:
+		return db.MessageUpdate{}, true
+	case f.key == db.FolderInbox:
+		return db.MessageUpdate{Folder: db.FolderArchive}, false
+	case db.IsFolder(f.key):
+		return db.MessageUpdate{Folder: db.FolderTrash}, false
 	default:
-		return nil, []string{f.key}, false
+		return db.MessageUpdate{RemoveLabels: []string{f.key}}, false
 	}
 }
 
 // takeOut deletes a message from the selected folder, as removeFrom says.
 func (c *session) takeOut(id string) error {
-	add, remove, forGood := removeFrom(c.selected)
+	m, err := c.s.db.GetMessage(context.Background(), id)
+	if errors.Is(err, db.ErrMessageNotFound) {
+		return nil // deleted meanwhile
+	}
+	if err != nil {
+		return err
+	}
+	u, forGood := removeFrom(c.selected, m)
 	if forGood {
 		return c.s.svc.PurgeMessage(context.Background(), id)
 	}
-	return c.update(id, add, remove)
+	return c.update(id, u)
 }
 
-func (c *session) update(id string, add, remove []string) error {
-	// Don't remove a label that is also added (moving Spam to Spam's own
-	// rule, for one): the add wins.
-	remove = slices.DeleteFunc(slices.Clone(remove), func(l string) bool { return slices.Contains(add, l) })
-	if len(add) == 0 && len(remove) == 0 {
+func (c *session) update(id string, u db.MessageUpdate) error {
+	// Don't remove a label that is also added: the add wins.
+	u.RemoveLabels = slices.DeleteFunc(slices.Clone(u.RemoveLabels), func(l string) bool { return slices.Contains(u.AddLabels, l) })
+	if u.IsZero() {
 		return nil
 	}
-	_, err := c.s.db.UpdateMessage(context.Background(), id, db.MessageUpdate{AddLabels: add, RemoveLabels: remove})
+	_, err := c.s.db.UpdateMessage(context.Background(), id, u)
 	if errors.Is(err, db.ErrMessageNotFound) {
 		return nil
 	}
@@ -407,28 +445,26 @@ func (c *session) Append(name string, r goimap.LiteralReader, options *goimap.Ap
 		return nil, &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeTooBig, Text: "Message too large"}
 	}
 
-	labels, _ := labelsFor(f)
-	labels = slices.Clone(labels)
-	if labels == nil {
-		labels = []string{} // All Mail: no labels, not the defaults
-	}
-	if !slices.Contains(options.Flags, goimap.FlagSeen) {
-		labels = append(labels, db.LabelUnread)
-	}
-	if slices.Contains(options.Flags, goimap.FlagFlagged) {
-		labels = append(labels, db.LabelStarred)
-	}
-	if slices.Contains(options.Flags, goimap.FlagAnswered) {
-		labels = append(labels, db.LabelAnswered)
-	}
-	if slices.Contains(options.Flags, goimap.FlagDraft) && !slices.Contains(labels, db.LabelDraft) {
-		labels = append(labels, db.LabelDraft)
+	// Saved to a label's folder, the message is archived, with the label.
+	folder, labels := db.FolderArchive, []string(nil)
+	if db.IsFolder(f.key) {
+		folder = f.key
+	} else {
+		labels = []string{f.key}
 	}
 	m, err := c.s.svc.Store(context.Background(), service.Incoming{
 		AccountIDOrAddress: c.account.ID,
 		Raw:                raw,
 		ReceivedAt:         options.Time,
+		Folder:             folder,
 		Labels:             labels,
+		Flags: db.Flags{
+			Seen:      containsFlag(options.Flags, goimap.FlagSeen),
+			Answered:  containsFlag(options.Flags, goimap.FlagAnswered),
+			Flagged:   containsFlag(options.Flags, goimap.FlagFlagged),
+			Draft:     containsFlag(options.Flags, goimap.FlagDraft),
+			Forwarded: containsFlag(options.Flags, goimap.FlagForwarded),
+		},
 	})
 	if err != nil {
 		return nil, noErr("Can't store the message: " + err.Error())
@@ -569,11 +605,12 @@ func (c *session) Fetch(w *imapserver.FetchWriter, numSet goimap.NumSet, options
 			}
 		}
 		seen := false
-		if markSeen && m.Unread {
-			if err := c.update(m.ID, nil, []string{db.LabelUnread}); err != nil {
+		if markSeen && !m.Seen {
+			seen = true
+			if err := c.update(m.ID, db.MessageUpdate{Seen: &seen}); err != nil {
 				return err
 			}
-			m.Unread, seen = false, true
+			m.Seen = true
 		}
 
 		rw := w.CreateMessage(uint32(i) + 1)
@@ -615,6 +652,32 @@ func (c *session) Fetch(w *imapserver.FetchWriter, numSet goimap.NumSet, options
 	return nil
 }
 
+// containsFlag reports whether flags has f. Flags are case-insensitive.
+func containsFlag(flags []goimap.Flag, f goimap.Flag) bool {
+	return slices.ContainsFunc(flags, func(g goimap.Flag) bool { return strings.EqualFold(string(f), string(g)) })
+}
+
+// flagChanges returns the update that turns flags from into to, setting
+// only the flags that differ.
+func flagChanges(from, to db.Flags) db.MessageUpdate {
+	var u db.MessageUpdate
+	for _, f := range []struct {
+		dst      **bool
+		was, now bool
+	}{
+		{&u.Seen, from.Seen, to.Seen},
+		{&u.Answered, from.Answered, to.Answered},
+		{&u.Flagged, from.Flagged, to.Flagged},
+		{&u.Draft, from.Draft, to.Draft},
+		{&u.Forwarded, from.Forwarded, to.Forwarded},
+	} {
+		if f.was != f.now {
+			*f.dst = &f.now
+		}
+	}
+	return u
+}
+
 func writeAll(wc io.WriteCloser, buf []byte) error {
 	_, err := wc.Write(buf)
 	if cerr := wc.Close(); err == nil {
@@ -624,43 +687,30 @@ func writeAll(wc io.WriteCloser, buf []byte) error {
 }
 
 func (c *session) Store(w *imapserver.FetchWriter, numSet goimap.NumSet, flags *goimap.StoreFlags, options *goimap.StoreOptions) error {
-	has := func(f goimap.Flag) bool {
-		return slices.ContainsFunc(flags.Flags, func(g goimap.Flag) bool { return strings.EqualFold(string(f), string(g)) })
-	}
 	// apply returns whether flag f is set after the store, given cur.
 	apply := func(cur bool, f goimap.Flag) bool {
 		switch flags.Op {
 		case goimap.StoreFlagsSet:
-			return has(f)
+			return containsFlag(flags.Flags, f)
 		case goimap.StoreFlagsAdd:
-			return cur || has(f)
+			return cur || containsFlag(flags.Flags, f)
 		case goimap.StoreFlagsDel:
-			return cur && !has(f)
+			return cur && !containsFlag(flags.Flags, f)
 		}
 		return cur
 	}
 	idx := c.resolve(numSet)
 	for _, i := range idx {
 		m := c.msgs[i]
-		unread := !apply(!m.Unread, goimap.FlagSeen)
-		starred := apply(m.Starred, goimap.FlagFlagged)
-		answered := apply(m.Answered, goimap.FlagAnswered)
-		draft := apply(m.Draft, goimap.FlagDraft)
-		deleted := apply(m.deleted, goimap.FlagDeleted)
-		var add, remove []string
-		change := func(label string, was, now bool) {
-			switch {
-			case now && !was:
-				add = append(add, label)
-			case was && !now:
-				remove = append(remove, label)
-			}
+		now := db.Flags{
+			Seen:      apply(m.Seen, goimap.FlagSeen),
+			Answered:  apply(m.Answered, goimap.FlagAnswered),
+			Flagged:   apply(m.Flagged, goimap.FlagFlagged),
+			Draft:     apply(m.Draft, goimap.FlagDraft),
+			Forwarded: apply(m.Forwarded, goimap.FlagForwarded),
 		}
-		change(db.LabelUnread, m.Unread, unread)
-		change(db.LabelStarred, m.Starred, starred)
-		change(db.LabelAnswered, m.Answered, answered)
-		change(db.LabelDraft, m.Draft, draft)
-		if err := c.update(m.ID, add, remove); err != nil {
+		deleted := apply(m.deleted, goimap.FlagDeleted)
+		if err := c.update(m.ID, flagChanges(m.Flags, now)); err != nil {
 			return err
 		}
 		// Deleting takes effect at once, as with Gmail's auto-expunge: the
@@ -671,7 +721,7 @@ func (c *session) Store(w *imapserver.FetchWriter, numSet goimap.NumSet, flags *
 				return err
 			}
 		}
-		m.Unread, m.Starred, m.Answered, m.Draft, m.deleted = unread, starred, answered, draft, deleted
+		m.Flags, m.deleted = now, deleted
 	}
 	if flags.Silent {
 		return nil
@@ -687,10 +737,10 @@ func (c *session) Store(w *imapserver.FetchWriter, numSet goimap.NumSet, flags *
 	return nil
 }
 
-// copyTo puts the messages at idx into folder dest, also removing the labels
-// in leave, and returns their UIDs there: none, and nil, for messages that
-// spam or trash keeps out of dest.
-func (c *session) copyTo(idx []int, destName string, leave ...string) (*goimap.CopyData, error) {
+// copyTo puts the messages at idx into folder dest, taking them out of the
+// selected folder too when moving, and returns their UIDs there: none, and
+// nil, for messages that junk or trash keeps out of dest.
+func (c *session) copyTo(idx []int, destName string, moving bool) (*goimap.CopyData, error) {
 	dest, err := c.folder(destName)
 	if err != nil {
 		return nil, errNoCopy
@@ -698,12 +748,14 @@ func (c *session) copyTo(idx []int, destName string, leave ...string) (*goimap.C
 	if c.selected != nil && dest.key == c.selected.key {
 		return nil, errSame
 	}
-	add, remove := labelsFor(dest)
 	// In one update, so that a message moved out of the trash is seen
 	// leaving it and gets its new UIDs.
-	remove = append(slices.Clone(remove), leave...)
+	u := into(dest)
+	if moving {
+		leave(c.selected, &u)
+	}
 	for _, i := range idx {
-		if err := c.update(c.msgs[i].ID, add, remove); err != nil {
+		if err := c.update(c.msgs[i].ID, u); err != nil {
 			return nil, err
 		}
 	}
@@ -729,18 +781,12 @@ func (c *session) copyTo(idx []int, destName string, leave ...string) (*goimap.C
 }
 
 func (c *session) Copy(numSet goimap.NumSet, dest string) (*goimap.CopyData, error) {
-	return c.copyTo(c.resolve(numSet), dest)
+	return c.copyTo(c.resolve(numSet), dest, false)
 }
 
 func (c *session) Move(w *imapserver.MoveWriter, numSet goimap.NumSet, dest string) error {
 	idx := c.resolve(numSet)
-	// Out of this folder too: its label goes. All Mail has none; moving to
-	// Spam or Trash takes the messages out of it.
-	var leave []string
-	if c.selected.key != db.AllMail {
-		leave = []string{c.selected.key}
-	}
-	data, err := c.copyTo(idx, dest, leave...)
+	data, err := c.copyTo(idx, dest, true)
 	if err != nil {
 		return err
 	}
@@ -844,10 +890,10 @@ func (c *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	// Flag changes made elsewhere: the dashboard, the API, other clients.
 	for i, m := range c.msgs {
 		cur, ok := current[m.Seq]
-		if !ok || (cur.Unread == m.Unread && cur.Starred == m.Starred && cur.Answered == m.Answered && cur.Draft == m.Draft) {
+		if !ok || cur.Flags == m.Flags {
 			continue
 		}
-		m.Unread, m.Starred, m.Answered, m.Draft = cur.Unread, cur.Starred, cur.Answered, cur.Draft
+		m.Flags = cur.Flags
 		if err := w.WriteMessageFlags(uint32(i)+1, goimap.UID(m.Seq), m.flags()); err != nil {
 			return err
 		}

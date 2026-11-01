@@ -143,28 +143,41 @@ func (h *Handler) deleteLabel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// updateLabels adds and removes a message's labels: the body is
-// {"add_labels": [...], "remove_labels": [...]}, as in PATCH /v1/messages/{id}.
-func (h *Handler) updateLabels(w http.ResponseWriter, r *http.Request) {
+// messageUpdate changes a message's folder, labels, and flags, as in PATCH
+// /v1/messages/{id}: {"folder": "archive", "add_labels": [...],
+// "remove_labels": [...], "seen": false, "flagged": true}. An absent folder
+// or flag is left alone.
+type messageUpdate struct {
+	Folder       *string  `json:"folder"`
+	AddLabels    []string `json:"add_labels"`
+	RemoveLabels []string `json:"remove_labels"`
+	Seen         *bool    `json:"seen"`
+	Flagged      *bool    `json:"flagged"`
+}
+
+func (u messageUpdate) request(id string) *spoolyv1.UpdateMessageRequest {
+	return &spoolyv1.UpdateMessageRequest{Id: id, Folder: u.Folder, AddLabels: u.AddLabels, RemoveLabels: u.RemoveLabels, Seen: u.Seen, Flagged: u.Flagged}
+}
+
+// updateMessage changes a message's folder, labels, and flags: the body is
+// a messageUpdate.
+func (h *Handler) updateMessage(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
-	var body struct {
-		AddLabels    []string `json:"add_labels"`
-		RemoveLabels []string `json:"remove_labels"`
-	}
+	var body messageUpdate
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	req := &spoolyv1.UpdateMessageRequest{Id: r.PathValue("id"), AddLabels: body.AddLabels, RemoveLabels: body.RemoveLabels}
+	req := body.request(r.PathValue("id"))
 	if err := validate(req); err != nil {
-		writeError(w, "updateLabels", err)
+		writeError(w, "updateMessage", err)
 		return
 	}
 	resp, err := h.svc.UpdateMessage(r.Context(), req)
 	if err != nil {
-		writeError(w, "updateLabels", err)
+		writeError(w, "updateMessage", err)
 		return
 	}
 	writeJSON(w, map[string][]string{"labels": resp.Message.Labels})
@@ -173,16 +186,15 @@ func (h *Handler) updateLabels(w http.ResponseWriter, r *http.Request) {
 // maxBulk is the most messages one bulk action changes: a page and then some.
 const maxBulk = 100
 
-// updateManyLabels adds and removes labels on several messages at once:
-// the body is {"ids": [...], "add_labels": [...], "remove_labels": [...]}.
-func (h *Handler) updateManyLabels(w http.ResponseWriter, r *http.Request) {
+// updateMessages changes the folder, labels, and flags of several messages
+// at once: the body is a messageUpdate with {"ids": [...]}.
+func (h *Handler) updateMessages(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
 	var body struct {
-		IDs          []string `json:"ids"`
-		AddLabels    []string `json:"add_labels"`
-		RemoveLabels []string `json:"remove_labels"`
+		IDs []string `json:"ids"`
+		messageUpdate
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -195,9 +207,9 @@ func (h *Handler) updateManyLabels(w http.ResponseWriter, r *http.Request) {
 	// Check every request first, so a bad one changes nothing.
 	reqs := make([]*spoolyv1.UpdateMessageRequest, len(body.IDs))
 	for i, id := range body.IDs {
-		reqs[i] = &spoolyv1.UpdateMessageRequest{Id: id, AddLabels: body.AddLabels, RemoveLabels: body.RemoveLabels}
+		reqs[i] = body.request(id)
 		if err := validate(reqs[i]); err != nil {
-			writeError(w, "updateManyLabels", err)
+			writeError(w, "updateMessages", err)
 			return
 		}
 	}
@@ -208,7 +220,7 @@ func (h *Handler) updateManyLabels(w http.ResponseWriter, r *http.Request) {
 			continue // deleted meanwhile
 		}
 		if err != nil {
-			writeError(w, "updateManyLabels", err)
+			writeError(w, "updateMessages", err)
 			return
 		}
 		updated++
@@ -282,22 +294,22 @@ func (h *Handler) deleteMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]int{"deleted": deleted})
 }
 
-// emptyLabel deletes for good all of an account's mail in the trash or
-// spam: the body is {"label": "trash"}.
-func (h *Handler) emptyLabel(w http.ResponseWriter, r *http.Request) {
+// emptyFolder deletes for good all of an account's mail in the trash or
+// junk: the body is {"folder": "trash"}.
+func (h *Handler) emptyFolder(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
 	var body struct {
-		Label string `json:"label"`
+		Folder string `json:"folder"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	deleted, err := h.svc.EmptyLabel(r.Context(), r.PathValue("id"), body.Label)
+	deleted, err := h.svc.EmptyFolder(r.Context(), r.PathValue("id"), body.Folder)
 	if err != nil {
-		writeError(w, "emptyLabel", err)
+		writeError(w, "emptyFolder", err)
 		return
 	}
 	writeJSON(w, map[string]int{"deleted": deleted})

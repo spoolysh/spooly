@@ -96,13 +96,28 @@ func (e *testEnv) dial(handler *imapclient.UnilateralDataHandler) *imapclient.Cl
 	return c
 }
 
-func (e *testEnv) labels(id string) string {
+// state is a message's folder and labels, then its flags in parentheses if
+// it has any: "inbox,billing (seen,flagged)".
+func (e *testEnv) state(id string) string {
 	e.t.Helper()
 	m, err := e.db.GetMessage(e.t.Context(), id)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	return strings.Join(m.Labels, ",")
+	var flags []string
+	for _, f := range []struct {
+		name string
+		set  bool
+	}{{"seen", m.Seen}, {"answered", m.Answered}, {"flagged", m.Flagged}, {"draft", m.Draft}, {"forwarded", m.Forwarded}} {
+		if f.set {
+			flags = append(flags, f.name)
+		}
+	}
+	state := strings.Join(append([]string{m.Folder}, m.Labels...), ",")
+	if len(flags) > 0 {
+		state += " (" + strings.Join(flags, ",") + ")"
+	}
+	return state
 }
 
 func selectBox(t *testing.T, c *imapclient.Client, name string) *goimap.SelectData {
@@ -163,7 +178,7 @@ func TestList(t *testing.T) {
 		}
 		got = append(got, name)
 	}
-	want := `INBOX,Starred \Flagged,Sent \Sent,Drafts \Drafts,Spam \Junk,Trash \Trash,All Mail \All,billing`
+	want := `INBOX,Archive \Archive,Sent \Sent,Drafts \Drafts,Junk \Junk,Trash \Trash,billing`
 	if strings.Join(got, ",") != want {
 		t.Errorf("LIST = %s\nwant   %s", strings.Join(got, ","), want)
 	}
@@ -206,27 +221,21 @@ func TestReadAndFlags(t *testing.T) {
 	if !strings.Contains(string(body[0].BodySection[0].Bytes), "Hello, Message 0") || !slices.Contains(body[0].Flags, goimap.FlagSeen) {
 		t.Errorf("BODY[] = %q, flags %v", body[0].BodySection[0].Bytes, body[0].Flags)
 	}
-	if got := e.labels(e.ids[0]); got != "inbox" {
-		t.Errorf("labels after reading = %s", got)
+	if got := e.state(e.ids[0]); got != "inbox (seen)" {
+		t.Errorf("after reading: %s", got)
 	}
 
 	if _, err := c.Store(goimap.SeqSetNum(2), &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Flags: []goimap.Flag{goimap.FlagFlagged, goimap.FlagSeen}}, nil).Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.labels(e.ids[1]); got != "inbox,starred" {
-		t.Errorf("labels after +FLAGS = %s", got)
+	if got := e.state(e.ids[1]); got != "inbox (seen,flagged)" {
+		t.Errorf("after +FLAGS: %s", got)
 	}
 	if _, err := c.Store(goimap.SeqSetNum(2), &goimap.StoreFlags{Op: goimap.StoreFlagsDel, Flags: []goimap.Flag{goimap.FlagSeen}}, nil).Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.labels(e.ids[1]); got != "inbox,unread,starred" {
-		t.Errorf("labels after -FLAGS = %s", got)
-	}
-
-	// Starred is a folder too.
-	selectBox(t, c, "Starred")
-	if got := subjects(fetchAll(t, c, &goimap.FetchOptions{Envelope: true})); got != "Message 1" {
-		t.Errorf("Starred = %s", got)
+	if got := e.state(e.ids[1]); got != "inbox (flagged)" {
+		t.Errorf("after -FLAGS: %s", got)
 	}
 }
 
@@ -283,8 +292,8 @@ func TestMoveCopyExpunge(t *testing.T) {
 	if _, err := c.Move(goimap.SeqSetNum(1), "Trash").Wait(); err != nil {
 		t.Fatalf("Move: %v", err)
 	}
-	if got := e.labels(e.ids[0]); got != "unread,trash" {
-		t.Errorf("labels after moving to Trash = %s", got)
+	if got := e.state(e.ids[0]); got != "trash" {
+		t.Errorf("after moving to Trash: %s", got)
 	}
 	if got := subjects(fetchAll(t, c, &goimap.FetchOptions{Envelope: true})); got != "Message 1,Message 2" {
 		t.Errorf("INBOX after move = %s", got)
@@ -295,8 +304,8 @@ func TestMoveCopyExpunge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Copy: %v", err)
 	}
-	if got := e.labels(e.ids[1]); got != "inbox,unread,billing" {
-		t.Errorf("labels after copy = %s", got)
+	if got := e.state(e.ids[1]); got != "inbox,billing" {
+		t.Errorf("after copy: %s", got)
 	}
 	if len(copied.DestUIDs) == 0 {
 		t.Error("COPY didn't report UIDs")
@@ -309,14 +318,14 @@ func TestMoveCopyExpunge(t *testing.T) {
 	if _, err := c.Expunge().Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.labels(e.ids[1]); got != "unread,billing" {
-		t.Errorf("labels after expunge in INBOX = %s", got)
+	if got := e.state(e.ids[1]); got != "archive,billing" {
+		t.Errorf("after expunge in INBOX: %s", got)
 	}
 
-	// In All Mail, an archived message is still there; spam and trash aren't.
-	selectBox(t, c, "All Mail")
-	if got := subjects(fetchAll(t, c, &goimap.FetchOptions{Envelope: true})); got != "Message 1,Message 2" {
-		t.Errorf("All Mail = %s", got)
+	// The archived message is in Archive.
+	selectBox(t, c, "Archive")
+	if got := subjects(fetchAll(t, c, &goimap.FetchOptions{Envelope: true})); got != "Message 1" {
+		t.Errorf("Archive = %s", got)
 	}
 
 	// Back to the inbox from the trash: it gets a new, higher UID there.
@@ -362,8 +371,8 @@ func TestAutoExpunge(t *testing.T) {
 	if _, err := c.Store(goimap.SeqSetNum(2), &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Flags: []goimap.Flag{goimap.FlagDeleted}}, nil).Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.labels(e.ids[1]); got != "unread" {
-		t.Errorf("labels right after deleting in INBOX = %s", got)
+	if got := e.state(e.ids[1]); got != "archive" {
+		t.Errorf("right after deleting in INBOX: %s", got)
 	}
 	if err := c.Noop().Wait(); err != nil {
 		t.Fatal(err)
@@ -381,8 +390,8 @@ func TestAutoExpunge(t *testing.T) {
 	}
 }
 
-// Trashed mail leaves every other folder while keeping its labels, and
-// comes back with a new UID when restored, as with Gmail.
+// Trashed mail leaves every other folder while keeping its labels and
+// flags, and comes back with a new UID when restored, as with Gmail.
 func TestTrashHides(t *testing.T) {
 	e := newTestEnv(t)
 	c := e.dial(nil)
@@ -390,17 +399,20 @@ func TestTrashHides(t *testing.T) {
 	if _, err := c.Store(goimap.SeqSetNum(1), &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Silent: true, Flags: []goimap.Flag{goimap.FlagFlagged}}, nil).Collect(); err != nil {
 		t.Fatal(err)
 	}
-	selectBox(t, c, "Starred")
+	if _, err := c.Copy(goimap.SeqSetNum(1), "billing").Wait(); err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	selectBox(t, c, "billing")
 	before := fetchAll(t, c, &goimap.FetchOptions{UID: true, Envelope: true})
 	if len(before) != 1 {
-		t.Fatalf("Starred has %d messages, want 1", len(before))
+		t.Fatalf("billing has %d messages, want 1", len(before))
 	}
 	selectBox(t, c, "INBOX")
 	if _, err := c.Move(goimap.SeqSetNum(1), "Trash").Wait(); err != nil {
 		t.Fatalf("Move: %v", err)
 	}
-	if data := selectBox(t, c, "Starred"); data.NumMessages != 0 {
-		t.Errorf("Starred has %d messages with the starred one in the trash, want 0", data.NumMessages)
+	if data := selectBox(t, c, "billing"); data.NumMessages != 0 {
+		t.Errorf("billing has %d messages with its one in the trash, want 0", data.NumMessages)
 	}
 
 	selectBox(t, c, "Trash")
@@ -410,15 +422,14 @@ func TestTrashHides(t *testing.T) {
 	if _, err := c.Move(goimap.SeqSetNum(1), "INBOX").Wait(); err != nil {
 		t.Fatalf("Move: %v", err)
 	}
-	selectBox(t, c, "Starred")
+	selectBox(t, c, "billing")
 	after := fetchAll(t, c, &goimap.FetchOptions{UID: true, Envelope: true})
 	if subjects(after) != subjects(before) || after[0].UID <= before[0].UID {
-		t.Errorf("Starred after restoring = %s UID %d, want %s with a UID above %d", subjects(after), after[0].UID, subjects(before), before[0].UID)
+		t.Errorf("billing after restoring = %s UID %d, want %s with a UID above %d", subjects(after), after[0].UID, subjects(before), before[0].UID)
 	}
 }
 
-// \Answered is the answered label, set either way, and stays out of the
-// folder list.
+// \Answered is the answered flag, set either way.
 func TestAnswered(t *testing.T) {
 	e := newTestEnv(t)
 	c := e.dial(nil)
@@ -430,18 +441,14 @@ func TestAnswered(t *testing.T) {
 	if !slices.Contains(msgs[0].Flags, goimap.FlagAnswered) || slices.Contains(msgs[1].Flags, goimap.FlagAnswered) {
 		t.Errorf("flags = %v, %v; want only the first answered", msgs[0].Flags, msgs[1].Flags)
 	}
-	answered, err := e.db.ListMessages(t.Context(), db.MessageFilter{Label: db.LabelAnswered, Limit: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(answered) != 1 {
-		t.Errorf("%d messages labeled answered, want 1", len(answered))
+	if got := e.state(e.ids[0]); got != "inbox (answered)" {
+		t.Errorf("after +FLAGS: %s", got)
 	}
 	if _, err := c.Store(goimap.SeqSetNum(1), &goimap.StoreFlags{Op: goimap.StoreFlagsDel, Silent: true, Flags: []goimap.Flag{goimap.FlagAnswered}}, nil).Collect(); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := e.db.CountFiltered(t.Context(), db.MessageFilter{Label: db.LabelAnswered}); err != nil || n != 0 {
-		t.Errorf("answered after unsetting: %d, %v", n, err)
+	if got := e.state(e.ids[0]); got != "inbox" {
+		t.Errorf("after -FLAGS: %s", got)
 	}
 }
 
@@ -477,11 +484,76 @@ func TestDrafts(t *testing.T) {
 	}
 }
 
+// Copying to one of Spooly's folders moves the message, which is in only
+// one. A client that then deletes the original, as clients without MOVE
+// do, leaves it where it went. Deleting from the archive trashes it.
+func TestCopyToFolder(t *testing.T) {
+	e := newTestEnv(t)
+	c := e.dial(nil)
+	selectBox(t, c, "INBOX")
+	if _, err := c.Copy(goimap.SeqSetNum(1), "Archive").Wait(); err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	if got := e.state(e.ids[0]); got != "archive" {
+		t.Errorf("after copy: %s", got)
+	}
+	deleted := &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Silent: true, Flags: []goimap.Flag{goimap.FlagDeleted}}
+	if _, err := c.Store(goimap.SeqSetNum(1), deleted, nil).Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Expunge().Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.state(e.ids[0]); got != "archive" {
+		t.Errorf("after deleting the original: %s", got)
+	}
+
+	selectBox(t, c, "Archive")
+	if _, err := c.Store(goimap.SeqSetNum(1), deleted, nil).Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.state(e.ids[0]); got != "trash" {
+		t.Errorf("after deleting from Archive: %s", got)
+	}
+}
+
+// $Forwarded is the forwarded flag. Flags match whatever their case.
+func TestForwarded(t *testing.T) {
+	e := newTestEnv(t)
+	c := e.dial(nil)
+	selectBox(t, c, "INBOX")
+	if _, err := c.Store(goimap.SeqSetNum(1), &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Silent: true, Flags: []goimap.Flag{"$forwarded"}}, nil).Collect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.state(e.ids[0]); got != "inbox (forwarded)" {
+		t.Errorf("after +FLAGS: %s", got)
+	}
+	msgs := fetchAll(t, c, &goimap.FetchOptions{Flags: true})
+	if !slices.Contains(msgs[0].Flags, goimap.FlagForwarded) {
+		t.Errorf("flags = %v, want $Forwarded", msgs[0].Flags)
+	}
+
+	raw := "From: hello@spooly.sh\r\nSubject: Sent on\r\n\r\nSee below.\r\n"
+	cmd := c.Append("Sent", int64(len(raw)), &goimap.AppendOptions{Flags: []goimap.Flag{"\\SEEN", "$forwarded"}})
+	cmd.Write([]byte(raw))
+	cmd.Close()
+	data, err := cmd.Wait()
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	selectBox(t, c, "Sent")
+	sent, err := c.Fetch(goimap.UIDSetNum(data.UID), &goimap.FetchOptions{Flags: true}).Collect()
+	if err != nil || len(sent) != 1 || !slices.Contains(sent[0].Flags, goimap.FlagSeen) || !slices.Contains(sent[0].Flags, goimap.FlagForwarded) {
+		t.Errorf("appended flags = %+v, %v", sent, err)
+	}
+}
+
 func TestSearch(t *testing.T) {
 	e := newTestEnv(t)
 	c := e.dial(nil)
 	selectBox(t, c, "INBOX")
-	if _, err := e.db.UpdateMessage(t.Context(), e.ids[2], db.MessageUpdate{RemoveLabels: []string{db.LabelUnread}}); err != nil {
+	seen := true
+	if _, err := e.db.UpdateMessage(t.Context(), e.ids[2], db.MessageUpdate{Seen: &seen}); err != nil {
 		t.Fatal(err)
 	}
 	c.Noop().Wait()
@@ -560,7 +632,8 @@ func TestUpdates(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Error("IDLE didn't report new mail")
 	}
-	if _, err := e.db.UpdateMessage(t.Context(), e.ids[1], db.MessageUpdate{AddLabels: []string{db.LabelStarred}}); err != nil {
+	flagged := true
+	if _, err := e.db.UpdateMessage(t.Context(), e.ids[1], db.MessageUpdate{Flagged: &flagged}); err != nil {
 		t.Fatal(err)
 	}
 	select {

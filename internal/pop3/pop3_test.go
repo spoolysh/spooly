@@ -221,25 +221,26 @@ func TestSession(t *testing.T) {
 
 	// Keep (the default): the deleted message stays in the inbox; the
 	// retrieved one is read; TOP alone doesn't read.
-	e.wantLabels(e.ids[0], "inbox")
-	e.wantLabels(e.ids[1], "inbox,unread")
-	e.wantLabels(e.ids[2], "inbox,unread")
+	e.wantState(e.ids[0], "inbox", true)
+	e.wantState(e.ids[1], "inbox", false)
+	e.wantState(e.ids[2], "inbox", false)
 }
 
-func (e *testEnv) wantLabels(id, want string) {
+// wantState checks a message's folder and whether it's seen.
+func (e *testEnv) wantState(id, folder string, seen bool) {
 	e.t.Helper()
 	m, err := e.db.GetMessage(e.t.Context(), id)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	if got := strings.Join(m.Labels, ","); got != want {
-		e.t.Errorf("labels of %s = %s, want %s", id, got, want)
+	if m.Folder != folder || m.Seen != seen {
+		e.t.Errorf("%s is in %q and seen %t, want %q and %t", id, m.Folder, m.Seen, folder, seen)
 	}
 }
 
 func TestDeleteModes(t *testing.T) {
 	for mode, want := range map[string]string{
-		DeleteArchive: "",
+		DeleteArchive: "archive",
 		DeleteTrash:   "trash",
 	} {
 		t.Run(mode, func(t *testing.T) {
@@ -250,9 +251,9 @@ func TestDeleteModes(t *testing.T) {
 			c.ok("DELE 1")
 			c.ok("DELE 2")
 			c.ok("QUIT")
-			e.wantLabels(e.ids[0], want)
-			e.wantLabels(e.ids[1], want)
-			e.wantLabels(e.ids[2], "inbox,unread")
+			e.wantState(e.ids[0], want, true)
+			e.wantState(e.ids[1], want, true)
+			e.wantState(e.ids[2], "inbox", false)
 		})
 	}
 
@@ -263,7 +264,7 @@ func TestDeleteModes(t *testing.T) {
 	c.ok("DELE 1")
 	c.conn.Close()
 	time.Sleep(50 * time.Millisecond)
-	e.wantLabels(e.ids[0], "inbox,unread")
+	e.wantState(e.ids[0], "inbox", false)
 
 	if _, err := New(e.db, nil, Options{Delete: "drop"}); err == nil {
 		t.Error("New accepted an unknown delete mode")
@@ -278,8 +279,8 @@ func TestKeepUnread(t *testing.T) {
 	c.multi("RETR 2")
 	c.ok("DELE 2")
 	c.ok("QUIT")
-	e.wantLabels(e.ids[0], "inbox,unread")
-	e.wantLabels(e.ids[1], "unread,trash")
+	e.wantState(e.ids[0], "inbox", false)
+	e.wantState(e.ids[1], "trash", false)
 }
 
 func TestMaxMessages(t *testing.T) {
@@ -307,7 +308,7 @@ func TestConcurrentSessions(t *testing.T) {
 	}
 	first.ok("QUIT")
 	second.ok("QUIT")
-	e.wantLabels(e.ids[0], "inbox")
+	e.wantState(e.ids[0], "inbox", true)
 
 	third := e.dial()
 	third.login(e)

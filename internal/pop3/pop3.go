@@ -10,8 +10,8 @@
 // kept, as in a WildDuck patched to ignore DELE.
 //
 // Unlike RFC 1939, a maildrop isn't locked to one session: several people's
-// clients poll the same account, as with WildDuck. Deleting only changes
-// labels, which concurrent sessions can safely repeat.
+// clients poll the same account, as with WildDuck. Deleting only moves
+// messages, which concurrent sessions can safely repeat.
 package pop3
 
 import (
@@ -47,8 +47,8 @@ const (
 // What DELE does to a message when the client quits.
 const (
 	DeleteKeep    = "keep"    // nothing: the message stays in the inbox
-	DeleteArchive = "archive" // remove the inbox label
-	DeleteTrash   = "trash"   // remove the inbox label and add trash
+	DeleteArchive = "archive" // move it to the archive
+	DeleteTrash   = "trash"   // move it to the trash
 )
 
 // DefaultMaxMessages is how many of the newest inbox messages a session
@@ -67,7 +67,7 @@ type Options struct {
 	// DefaultMaxMessages.
 	MaxMessages int
 	// KeepUnread leaves read status alone: retrieving or deleting a message
-	// doesn't remove unread, so it reflects only what people open elsewhere.
+	// doesn't set seen, so it reflects only what people open elsewhere.
 	KeepUnread bool
 }
 
@@ -381,7 +381,7 @@ func (c *session) login(address, key string) (quit bool) {
 	}
 	c.account = account
 
-	c.messages, err = c.s.db.ListMaildrop(ctx, account.ID, db.LabelInbox, c.s.opts.MaxMessages)
+	c.messages, err = c.s.db.ListMaildrop(ctx, account.ID, db.FolderInbox, c.s.opts.MaxMessages)
 	if err != nil {
 		log.Printf("pop3: listing %s: %v", account.Address(), err)
 		c.reply("-ERR [SYS/TEMP] can't open the maildrop")
@@ -461,16 +461,18 @@ func (c *session) quit() {
 	failed := 0
 	for i, m := range c.messages {
 		var u db.MessageUpdate
-		if c.deleted[i] && c.s.opts.Delete != DeleteKeep {
-			u.RemoveLabels = append(u.RemoveLabels, db.LabelInbox)
-			if c.s.opts.Delete == DeleteTrash {
-				u.AddLabels = []string{db.LabelTrash}
-			}
+		switch {
+		case !c.deleted[i]:
+		case c.s.opts.Delete == DeleteArchive:
+			u.Folder = db.FolderArchive
+		case c.s.opts.Delete == DeleteTrash:
+			u.Folder = db.FolderTrash
 		}
-		if (c.retrieved[i] || len(u.RemoveLabels) > 0) && !c.s.opts.KeepUnread {
-			u.RemoveLabels = append(u.RemoveLabels, db.LabelUnread)
+		if (c.retrieved[i] || u.Folder != "") && !c.s.opts.KeepUnread {
+			seen := true
+			u.Seen = &seen
 		}
-		if len(u.RemoveLabels) == 0 && len(u.AddLabels) == 0 {
+		if u.IsZero() {
 			continue
 		}
 		if _, err := c.s.db.UpdateMessage(ctx, m.ID, u); err != nil && !errors.Is(err, db.ErrMessageNotFound) {

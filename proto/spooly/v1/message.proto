@@ -78,9 +78,19 @@ service MessageService {
       }
       parameters: {
         parameter: {
+          name: "folder"
+          in: "query"
+          description: "The message's folder: inbox, archive, sent, drafts, junk, or trash. Absent means inbox."
+          schema: {
+            schema: {type: "string"}
+          }
+        }
+      }
+      parameters: {
+        parameter: {
           name: "labels"
           in: "query"
-          description: "The message's labels, repeated for each, such as labels=sent. Absent means inbox and unread."
+          description: "The message's labels, repeated for each, such as labels=billing. A plus address adds its tag's label too, if it exists."
           explode: true
           schema: {
             schema: {
@@ -91,6 +101,56 @@ service MessageService {
                 }
               }
             }
+          }
+        }
+      }
+      parameters: {
+        parameter: {
+          name: "seen"
+          in: "query"
+          description: "Read, such as seen=true for mirrored mail that was. Absent means false."
+          schema: {
+            schema: {type: "boolean"}
+          }
+        }
+      }
+      parameters: {
+        parameter: {
+          name: "answered"
+          in: "query"
+          description: "Replied to. Absent means false."
+          schema: {
+            schema: {type: "boolean"}
+          }
+        }
+      }
+      parameters: {
+        parameter: {
+          name: "flagged"
+          in: "query"
+          description: "Starred. Absent means false."
+          schema: {
+            schema: {type: "boolean"}
+          }
+        }
+      }
+      parameters: {
+        parameter: {
+          name: "draft"
+          in: "query"
+          description: "Not finished. Absent means false."
+          schema: {
+            schema: {type: "boolean"}
+          }
+        }
+      }
+      parameters: {
+        parameter: {
+          name: "forwarded"
+          in: "query"
+          description: "Forwarded. Absent means false."
+          schema: {
+            schema: {type: "boolean"}
           }
         }
       }
@@ -138,9 +198,9 @@ service MessageService {
     };
   }
 
-  // Update a message's labels and metadata. Absent fields are left
-  // unchanged. Removing inbox archives a message, removing unread marks it
-  // read.
+  // Update a message's folder, labels, and flags. Absent fields are left
+  // unchanged. Moving it to the archive archives a message;
+  // setting seen marks it read.
   rpc UpdateMessage(UpdateMessageRequest) returns (UpdateMessageResponse) {
     option idempotency_level = IDEMPOTENT;
     option (google.api.http) = {
@@ -289,27 +349,42 @@ message Message {
   // body, the same for text/html. The rest are attachments.
   repeated MessagePart parts = 12 [(google.api.field_behavior) = REQUIRED];
 
-  // Label names. New messages get inbox and unread.
-  repeated string labels = 13 [(google.api.field_behavior) = REQUIRED];
-  // Your own key-value data, e.g. {"ticket_id": "T-123"}.
-  map<string, string> metadata = 14 [
+  // Where the message is: exactly one of inbox, archive, sent, drafts, junk,
+  // and trash. New messages are in the inbox.
+  string folder = 13 [
     (google.api.field_behavior) = REQUIRED,
-    (buf.validate.field).map = {
-      max_pairs: 50
-      keys: {
-        string: {
-          min_len: 1
-          max_len: 40
-        }
-      }
-      values: {
-        string: {max_len: 500}
-      }
+    (buf.validate.field).string = {
+      in: [
+        "inbox",
+        "archive",
+        "sent",
+        "drafts",
+        "junk",
+        "trash"
+      ]
     }
   ];
+  // Label names: what the message is about, such as "billing". A message
+  // can have several, and keeps them in any folder.
+  repeated string labels = 14 [(google.api.field_behavior) = REQUIRED];
+
+  // Flags: the message's state, wherever it is. In IMAP's order, as its
+  // \Seen, \Answered, \Flagged, \Draft, and $Forwarded, and named as JMAP's
+  // keywords. New messages have none.
+
+  // Read. The API never sets it on its own.
+  bool seen = 15 [(google.api.field_behavior) = REQUIRED];
+  // Replied to.
+  bool answered = 16 [(google.api.field_behavior) = REQUIRED];
+  // Starred.
+  bool flagged = 17 [(google.api.field_behavior) = REQUIRED];
+  // Not finished, as mail clients mark the drafts they save.
+  bool draft = 18 [(google.api.field_behavior) = REQUIRED];
+  // Forwarded to someone.
+  bool forwarded = 19 [(google.api.field_behavior) = REQUIRED];
 
   // When the MTA accepted it.
-  google.protobuf.Timestamp received_at = 15 [
+  google.protobuf.Timestamp received_at = 20 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).required = true
   ];
@@ -369,9 +444,24 @@ message CreateMessageRequest {
   string mail_from = 3 [(buf.validate.field).string.max_len = 254];
   // Absent means now.
   optional google.protobuf.Timestamp received_at = 4;
-  // The message's labels, such as ["sent"] for mirrored sent mail. Empty
-  // means inbox and unread, as for new mail. Each must exist.
-  repeated string labels = 5 [(buf.validate.field).repeated = {
+  // The message's folder, such as "sent" for mirrored sent mail. Empty
+  // means inbox, as for new mail.
+  string folder = 5 [(buf.validate.field) = {
+    ignore: IGNORE_IF_ZERO_VALUE
+    string: {
+      in: [
+        "inbox",
+        "archive",
+        "sent",
+        "drafts",
+        "junk",
+        "trash"
+      ]
+    }
+  }];
+  // The message's labels. Each must exist. Mail to a plus address, such as
+  // hello+billing@spooly.sh, also gets its tag's label if there is one.
+  repeated string labels = 6 [(buf.validate.field).repeated = {
     max_items: 100
     unique: true
     items: {
@@ -381,6 +471,13 @@ message CreateMessageRequest {
       }
     }
   }];
+  // The message's flags, such as seen for mirrored mail that was read.
+  // Absent means unset, as for new mail.
+  bool seen = 7;
+  bool answered = 8;
+  bool flagged = 9;
+  bool draft = 10;
+  bool forwarded = 11;
 }
 
 message CreateMessageResponse {
@@ -412,13 +509,27 @@ message ListMessagesRequest {
   }];
   // ID of the last message from the previous page.
   optional string after = 3 [(buf.validate.field).string.pattern = "^[A-Za-z0-9_-]{21}$"];
-  // Only list messages with this label. Spam and trash are listed only
-  // under their own labels, spam and trash, as in Gmail: absent means all
-  // mail but those.
-  optional string label = 4 [(buf.validate.field).string = {
+  // Only list messages in this folder. Absent means every folder but junk
+  // and trash, as Gmail's All Mail: their mail is listed only under them.
+  optional string folder = 4 [(buf.validate.field).string = {
+    in: [
+      "inbox",
+      "archive",
+      "sent",
+      "drafts",
+      "junk",
+      "trash"
+    ]
+  }];
+  // Only list messages with this label.
+  optional string label = 5 [(buf.validate.field).string = {
     pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
     max_len: 64
   }];
+  // Only list messages with seen set to this: false lists unread mail.
+  optional bool seen = 6;
+  // Only list messages with flagged set to this: true lists starred mail.
+  optional bool flagged = 7;
 }
 
 message ListMessagesResponse {
@@ -430,7 +541,18 @@ message UpdateMessageRequest {
     required: true
     string: {pattern: "^[A-Za-z0-9_-]{21}$"}
   }];
-  repeated string add_labels = 2 [(buf.validate.field).repeated = {
+  // Moves the message to this folder.
+  optional string folder = 2 [(buf.validate.field).string = {
+    in: [
+      "inbox",
+      "archive",
+      "sent",
+      "drafts",
+      "junk",
+      "trash"
+    ]
+  }];
+  repeated string add_labels = 3 [(buf.validate.field).repeated = {
     max_items: 100
     unique: true
     items: {
@@ -440,7 +562,7 @@ message UpdateMessageRequest {
       }
     }
   }];
-  repeated string remove_labels = 3 [(buf.validate.field).repeated = {
+  repeated string remove_labels = 4 [(buf.validate.field).repeated = {
     max_items: 100
     unique: true
     items: {
@@ -450,19 +572,12 @@ message UpdateMessageRequest {
       }
     }
   }];
-  // Merged into the message's metadata. An empty value deletes the key.
-  map<string, string> metadata = 4 [(buf.validate.field).map = {
-    max_pairs: 50
-    keys: {
-      string: {
-        min_len: 1
-        max_len: 40
-      }
-    }
-    values: {
-      string: {max_len: 500}
-    }
-  }];
+  // Flags to set or clear: seen false marks the message unread.
+  optional bool seen = 5;
+  optional bool answered = 6;
+  optional bool flagged = 7;
+  optional bool draft = 8;
+  optional bool forwarded = 9;
 }
 
 message UpdateMessageResponse {

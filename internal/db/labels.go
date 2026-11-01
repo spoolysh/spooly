@@ -6,68 +6,57 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 )
 
-// Label tags messages. System labels always exist and have no CreatedAt.
-type Label struct {
-	Name      string
-	System    bool
-	CreatedAt *time.Time
-}
-
-// System label names, in display order.
+// Folder names. A message is in exactly one folder: where it is.
 const (
-	LabelInbox   = "inbox"
-	LabelUnread  = "unread"
-	LabelStarred = "starred"
-	// LabelAnswered marks mail someone replied to, set by mail clients as
-	// \Answered. Like unread, it's a state rather than a folder.
-	LabelAnswered = "answered"
-	LabelSent     = "sent" // mail sent from an account
-	LabelDraft    = "draft"
-	LabelSpam     = "spam"
-	LabelTrash    = "trash"
+	FolderInbox   = "inbox"
+	FolderArchive = "archive"
+	FolderSent    = "sent" // mail sent from an account
+	FolderDrafts  = "drafts"
+	FolderJunk    = "junk"
+	FolderTrash   = "trash"
 )
 
-// systemLabels follows Gmail's folder order: Inbox, Starred, Sent, Drafts,
-// Spam, Trash, with unread after inbox and answered after starred.
-var systemLabels = []string{LabelInbox, LabelUnread, LabelStarred, LabelAnswered, LabelSent, LabelDraft, LabelSpam, LabelTrash}
+// Folders lists every folder, in display order, as in mail clients.
+var Folders = []string{FolderInbox, FolderArchive, FolderSent, FolderDrafts, FolderJunk, FolderTrash}
 
-// IsSystemLabel reports whether name is one of the built-in labels.
-func IsSystemLabel(name string) bool {
-	return slices.Contains(systemLabels, name)
+// Unlisted are the folders whose mail shows only in them, as in Gmail: not
+// in All Mail, nor under its labels.
+var Unlisted = []string{FolderJunk, FolderTrash}
+
+// IsFolder reports whether name is a folder.
+func IsFolder(name string) bool {
+	return slices.Contains(Folders, name)
 }
 
-// SortLabels orders label names as they are listed: system labels first in
-// their fixed order, then the rest by name.
-func SortLabels(names []string) {
-	slices.SortFunc(names, func(a, b string) int {
-		ia, ib := slices.Index(systemLabels, a), slices.Index(systemLabels, b)
-		switch {
-		case ia >= 0 && ib >= 0:
-			return ia - ib
-		case ia >= 0:
-			return -1
-		case ib >= 0:
-			return 1
-		default:
-			return strings.Compare(a, b)
-		}
-	})
+// Label says what a message is about, such as billing; a message can have
+// several, and keeps them in any folder.
+type Label struct {
+	Name      string
+	CreatedAt time.Time
 }
+
+// reservedLabels are names no label can take: the folders and the flags,
+// and their everyday names, spam, unread, and starred, so a label never
+// reads like a place or a state.
+var reservedLabels = append(slices.Clone(Folders), "spam", "seen", "unread", "answered", "flagged", "starred", "draft", "forwarded")
 
 var (
 	// ErrLabelNotFound reports that no label has the requested name.
 	ErrLabelNotFound = errors.New("label not found")
 	// ErrLabelExists reports that a label with the name already exists.
 	ErrLabelExists = errors.New("label already exists")
-	// ErrSystemLabel reports an attempt to delete a system label.
-	ErrSystemLabel = errors.New("system labels can't be deleted")
+	// ErrReservedLabel reports a label name that reads like a folder or a
+	// flag.
+	ErrReservedLabel = errors.New("reserved for folders and flags")
 )
 
 func (d *DB) CreateLabel(ctx context.Context, name string) (*Label, error) {
+	if slices.Contains(reservedLabels, name) {
+		return nil, fmt.Errorf("%w: %s", ErrReservedLabel, name)
+	}
 	if _, err := d.GetLabel(ctx, name); err == nil {
 		return nil, fmt.Errorf("%w: %s", ErrLabelExists, name)
 	} else if !errors.Is(err, ErrLabelNotFound) {
@@ -75,76 +64,52 @@ func (d *DB) CreateLabel(ctx context.Context, name string) (*Label, error) {
 	}
 
 	var createdAt time.Time
-	query := d.q(`INSERT INTO labels (name, system, created_at) VALUES (?, FALSE, ?) RETURNING created_at`)
+	query := d.q(`INSERT INTO labels (name, created_at) VALUES (?, ?) RETURNING created_at`)
 	if err := d.sql.QueryRowContext(ctx, query, name, time.Now().UTC()).Scan(&createdAt); err != nil {
 		if _, gerr := d.GetLabel(ctx, name); gerr == nil {
 			return nil, fmt.Errorf("%w: %s", ErrLabelExists, name)
 		}
 		return nil, fmt.Errorf("inserting label: %w", err)
 	}
-	return &Label{Name: name, CreatedAt: &createdAt}, nil
+	return &Label{Name: name, CreatedAt: createdAt}, nil
 }
 
 func (d *DB) GetLabel(ctx context.Context, name string) (*Label, error) {
 	var l Label
-	var createdAt sql.NullTime
-	err := d.sql.QueryRowContext(ctx, d.q(`SELECT name, system, created_at FROM labels WHERE name = ?`), name).
-		Scan(&l.Name, &l.System, &createdAt)
+	err := d.sql.QueryRowContext(ctx, d.q(`SELECT name, created_at FROM labels WHERE name = ?`), name).
+		Scan(&l.Name, &l.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("%w: %s", ErrLabelNotFound, name)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("getting label: %w", err)
 	}
-	if createdAt.Valid {
-		l.CreatedAt = &createdAt.Time
-	}
 	return &l, nil
 }
 
-// ListLabels returns every label: system labels first, then user labels by
-// name.
+// ListLabels returns every label, by name.
 func (d *DB) ListLabels(ctx context.Context) ([]Label, error) {
-	rows, err := d.sql.QueryContext(ctx, `SELECT name, system, created_at FROM labels`)
+	rows, err := d.sql.QueryContext(ctx, `SELECT name, created_at FROM labels ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("listing labels: %w", err)
 	}
 	defer rows.Close()
 
-	byName := map[string]Label{}
-	var names []string
+	var labels []Label
 	for rows.Next() {
 		var l Label
-		var createdAt sql.NullTime
-		if err := rows.Scan(&l.Name, &l.System, &createdAt); err != nil {
+		if err := rows.Scan(&l.Name, &l.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning label: %w", err)
 		}
-		if createdAt.Valid {
-			l.CreatedAt = &createdAt.Time
-		}
-		byName[l.Name] = l
-		names = append(names, l.Name)
+		labels = append(labels, l)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	SortLabels(names)
-	labels := make([]Label, len(names))
-	for i, name := range names {
-		labels[i] = byName[name]
-	}
-	return labels, nil
+	return labels, rows.Err()
 }
 
-// DeleteLabel deletes a user label and removes it from its messages.
+// DeleteLabel deletes a label and removes it from its messages.
 func (d *DB) DeleteLabel(ctx context.Context, name string) error {
-	l, err := d.GetLabel(ctx, name)
-	if err != nil {
+	if _, err := d.GetLabel(ctx, name); err != nil {
 		return err
-	}
-	if l.System {
-		return fmt.Errorf("%w: %s", ErrSystemLabel, name)
 	}
 
 	tx, err := d.sql.BeginTx(ctx, nil)

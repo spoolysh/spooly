@@ -33,12 +33,11 @@
         <tr class="hover:bg-gray-50 transition-colors">
           <td class="px-6 py-3">
             <a href="/?label={{.Name}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Name}}</a>
-            {{if .System}}<span class="ml-2 inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-500/10">System</span>{{end}}
           </td>
           <td class="px-6 py-3 tabular-nums text-gray-700">{{.Count}}</td>
-          <td class="px-6 py-3 text-gray-500 tabular-nums">{{if .CreatedAt}}{{.CreatedAt}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</td>
+          <td class="px-6 py-3 text-gray-500 tabular-nums">{{.CreatedAt}}</td>
           <td class="px-6 py-3 text-right">
-            {{if and $.Admin (not .System)}}
+            {{if $.Admin}}
             <button type="button" data-name="{{.Name}}" data-count="{{.Count}}" onclick="deleteLabel(this)"
               class="text-xs font-medium text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 rounded-md px-2 py-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">Delete</button>
             {{end}}

@@ -54,9 +54,14 @@ func messageProto(m *db.Message) *spoolyv1.Message {
 		Snippet:    m.Snippet,
 		Size:       m.Size,
 		Parts:      make([]*spoolyv1.MessagePart, 0, len(m.Parts)),
+		Folder:     m.Folder,
 		Labels:     m.Labels,
-		Metadata:   m.Metadata,
 		ReceivedAt: timestamppb.New(m.ReceivedAt),
+		Seen:       m.Seen,
+		Answered:   m.Answered,
+		Flagged:    m.Flagged,
+		Draft:      m.Draft,
+		Forwarded:  m.Forwarded,
 	}
 	if m.Date != nil {
 		p.Date = timestamppb.New(*m.Date)
@@ -77,15 +82,21 @@ type Incoming struct {
 	ReceivedAt         time.Time // zero means now
 	IdempotencyKey     string
 	Raw                []byte
-	// Labels replaces the inbox and unread labels new mail gets, as when a
-	// mail client saves a message to a folder. Nil means the defaults.
+	// Folder is where the message goes, as when a mail client saves a
+	// message to a folder. Empty means the inbox.
+	Folder string
+	// Labels must exist. A plus address's tag adds its label too, if there's
+	// one by that name.
 	Labels []string
+	// Flags are none for new mail; a mirrored or saved message may have
+	// some, such as Seen.
+	Flags db.Flags
 }
 
 // Store parses and stores an incoming message in the account it was sent
-// to, with the inbox and unread labels unless in.Labels says otherwise. A
-// repeated idempotency key returns the stored message. Callers check access
-// first. Errors are connect errors.
+// to, in the inbox unless in.Folder says otherwise. A repeated idempotency
+// key returns the stored message. Callers check access first. Errors are
+// connect errors.
 func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	if in.AccountIDOrAddress == "" {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "account_id_or_address is required")
@@ -102,14 +113,24 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	labels := in.Labels
-	if labels == nil {
-		labels = []string{db.LabelInbox, db.LabelUnread}
+	folder := in.Folder
+	if folder == "" {
+		folder = db.FolderInbox
 	}
+	labels := slices.Clone(in.Labels)
 	for _, label := range labels {
 		if _, err := s.db.GetLabel(ctx, label); errors.Is(err, db.ErrLabelNotFound) {
 			return nil, connect.Errorf(connect.CodeInvalidArgument, "labels: no label %q; create it first", label)
 		} else if err != nil {
+			return nil, dbError(err)
+		}
+	}
+	// hello+billing@ asks for the billing label. Only an existing one: any
+	// sender can pick the tag.
+	if tag := plusTag(rcptTo); tag != "" && !slices.Contains(labels, tag) {
+		if _, err := s.db.GetLabel(ctx, tag); err == nil {
+			labels = append(labels, tag)
+		} else if !errors.Is(err, db.ErrLabelNotFound) {
 			return nil, dbError(err)
 		}
 	}
@@ -139,8 +160,10 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 		Parts:          parsed.Parts,
 		MessageID:      parsed.MessageID,
 		InReplyTo:      parsed.InReplyTo,
+		Folder:         folder,
 		IdempotencyKey: in.IdempotencyKey,
 		ReceivedAt:     receivedAt,
+		Flags:          in.Flags,
 	}, labels)
 	if err != nil || !created {
 		if derr := s.store.Delete(ctx, id); derr != nil {
@@ -168,9 +191,8 @@ func (s *Service) CreateMessage(ctx context.Context, stream spoolyv1connect.Mess
 		if first {
 			in.AccountIDOrAddress = msg.AccountIdOrAddress
 			in.MailFrom = msg.MailFrom
-			if len(msg.Labels) > 0 {
-				in.Labels = msg.Labels
-			}
+			in.Folder, in.Labels = msg.Folder, msg.Labels
+			in.Flags = db.Flags{Seen: msg.Seen, Answered: msg.Answered, Flagged: msg.Flagged, Draft: msg.Draft, Forwarded: msg.Forwarded}
 			if msg.ReceivedAt != nil {
 				in.ReceivedAt = msg.ReceivedAt.AsTime()
 			}
@@ -196,6 +218,14 @@ func (s *Service) CreateMessage(ctx context.Context, stream spoolyv1connect.Mess
 		return nil, err
 	}
 	return &spoolyv1.CreateMessageResponse{Message: messageProto(m)}, nil
+}
+
+// plusTag returns the tag of a plus address, "billing" for
+// hello+billing@spooly.sh, or empty.
+func plusTag(address string) string {
+	local, _, _ := strings.Cut(address, "@")
+	_, tag, _ := strings.Cut(local, "+")
+	return tag
 }
 
 // MaxIdempotencyKeyLength is the longest idempotency key, in bytes.
@@ -248,9 +278,10 @@ func (s *Service) requireMessage(ctx context.Context, id string) (*db.Message, e
 }
 
 func (s *Service) ListMessages(ctx context.Context, req *spoolyv1.ListMessagesRequest) (*spoolyv1.ListMessagesResponse, error) {
-	// As in the dashboard and IMAP, spam and trash show only under their
+	// As in the dashboard and IMAP, junk and trash show only under their
 	// own labels.
-	f := db.MessageFilter{Label: req.GetLabel(), NotLabels: db.HiddenFrom(req.GetLabel()), After: req.GetAfter(), Limit: listLimit(req.Limit)}
+	f := db.View(req.GetFolder(), req.GetLabel())
+	f.Seen, f.Flagged, f.After, f.Limit = req.Seen, req.Flagged, req.GetAfter(), listLimit(req.Limit)
 	if req.AccountIdOrAddress != nil {
 		a, _, err := s.resolveAccount(ctx, *req.AccountIdOrAddress)
 		if err != nil {
@@ -288,9 +319,14 @@ func (s *Service) UpdateMessage(ctx context.Context, req *spoolyv1.UpdateMessage
 		return nil, err
 	}
 	m, err := s.db.UpdateMessage(ctx, req.Id, db.MessageUpdate{
+		Folder:       req.GetFolder(),
 		AddLabels:    req.AddLabels,
 		RemoveLabels: req.RemoveLabels,
-		Metadata:     req.Metadata,
+		Seen:         req.Seen,
+		Answered:     req.Answered,
+		Flagged:      req.Flagged,
+		Draft:        req.Draft,
+		Forwarded:    req.Forwarded,
 	})
 	if err != nil {
 		return nil, dbError(err)
@@ -547,16 +583,17 @@ func (s *Service) DeleteMessage(ctx context.Context, req *spoolyv1.DeleteMessage
 	return &spoolyv1.DeleteMessageResponse{}, nil
 }
 
-// EmptyLabel deletes for good every message of an account in the view of
-// label, which must be trash or spam, and returns how many it deleted.
-func (s *Service) EmptyLabel(ctx context.Context, accountID, label string) (int, error) {
-	if label != db.LabelTrash && label != db.LabelSpam {
-		return 0, connect.Errorf(connect.CodeInvalidArgument, "only trash and spam can be emptied, not %q", label)
+// EmptyFolder deletes for good every message of an account in folder,
+// which must be trash or junk, and returns how many it deleted.
+func (s *Service) EmptyFolder(ctx context.Context, accountID, folder string) (int, error) {
+	if folder != db.FolderTrash && folder != db.FolderJunk {
+		return 0, connect.Errorf(connect.CodeInvalidArgument, "only trash and junk can be emptied, not %q", folder)
 	}
 	if err := s.Require(ctx, accountID); err != nil {
 		return 0, err
 	}
-	f := db.MessageFilter{AccountID: accountID, Label: label, NotLabels: db.HiddenFrom(label), Limit: 500}
+	f := db.View(folder, "")
+	f.AccountID, f.Limit = accountID, 500
 	deleted := 0
 	for {
 		messages, err := s.db.ListMessages(ctx, f)

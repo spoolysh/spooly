@@ -49,14 +49,12 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, svc *service.Ser
 		pages:    map[string]*template.Template{},
 	}
 	funcs := template.FuncMap{
-		"version":     func() string { return h.version },
-		"isSystem":    db.IsSystemLabel,
-		"formatSize":  formatSize,
-		"labelTitle":  labelTitle,
-		"folderTitle": folderTitle,
-		"listURL":     listURL,
-		"isWebURL":    isWebURL,
-		"sub":         func(a, b int) int { return a - b },
+		"version":    func() string { return h.version },
+		"isFolder":   db.IsFolder,
+		"formatSize": formatSize,
+		"labelTitle": labelTitle,
+		"listURL":    listURL,
+		"sub":        func(a, b int) int { return a - b },
 	}
 	for _, p := range []string{"messages", "message", "accounts", "account", "labels", "users", "apikeys"} {
 		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(
@@ -97,10 +95,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	action("DELETE /ui/accounts/{id}/access/{user}", h.unshare)
 	action("POST /ui/labels", h.createLabel)
 	action("DELETE /ui/labels/{name}", h.deleteLabel)
-	action("POST /ui/messages/{id}/labels", h.updateLabels)
-	action("POST /ui/messages/labels", h.updateManyLabels)
+	action("POST /ui/messages/{id}/update", h.updateMessage)
+	action("POST /ui/messages/update", h.updateMessages)
 	action("POST /ui/messages/delete", h.deleteMessages)
-	action("POST /ui/accounts/{id}/empty", h.emptyLabel)
+	action("POST /ui/accounts/{id}/empty", h.emptyFolder)
 	action("DELETE /ui/users/{id}/keys", h.revokeKeys)
 	action("DELETE /ui/users/{id}/access", h.removeAccess)
 }
@@ -151,36 +149,95 @@ type messageRow struct {
 	Subject     string
 	Snippet     string
 	RcptTo      string
-	UserLabels  []string // labels shown as tags: inbox and user labels
+	Tags        []string // shown on the row: its labels, and inbox outside the inbox
 	Unread      bool
 	Starred     bool
 	Answered    bool
+	Forwarded   bool
 	Attachments int
 	ReceivedAt  string
 	ReceivedISO string
 }
 
-type labelLink struct {
-	Name   string // empty for all mail
-	Title  string
+// view is what a message list shows, as its URL says, with the API's
+// parameters: ?folder=, ?label=, and ?flagged=true. Without any, it's the
+// inbox; ?folder= with no value is All Mail.
+type view struct {
+	Folder  string // "" for All Mail: every folder but junk and trash
+	Label   string
+	Flagged bool
+}
+
+// viewOf reads the view a list's URL asks for. ok is false for an unknown
+// folder.
+func viewOf(q url.Values) (v view, ok bool) {
+	v = view{Folder: q.Get("folder"), Label: q.Get("label"), Flagged: q.Get("flagged") == "true"}
+	if !q.Has("folder") && v.Label == "" && !v.Flagged {
+		v.Folder = db.FolderInbox
+	}
+	return v, v.Folder == "" || db.IsFolder(v.Folder)
+}
+
+// filter selects v's messages.
+func (v view) filter() db.MessageFilter {
+	f := db.View(v.Folder, v.Label)
+	if v.Flagged {
+		f.Flagged = new(true)
+	}
+	return f
+}
+
+// Title is how v is shown: its label, Starred, or its folder.
+func (v view) Title() string {
+	switch {
+	case v.Label != "":
+		return labelTitle(v.Label)
+	case v.Flagged:
+		return "Starred"
+	default:
+		return labelTitle(v.Folder)
+	}
+}
+
+// query sets v's parameters in q. The inbox needs none, so All Mail has an
+// empty folder.
+func (v view) query(q url.Values) {
+	if v == (view{Folder: db.FolderInbox}) {
+		return
+	}
+	if v.Folder != "" || (v.Label == "" && !v.Flagged) {
+		q.Set("folder", v.Folder)
+	}
+	if v.Label != "" {
+		q.Set("label", v.Label)
+	}
+	if v.Flagged {
+		q.Set("flagged", "true")
+	}
+}
+
+// viewLink links to a view in the list's navigation: All Mail, a folder,
+// starred mail, or a label.
+type viewLink struct {
+	View   view
 	Unread int
 	Active bool
-	// FirstUser marks the first user label, which a divider separates from
-	// the system labels above it.
-	FirstUser bool
+	// FirstLabel marks the first label, which a divider separates from the
+	// folders above it.
+	FirstLabel bool
 }
 
 type messagesData struct {
 	layoutData
-	Messages   []messageRow
-	Labels     []labelLink
-	Accounts   []db.Account
-	Account    string     // the filtered account's address; "" for all
-	AccountID  string     // the filtered account's ID; "" for all
-	Label      string     // "" for all mail
-	UserLabels []db.Label // for the toolbar's label menu
-	Hostname   string
-	Base       template.URL // the list's URL without a page cursor
+	Messages  []messageRow
+	Views     []viewLink
+	Accounts  []db.Account
+	Account   string // the filtered account's address; "" for all
+	AccountID string // the filtered account's ID; "" for all
+	View      view
+	Labels    []db.Label // for the toolbar's label menu
+	Hostname  string
+	Base      template.URL // the list's URL without a page cursor
 	// The page shows messages Start to End of Total, newest first. Newer and
 	// Older link to the neighboring pages; they're empty at either end.
 	Start, End, Total int
@@ -195,9 +252,10 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := r.URL.Query()
-	label := db.LabelInbox
-	if q.Has("label") {
-		label = q.Get("label")
+	v, ok := viewOf(q)
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
 	// The account is filtered by address, so URLs read well:
 	// /?account=hello@spooly.sh.
@@ -224,8 +282,8 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Pages are cursors: ?after=ID for older messages, ?before=ID for newer.
-	// As in Gmail and IMAP, spam and trash show only in their own views.
-	f := db.MessageFilter{AccountID: accountID, AccountIDs: visible, Label: label, NotLabels: db.HiddenFrom(label), Limit: messagesPerPage}
+	f := v.filter()
+	f.AccountID, f.AccountIDs, f.Limit = accountID, visible, messagesPerPage
 	if after := q.Get("after"); isID(after) {
 		f.After = after
 	} else if before := q.Get("before"); isID(before) {
@@ -237,7 +295,8 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "listing messages", err)
 		return
 	}
-	all := db.MessageFilter{AccountID: accountID, AccountIDs: visible, Label: label, NotLabels: f.NotLabels}
+	all := f
+	all.After, all.Before = "", ""
 	total, err := h.db.CountFiltered(r.Context(), all)
 	if err != nil {
 		h.internalError(w, "counting messages", err)
@@ -264,13 +323,14 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := messagesData{
-		layoutData: layoutData{ActiveTab: "messages", Title: folderTitle(label), User: user, Admin: h.svc.IsAdmin(user.Email)},
+		layoutData: layoutData{ActiveTab: "messages", Title: v.Title(), User: user, Admin: h.svc.IsAdmin(user.Email)},
 		Accounts:   accounts,
 		Account:    address,
 		AccountID:  accountID,
-		Label:      label,
+		View:       v,
+		Labels:     labels,
 		Hostname:   h.hostname,
-		Base:       listURL(address, label),
+		Base:       listURL(address, v),
 		Paged:      f.After != "" || f.Before != "",
 		Total:      total,
 	}
@@ -283,28 +343,29 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			data.Older = data.Base + "&after=" + template.URL(messages[len(messages)-1].ID)
 		}
 	}
-	seenUser := false
-	for _, l := range append([]db.Label{{Name: ""}}, labels...) {
-		if l.Name == db.LabelUnread || l.Name == db.LabelAnswered {
-			continue // states, not folders: shown on rows instead
-		}
-		link := labelLink{Name: l.Name, Title: folderTitle(l.Name), Active: l.Name == label}
-		if l.Name != "" && !l.System {
-			data.UserLabels = append(data.UserLabels, l)
-			if !seenUser {
-				link.FirstUser, seenUser = true, true
-			}
-		}
-		if l.Name == db.LabelInbox || (l.Name != "" && !l.System) {
-			// Unread in the inbox and in each user label, like a mail
-			// client's badges.
-			unread := db.MessageFilter{AccountID: accountID, AccountIDs: visible, Label: l.Name, Labels: []string{db.LabelUnread}, NotLabels: db.HiddenFrom(l.Name)}
+	// All Mail, the folders with starred mail after the inbox, then the
+	// labels.
+	views := []view{{}, {Folder: db.FolderInbox}, {Flagged: true}}
+	for _, folder := range db.Folders[1:] {
+		views = append(views, view{Folder: folder})
+	}
+	for _, l := range labels {
+		views = append(views, view{Label: l.Name})
+	}
+	firstLabel := len(views) - len(labels)
+	for i, lv := range views {
+		link := viewLink{View: lv, Active: lv == v, FirstLabel: i == firstLabel}
+		if lv.Folder == db.FolderInbox || i >= firstLabel {
+			// Unread in the inbox and in each label, like a mail client's
+			// badges.
+			unread := lv.filter()
+			unread.AccountID, unread.AccountIDs, unread.Seen = accountID, visible, new(bool)
 			if link.Unread, err = h.db.CountFiltered(r.Context(), unread); err != nil {
 				h.internalError(w, "counting messages", err)
 				return
 			}
 		}
-		data.Labels = append(data.Labels, link)
+		data.Views = append(data.Views, link)
 	}
 	for _, m := range messages {
 		row := messageRow{
@@ -317,23 +378,21 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			Attachments: countAttachments(m.Parts),
 			ReceivedAt:  formatTime(m.ReceivedAt),
 			ReceivedISO: m.ReceivedAt.Local().Format(time.DateTime),
+			Unread:      !m.Seen,
+			Starred:     m.Flagged,
+			Answered:    m.Answered,
+			Forwarded:   m.Forwarded,
 		}
 		if row.From == "" {
 			row.From = m.From.Address
 		}
+		// Inbox tells, outside the inbox, what isn't archived.
+		if m.Folder == db.FolderInbox && v.Folder != db.FolderInbox {
+			row.Tags = append(row.Tags, db.FolderInbox)
+		}
 		for _, l := range m.Labels {
-			switch {
-			case l == db.LabelUnread:
-				row.Unread = true
-			case l == db.LabelStarred:
-				row.Starred = true
-			case l == db.LabelAnswered:
-				row.Answered = true
-			case l == label:
-				// Every row in this view has it.
-			case l == db.LabelInbox || !db.IsSystemLabel(l):
-				// Inbox tells, outside the inbox, what isn't archived.
-				row.UserLabels = append(row.UserLabels, l)
+			if l != v.Label { // every row in this view has it
+				row.Tags = append(row.Tags, l)
 			}
 		}
 		data.Messages = append(data.Messages, row)
@@ -345,9 +404,8 @@ type messageData struct {
 	layoutData
 	Message    *db.Message
 	Account    *db.Account
-	UserLabels []string
 	AllLabels  []db.Label
-	Has        map[string]bool
+	Has        map[string]bool // the message's labels
 	Date       string
 	ReceivedAt string
 	HTMLDoc    string // the HTML body with remote content blocked
@@ -403,14 +461,14 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Opening a message reads it, as in a mail client. The API leaves
-	// unread alone; clients remove it themselves.
-	if hasLabel(m, db.LabelUnread) {
-		updated, err := h.db.UpdateMessage(r.Context(), id, db.MessageUpdate{RemoveLabels: []string{db.LabelUnread}})
-		if err != nil {
+	// seen alone; clients set it themselves.
+	if !m.Seen {
+		seen := true
+		if _, err := h.db.UpdateMessage(r.Context(), id, db.MessageUpdate{Seen: &seen}); err != nil {
 			h.internalError(w, "marking message read", err)
 			return
 		}
-		m.Labels = updated.Labels
+		m.Seen = true
 	}
 
 	account, err := h.db.GetAccount(r.Context(), m.AccountID)
@@ -437,9 +495,6 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, l := range m.Labels {
 		data.Has[l] = true
-		if !db.IsSystemLabel(l) {
-			data.UserLabels = append(data.UserLabels, l)
-		}
 	}
 	html, shown := inlineParts(m)
 	for _, i := range m.Parts.AttachmentIndexes() {
@@ -660,15 +715,6 @@ func isID(s string) bool {
 	return idPattern.MatchString(s)
 }
 
-func hasLabel(m *db.Message, label string) bool {
-	for _, l := range m.Labels {
-		if l == label {
-			return true
-		}
-	}
-	return false
-}
-
 // rawMessage serves a message's source: as plain text, so the browser shows
 // it rather than rendering it, or with ?download, as a .eml file to save.
 func (h *Handler) rawMessage(w http.ResponseWriter, r *http.Request) {
@@ -732,7 +778,9 @@ func (h *Handler) AccountsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	data := accountsData{layoutData: layoutData{ActiveTab: "accounts", Title: "Accounts", User: user, Admin: h.svc.IsAdmin(user.Email)}, Hostname: h.hostname}
 	for _, a := range accounts {
-		n, err := h.db.CountFiltered(r.Context(), db.MessageFilter{AccountID: a.ID, Label: db.LabelInbox, Labels: []string{db.LabelUnread}, NotLabels: db.HiddenFrom(db.LabelInbox)})
+		f := db.View(db.FolderInbox, "")
+		f.AccountID, f.Seen = a.ID, new(bool)
+		n, err := h.db.CountFiltered(r.Context(), f)
 		if err != nil {
 			h.internalError(w, "counting messages", err)
 			return
@@ -848,7 +896,6 @@ func (h *Handler) UsersPage(w http.ResponseWriter, r *http.Request) {
 
 type labelRow struct {
 	Name      string
-	System    bool
 	Count     int
 	CreatedAt string
 }
@@ -887,11 +934,7 @@ func (h *Handler) LabelsPage(w http.ResponseWriter, r *http.Request) {
 			h.internalError(w, "counting messages", err)
 			return
 		}
-		row := labelRow{Name: l.Name, System: l.System, Count: n}
-		if l.CreatedAt != nil {
-			row.CreatedAt = l.CreatedAt.Local().Format(time.DateTime)
-		}
-		data.Labels = append(data.Labels, row)
+		data.Labels = append(data.Labels, labelRow{Name: l.Name, Count: n, CreatedAt: l.CreatedAt.Local().Format(time.DateTime)})
 	}
 	h.render(w, "labels", data)
 }
@@ -1011,28 +1054,20 @@ func writeError(w http.ResponseWriter, op string, err error) {
 }
 
 // listURL links to the message list for an account's address ("" for all)
-// and a label. It keeps "@" as is, so the URL reads like the address, as
-// /?account=hello@spooly.sh&label=inbox. Without a label, the list shows the
-// inbox.
-func listURL(address string, label ...string) template.URL {
+// and a view, the inbox by default. It keeps "@" as is, so the URL reads like
+// the address, as /?account=hello@spooly.sh&label=billing.
+func listURL(address string, v ...view) template.URL {
 	q := url.Values{}
 	if address != "" {
 		q.Set("account", address)
 	}
-	if len(label) > 0 {
-		q.Set("label", label[0])
+	if len(v) > 0 {
+		v[0].query(q)
 	}
 	if len(q) == 0 {
 		return "/"
 	}
 	return template.URL("/?" + strings.ReplaceAll(q.Encode(), "%40", "@"))
-}
-
-// isWebURL reports whether s is an http or https URL, which metadata
-// values link to.
-func isWebURL(s string) bool {
-	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // labelTitle is how a label is shown: "customer-issues" as "Customer
@@ -1047,15 +1082,6 @@ func labelTitle(name string) string {
 		words[i] = strings.ToUpper(w[:1]) + w[1:]
 	}
 	return strings.Join(words, " ")
-}
-
-// folderTitle is how a label is shown as a list of messages: like
-// labelTitle, but drafts are plural there, as in mail clients.
-func folderTitle(name string) string {
-	if name == db.LabelDraft {
-		return "Drafts"
-	}
-	return labelTitle(name)
 }
 
 func subjectOrNone(s string) string {

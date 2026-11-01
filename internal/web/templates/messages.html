@@ -1,23 +1,23 @@
 {{define "content"}}
 <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
-  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">{{folderTitle .Label}}</h2>
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">{{.View.Title}}</h2>
   <div class="flex flex-wrap items-center gap-3">
     <label for="account-filter" class="sr-only">Account</label>
     <select id="account-filter" onchange="location.href = this.value" class="select">
-      <option value="{{listURL "" .Label}}">All accounts</option>
-      {{range .Accounts}}<option value="{{listURL .Address $.Label}}"{{if eq .Address $.Account}} selected{{end}}>{{.Address}}</option>{{end}}
+      <option value="{{listURL "" .View}}">All accounts</option>
+      {{range .Accounts}}<option value="{{listURL .Address $.View}}"{{if eq .Address $.Account}} selected{{end}}>{{.Address}}</option>{{end}}
     </select>
   </div>
 </div>
 
 <div class="flex flex-col md:flex-row gap-6">
-  <nav aria-label="Labels" class="md:w-48 shrink-0 flex md:flex-col gap-1 overflow-x-auto">
-    {{range .Labels}}
-    {{if .FirstUser}}<div role="separator" class="shrink-0 self-stretch border-l border-gray-200 mx-1 md:mx-3 md:my-2 md:border-l-0 md:border-t"></div>{{end}}
-    <a href="{{listURL $.Account .Name}}"
+  <nav aria-label="Folders and labels" class="md:w-48 shrink-0 flex md:flex-col gap-1 overflow-x-auto">
+    {{range .Views}}
+    {{if .FirstLabel}}<div role="separator" class="shrink-0 self-stretch border-l border-gray-200 mx-1 md:mx-3 md:my-2 md:border-l-0 md:border-t"></div>{{end}}
+    <a href="{{listURL $.Account .View}}"
       class="flex items-center justify-between gap-3 whitespace-nowrap px-3 py-2 rounded-md text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if .Active}}bg-brand-50 text-brand-700 font-semibold{{else}}text-gray-700 hover:bg-gray-100{{end}}"
       {{if .Active}}aria-current="page"{{end}}>
-      <span class="truncate">{{.Title}}</span>
+      <span class="truncate">{{.View.Title}}</span>
       {{if .Unread}}<span class="text-xs font-semibold tabular-nums">{{.Unread}}</span>{{end}}
     </a>
     {{end}}
@@ -28,22 +28,22 @@
     <div class="flex flex-wrap items-center gap-x-1 gap-y-2 border-b border-gray-200 bg-gray-50 px-4 py-2" role="toolbar" aria-label="Message actions">
       <input type="checkbox" id="select-all" autocomplete="off" aria-label="Select all on this page" {{if not .Messages}}disabled{{end}}
         class="mr-2 h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500">
-      {{if eq .Label "inbox"}}
-      <button type="button" class="tb" data-bulk disabled onclick="bulk([], ['inbox'])">Archive</button>
+      {{if eq .View.Folder "inbox"}}
+      <button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ folder: 'archive' })">Archive</button>
       {{else}}
-      <button type="button" class="tb" data-bulk disabled onclick="bulk(['inbox'], ['trash', 'spam'])">Move to Inbox</button>
+      <button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ folder: 'inbox' })">Move to Inbox</button>
       {{end}}
-      <button type="button" class="tb" data-bulk disabled onclick="bulk([], ['unread'])">Mark read</button>
-      <button type="button" class="tb" data-bulk disabled onclick="bulk(['unread'], [])">Mark unread</button>
-      <button type="button" class="tb" data-bulk disabled onclick="bulk(['starred'], [])">Star</button>
-      {{if ne .Label "spam"}}<button type="button" class="tb" data-bulk disabled onclick="bulk(['spam'], ['inbox'])">Spam</button>{{end}}
-      {{if ne .Label "trash"}}<button type="button" class="tb text-red-600" data-bulk disabled onclick="bulk(['trash'], ['inbox'])">Trash</button>{{end}}
-      {{if or (eq .Label "trash") (eq .Label "spam")}}<button type="button" class="tb text-red-600" data-bulk disabled onclick="deleteForever()">Delete forever</button>{{end}}
-      {{if .UserLabels}}
+      <button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ seen: true })">Mark read</button>
+      <button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ seen: false })">Mark unread</button>
+      <button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ flagged: true })">Star</button>
+      {{if ne .View.Folder "junk"}}<button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ folder: 'junk' })">Junk</button>{{end}}
+      {{if ne .View.Folder "trash"}}<button type="button" class="tb text-red-600" data-bulk disabled onclick="bulkUpdate({ folder: 'trash' })">Trash</button>{{end}}
+      {{if or (eq .View.Folder "trash") (eq .View.Folder "junk")}}<button type="button" class="tb text-red-600" data-bulk disabled onclick="deleteForever()">Delete forever</button>{{end}}
+      {{if .Labels}}
       <label for="bulk-label" class="sr-only">Add label</label>
       <select id="bulk-label" data-bulk disabled onchange="if (this.value) bulk([this.value], [])" class="select !py-1 !text-xs disabled:opacity-40">
         <option value="">Label&hellip;</option>
-        {{range .UserLabels}}<option value="{{.Name}}">{{labelTitle .Name}}</option>{{end}}
+        {{range .Labels}}<option value="{{.Name}}">{{labelTitle .Name}}</option>{{end}}
       </select>
       {{end}}
       <span id="selected-count" class="ml-2 text-xs text-gray-500" aria-live="polite"></span>
@@ -56,16 +56,16 @@
     </div>
     <div id="bulk-status" role="status" class="hidden border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800"></div>
     {{end}}
-    {{if and .Total (or (eq .Label "trash") (eq .Label "spam"))}}
+    {{if and .Total (or (eq .View.Folder "trash") (eq .View.Folder "junk"))}}
     <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-gray-200 px-4 py-2.5 text-sm text-gray-600">
-      <span>{{if eq .Label "trash"}}Messages in Trash stay until you delete them.{{else}}Spam stays until you delete it.{{end}}</span>
+      <span>{{if eq .View.Folder "trash"}}Messages in Trash stay until you delete them.{{else}}Junk stays until you delete it.{{end}}</span>
       {{if .AccountID}}
-      <button type="button" onclick="emptyLabel(this.dataset)"
-        data-url="/ui/accounts/{{.AccountID}}/empty" data-label="{{.Label}}"
-        data-confirm="Delete all {{.Total}} {{if eq .Label "trash"}}messages in Trash{{else}}spam messages{{end}} of {{.Account}} forever?"
-        class="font-medium text-red-600 hover:text-red-800 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">{{if eq .Label "trash"}}Empty Trash{{else}}Delete all spam{{end}}</button>
+      <button type="button" onclick="emptyFolder(this.dataset)"
+        data-url="/ui/accounts/{{.AccountID}}/empty" data-folder="{{.View.Folder}}"
+        data-confirm="Delete all {{.Total}} {{if eq .View.Folder "trash"}}messages in Trash{{else}}junk messages{{end}} of {{.Account}} forever?"
+        class="font-medium text-red-600 hover:text-red-800 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">{{if eq .View.Folder "trash"}}Empty Trash{{else}}Delete all junk{{end}}</button>
       {{else}}
-      <span class="text-gray-500">Choose an account to empty its {{.Label}}.</span>
+      <span class="text-gray-500">Choose an account to empty its {{.View.Folder}}.</span>
       {{end}}
     </div>
     {{end}}
@@ -89,7 +89,8 @@
             <p class="truncate text-sm">
               {{if .Starred}}<span class="text-amber-500" title="Starred">&#9733;</span>{{end}}
               {{if .Answered}}<span class="text-gray-400" title="Answered"><svg aria-hidden="true" class="inline w-4 h-4 -mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg><span class="sr-only">Answered</span></span>{{end}}
-              {{range .UserLabels}}<span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium border mr-1 {{if isSystem .}}bg-brand-50 text-brand-700 border-brand-200{{else}}bg-gray-100 text-gray-600 border-gray-200{{end}}">{{labelTitle .}}</span>{{end}}
+              {{if .Forwarded}}<span class="text-gray-400" title="Forwarded"><svg aria-hidden="true" class="inline w-4 h-4 -mt-0.5 -scale-x-100" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg><span class="sr-only">Forwarded</span></span>{{end}}
+              {{range .Tags}}<span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium border mr-1 {{if isFolder .}}bg-brand-50 text-brand-700 border-brand-200{{else}}bg-gray-100 text-gray-600 border-gray-200{{end}}">{{labelTitle .}}</span>{{end}}
               <span class="{{if .Unread}}font-semibold text-gray-900{{else}}text-gray-800{{end}}">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</span>
               <span class="text-gray-500">&mdash; {{.Snippet}}</span>
             </p>
@@ -159,10 +160,15 @@
   // A reload can restore checked boxes; match the toolbar to them.
   syncSelection();
 
-  async function bulk(add, remove) {
+  function bulk(add, remove) {
+    bulkUpdate({ add_labels: add, remove_labels: remove });
+  }
+
+  // bulkUpdate changes the labels and flags of the selected messages.
+  function bulkUpdate(update) {
     const ids = checks.filter((c) => c.checked).map((c) => c.value);
     if (!ids.length) return;
-    send('/ui/messages/labels', { ids, add_labels: add, remove_labels: remove });
+    send('/ui/messages/update', { ids, ...update });
   }
 
   const forever = 'This can\'t be undone, and applies to everyone with access to the account.';
@@ -174,9 +180,9 @@
     send('/ui/messages/delete', { ids });
   }
 
-  function emptyLabel({ url, label, confirm: question }) {
+  function emptyFolder({ url, folder, confirm: question }) {
     if (!confirm(`${question} ${forever}`)) return;
-    send(url, { label });
+    send(url, { folder });
   }
 
   async function send(url, body) {

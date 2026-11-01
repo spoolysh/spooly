@@ -97,11 +97,16 @@ type messageJSON struct {
 	MailFrom  string `json:"mail_from"`
 	RcptTo    string `json:"rcpt_to"`
 	From      struct{ Name, Address string }
-	Subject   string            `json:"subject"`
-	Snippet   string            `json:"snippet"`
-	Size      string            `json:"size"` // int64 is a JSON string
-	Labels    []string          `json:"labels"`
-	Metadata  map[string]string `json:"metadata"`
+	Subject   string   `json:"subject"`
+	Snippet   string   `json:"snippet"`
+	Size      string   `json:"size"` // int64 is a JSON string
+	Folder    string   `json:"folder"`
+	Labels    []string `json:"labels"`
+	Seen      bool     `json:"seen"`
+	Flagged   bool     `json:"flagged"`
+	Answered  bool     `json:"answered"`
+	Draft     bool     `json:"draft"`
+	Forwarded bool     `json:"forwarded"`
 	Parts     []struct {
 		Type        string `json:"type"`
 		Name        string `json:"name"`
@@ -199,8 +204,8 @@ func TestCreateMessageREST(t *testing.T) {
 	if m.Subject != "Hi 1" || m.From.Address != "ann@example.com" || m.Snippet != "Hello 1" {
 		t.Errorf("parsed = %+v", m)
 	}
-	if strings.Join(m.Labels, ",") != "inbox,unread" {
-		t.Errorf("labels = %v", m.Labels)
+	if m.Folder != "inbox" || len(m.Labels) != 0 || m.Seen || m.Flagged || m.Answered || m.Draft {
+		t.Errorf("folder %q, labels %v, flags %+v", m.Folder, m.Labels, m)
 	}
 	if m.Size != fmt.Sprint(len(rawMessage(1))) {
 		t.Errorf("size = %s", m.Size)
@@ -329,8 +334,8 @@ func TestListMessages(t *testing.T) {
 		t.Fatalf("page 2 = %+v", page)
 	}
 
-	call(t, srv, "PATCH", "/v1/messages/"+ids[0], "application/json", `{"remove_labels": ["inbox"]}`, 200, nil)
-	call(t, srv, "GET", "/v1/messages?account_id_or_address=a@spooly.sh&label=inbox", "", "", 200, &page)
+	call(t, srv, "PATCH", "/v1/messages/"+ids[0], "application/json", `{"folder": "archive"}`, 200, nil)
+	call(t, srv, "GET", "/v1/messages?account_id_or_address=a@spooly.sh&folder=inbox", "", "", 200, &page)
 	if len(page) != 2 {
 		t.Errorf("inbox after archiving one = %d messages", len(page))
 	}
@@ -338,16 +343,20 @@ func TestListMessages(t *testing.T) {
 	if len(page) != 0 {
 		t.Errorf("unknown label listed %d messages", len(page))
 	}
+	call(t, srv, "GET", "/v1/messages?folder=nothing", "", "", 400, nil)
 
-	// Spam and trash are listed only under their own labels.
-	call(t, srv, "PATCH", "/v1/messages/"+ids[1], "application/json", `{"add_labels": ["starred", "trash"]}`, 200, nil)
-	call(t, srv, "PATCH", "/v1/messages/"+ids[2], "application/json", `{"add_labels": ["spam"]}`, 200, nil)
+	// Junk and trash are listed only under their own folders.
+	call(t, srv, "PATCH", "/v1/messages/"+ids[1], "application/json", `{"folder": "trash", "flagged": true}`, 200, nil)
+	call(t, srv, "PATCH", "/v1/messages/"+ids[2], "application/json", `{"folder": "junk"}`, 200, nil)
 	for query, want := range map[string]int{
-		"":               1,
-		"&label=inbox":   0,
-		"&label=starred": 0,
-		"&label=spam":    1,
-		"&label=trash":   1,
+		"":                           1,
+		"&folder=inbox":              0,
+		"&folder=archive":            1,
+		"&flagged=true":              0,
+		"&seen=false":                1,
+		"&folder=trash&flagged=true": 1,
+		"&folder=junk":               1,
+		"&folder=trash":              1,
 	} {
 		call(t, srv, "GET", "/v1/messages?account_id_or_address=a@spooly.sh"+query, "", "", 200, &page)
 		if len(page) != want {
@@ -366,42 +375,36 @@ func TestUpdateMessage(t *testing.T) {
 
 	var got messageJSON
 	call(t, srv, "PATCH", path, "application/json",
-		`{"add_labels": ["billing", "starred"], "remove_labels": ["unread", "inbox"], "metadata": {"ticket_id": "T-1", "x": "y"}}`, 200, &got)
-	if strings.Join(got.Labels, ",") != "starred,billing" {
-		t.Errorf("labels = %v", got.Labels)
-	}
-	if got.Metadata["ticket_id"] != "T-1" || got.Metadata["x"] != "y" {
-		t.Errorf("metadata = %v", got.Metadata)
+		`{"folder": "archive", "add_labels": ["billing"], "seen": true, "flagged": true}`, 200, &got)
+	if got.Folder != "archive" || strings.Join(got.Labels, ",") != "billing" || !got.Seen || !got.Flagged || got.Answered {
+		t.Errorf("folder %q, labels %v, flags %+v", got.Folder, got.Labels, got)
 	}
 
-	// Metadata merges; an empty value deletes a key. No labels is no change.
-	var merged messageJSON // json.Unmarshal would merge into got's map
-	call(t, srv, "PATCH", path, "application/json", `{"metadata": {"x": "", "y": "z"}}`, 200, &merged)
-	if len(merged.Metadata) != 2 || merged.Metadata["y"] != "z" || merged.Metadata["ticket_id"] != "T-1" {
-		t.Errorf("merged metadata = %v", merged.Metadata)
+	// No folder, labels, or flags is no change.
+	var merged messageJSON
+	call(t, srv, "PATCH", path, "application/json", `{}`, 200, &merged)
+	if merged.Folder != "archive" || len(merged.Labels) != 1 || !merged.Seen || !merged.Flagged {
+		t.Errorf("labels or flags changed: %+v", merged)
 	}
-	if len(merged.Labels) != 2 {
-		t.Errorf("labels changed to %v", merged.Labels)
+
+	// A flag set to false is cleared; the others stay.
+	var unread messageJSON
+	call(t, srv, "PATCH", path, "application/json", `{"seen": false, "forwarded": true}`, 200, &unread)
+	if unread.Seen || !unread.Flagged || !unread.Forwarded {
+		t.Errorf("after seen false: %+v", unread)
 	}
 
 	call(t, srv, "PATCH", path, "application/json", `{"add_labels": ["nope"]}`, 400, nil)
-	call(t, srv, "PATCH", path, "application/json", `{"add_labels": ["inbox"], "remove_labels": ["inbox"]}`, 400, nil)
+	call(t, srv, "PATCH", path, "application/json", `{"add_labels": ["billing"], "remove_labels": ["billing"]}`, 400, nil)
+	call(t, srv, "PATCH", path, "application/json", `{"folder": "nope"}`, 400, nil)
 	call(t, srv, "PATCH", path, "application/json", `{"add_labels": ["Not A Slug"]}`, 400, nil)
 	call(t, srv, "PATCH", "/v1/messages/aaaaaaaaaaaaaaaaaaaaa", "application/json", `{}`, 404, nil)
-
-	var many strings.Builder
-	many.WriteString(`{"metadata": {`)
-	for i := range 50 {
-		fmt.Fprintf(&many, `"k%d": "v",`, i)
-	}
-	many.WriteString(`"last": "v"}}`)
-	call(t, srv, "PATCH", path, "application/json", many.String(), 400, nil)
 
 	// Deleting a label removes it from its messages.
 	call(t, srv, "DELETE", "/v1/labels/billing", "", "", 200, nil)
 	call(t, srv, "GET", path, "", "", 200, &got)
-	if strings.Join(got.Labels, ",") != "starred" {
-		t.Errorf("labels after deleting billing = %v", got.Labels)
+	if len(got.Labels) != 0 || !got.Flagged {
+		t.Errorf("after deleting billing: %+v", got)
 	}
 }
 
@@ -421,27 +424,30 @@ func TestLabels(t *testing.T) {
 	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "zeta"}`, 200, nil)
 	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "alpha-1"}`, 200, nil)
 	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "alpha-1"}`, 409, nil)
-	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "inbox"}`, 409, nil)
 	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "Bad Name"}`, 400, nil)
+	// Folders and flags aren't labels, and no label reads like one.
+	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "inbox"}`, 400, nil)
+	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "starred"}`, 400, nil)
+	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "spam"}`, 400, nil)
+	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "seen"}`, 400, nil)
 
 	var labels []struct {
 		Name      string
-		System    bool
-		CreatedAt *string `json:"created_at"`
+		CreatedAt string `json:"created_at"`
 	}
 	call(t, srv, "GET", "/v1/labels", "", "", 200, &labels)
 	var names []string
 	for _, l := range labels {
 		names = append(names, l.Name)
-		if l.System != (l.CreatedAt == nil) {
-			t.Errorf("%s: system %v, created_at %v", l.Name, l.System, l.CreatedAt)
+		if l.CreatedAt == "" {
+			t.Errorf("%s has no created_at", l.Name)
 		}
 	}
-	if got := strings.Join(names, ","); got != "inbox,unread,starred,answered,sent,draft,spam,trash,alpha-1,zeta" {
+	if got := strings.Join(names, ","); got != "alpha-1,zeta" {
 		t.Errorf("labels = %s", got)
 	}
 
-	call(t, srv, "DELETE", "/v1/labels/inbox", "", "", 400, nil)
+	call(t, srv, "DELETE", "/v1/labels/inbox", "", "", 404, nil)
 	call(t, srv, "DELETE", "/v1/labels/nothing", "", "", 404, nil)
 }
 
@@ -663,7 +669,7 @@ func TestAccess(t *testing.T) {
 	as("alice", "GET", "/v1/accounts/vh@spooly.sh", "", "", 404, nil)
 	as("alice", "GET", "/v1/messages/"+toPersonal.ID, "", "", 404, nil)
 	as("alice", "GET", "/v1/messages/"+toSupport.ID+"/raw", "", "", 200, nil)
-	as("alice", "PATCH", "/v1/messages/"+toSupport.ID, "application/json", `{"add_labels": ["starred"]}`, 200, nil)
+	as("alice", "PATCH", "/v1/messages/"+toSupport.ID, "application/json", `{"flagged": true}`, 200, nil)
 	as("alice", "DELETE", "/v1/labels/inbox", "", "", 403, nil)
 	as("alice", "POST", "/v1/labels", "application/json", `{"name": "mine"}`, 403, nil)
 	as("admin", "POST", "/v1/labels", "application/json", `{"name": "mine"}`, 200, nil)
@@ -673,7 +679,7 @@ func TestAccess(t *testing.T) {
 	if len(accounts) != 0 || len(messages) != 0 {
 		t.Errorf("bob sees %d accounts and %d messages", len(accounts), len(messages))
 	}
-	as("bob", "PATCH", "/v1/messages/"+toSupport.ID, "application/json", `{"add_labels": ["starred"]}`, 404, nil)
+	as("bob", "PATCH", "/v1/messages/"+toSupport.ID, "application/json", `{"flagged": true}`, 404, nil)
 	var all []messageJSON
 	as("admin", "GET", "/v1/messages", "", "", 200, &all)
 	if len(all) != 2 {
@@ -764,29 +770,48 @@ func TestListOrderByReceived(t *testing.T) {
 	}
 }
 
-// A relay mirroring a mailbox stores sent and archived mail with its own
-// labels instead of the inbox defaults.
-func TestCreateMessageLabels(t *testing.T) {
+// A relay mirroring a mailbox stores sent and archived mail in its own
+// folder, with its labels and flags, instead of the inbox.
+func TestCreateMessageFolder(t *testing.T) {
 	srv := newTestServer(t)
 	createAccount(t, srv, "hello@spooly.sh")
 
-	var sent messageJSON
-	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?labels=sent", "message/rfc822", rawMessage(1), 200, &sent)
-	if strings.Join(sent.Labels, ",") != "sent" {
-		t.Errorf("sent mail labels = %v", sent.Labels)
+	sent := deliver(t, srv, "hello@spooly.sh", "folder=sent", 1)
+	if sent.Folder != "sent" || len(sent.Labels) != 0 {
+		t.Errorf("sent mail: folder %q, labels %v", sent.Folder, sent.Labels)
 	}
 	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "billing"}`, 200, nil)
-	var starred messageJSON
-	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?labels=inbox&labels=starred&labels=billing", "message/rfc822", rawMessage(2), 200, &starred)
-	if strings.Join(starred.Labels, ",") != "inbox,starred,billing" {
-		t.Errorf("labels = %v", starred.Labels)
+	read := deliver(t, srv, "hello@spooly.sh", "folder=archive&labels=billing&seen=true&flagged=true&forwarded=true", 2)
+	if read.Folder != "archive" || strings.Join(read.Labels, ",") != "billing" || !read.Seen || !read.Flagged || !read.Forwarded || read.Answered {
+		t.Errorf("folder %q, labels %v, flags %+v", read.Folder, read.Labels, read)
 	}
-	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?labels=nope", "message/rfc822", rawMessage(3), 400, nil)
-	call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?labels=Not%20A%20Slug", "message/rfc822", rawMessage(3), 400, nil)
+	for _, query := range []string{"labels=nope", "labels=Not%20A%20Slug", "folder=nope", "folder=billing"} {
+		call(t, srv, "POST", "/v1/accounts/hello@spooly.sh/messages?"+query, "message/rfc822", rawMessage(3), 400, nil)
+	}
 
 	var inSent []messageJSON
-	call(t, srv, "GET", "/v1/messages?label=sent", "", "", 200, &inSent)
+	call(t, srv, "GET", "/v1/messages?folder=sent", "", "", 200, &inSent)
 	if len(inSent) != 1 || inSent[0].ID != sent.ID {
 		t.Errorf("Sent lists %d messages", len(inSent))
+	}
+}
+
+// Mail to a plus address gets its tag's label, if there's one.
+func TestPlusAddressLabel(t *testing.T) {
+	srv := newTestServer(t)
+	createAccount(t, srv, "hello@spooly.sh")
+	call(t, srv, "POST", "/v1/labels", "application/json", `{"name": "billing"}`, 200, nil)
+
+	m := deliver(t, srv, "hello+billing@spooly.sh", "", 1)
+	if m.Folder != "inbox" || strings.Join(m.Labels, ",") != "billing" {
+		t.Errorf("hello+billing@: folder %q, labels %v", m.Folder, m.Labels)
+	}
+	m = deliver(t, srv, "hello+billing@spooly.sh", "labels=billing", 2)
+	if strings.Join(m.Labels, ",") != "billing" {
+		t.Errorf("hello+billing@ labeled billing too: labels %v", m.Labels)
+	}
+	m = deliver(t, srv, "hello+news@spooly.sh", "", 3)
+	if len(m.Labels) != 0 {
+		t.Errorf("hello+news@ with no news label: labels %v", m.Labels)
 	}
 }

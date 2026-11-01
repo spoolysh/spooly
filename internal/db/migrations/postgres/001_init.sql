@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
 
 -- Each account counts up a sequence. A message is stamped with the next
--- number whenever it joins a label (message_labels.seq) or comes into view
--- outside spam and trash (messages.seq), so within any label, later arrivals
+-- number whenever it comes into a folder (messages.folder_seq) or joins a
+-- label (message_labels.seq), so within any folder or label, later arrivals
 -- always have higher numbers. IMAP uses them as UIDs.
 CREATE TABLE IF NOT EXISTS accounts (
     id BIGSERIAL PRIMARY KEY,
@@ -48,23 +48,21 @@ CREATE TABLE IF NOT EXISTS account_users (
 
 CREATE INDEX IF NOT EXISTS idx_account_users_user_id ON account_users(user_id);
 
--- System labels are rows too, with no created_at, so every label a message
--- carries is in this table.
+-- Labels say what a message is about, such as billing. A message can have
+-- several, in any folder.
 CREATE TABLE IF NOT EXISTS labels (
     name TEXT PRIMARY KEY,
-    system BOOLEAN NOT NULL,
-    created_at TIMESTAMPTZ
+    created_at TIMESTAMPTZ NOT NULL
 );
-
-INSERT INTO labels (name, system) VALUES
-    ('inbox', TRUE), ('unread', TRUE), ('starred', TRUE), ('answered', TRUE), ('sent', TRUE),
-    ('draft', TRUE), ('spam', TRUE), ('trash', TRUE);
 
 -- Raw messages are in object storage, keyed by message ID: a nanoid.
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     account_id BIGINT NOT NULL REFERENCES accounts(id),
-    seq BIGINT NOT NULL,
+    -- Where the message is: exactly one folder. Junk and trash show only in
+    -- their own folders, as in Gmail.
+    folder TEXT NOT NULL CHECK (folder IN ('inbox', 'archive', 'sent', 'drafts', 'junk', 'trash')),
+    folder_seq BIGINT NOT NULL,
     -- The SMTP envelope: MAIL FROM, empty for bounces, and the RCPT TO it
     -- was delivered to.
     mail_from TEXT NOT NULL,
@@ -88,7 +86,14 @@ CREATE TABLE IF NOT EXISTS messages (
     -- parent's message_id, which Spooly looks up for replies and threads.
     message_id TEXT NOT NULL DEFAULT '',
     in_reply_to TEXT NOT NULL DEFAULT '',
-    metadata TEXT NOT NULL,
+    -- Flags are the message's state, wherever it is: read, replied to,
+    -- starred, an unfinished draft, and forwarded, as IMAP's \Seen,
+    -- \Answered, \Flagged, \Draft, and $Forwarded.
+    seen BOOLEAN NOT NULL DEFAULT FALSE,
+    answered BOOLEAN NOT NULL DEFAULT FALSE,
+    flagged BOOLEAN NOT NULL DEFAULT FALSE,
+    draft BOOLEAN NOT NULL DEFAULT FALSE,
+    forwarded BOOLEAN NOT NULL DEFAULT FALSE,
     idempotency_key TEXT,
     received_at TIMESTAMPTZ NOT NULL,
     UNIQUE (account_id, idempotency_key)
@@ -97,6 +102,7 @@ CREATE TABLE IF NOT EXISTS messages (
 -- Lists are newest received first, so they read messages in that order.
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at, id);
 CREATE INDEX IF NOT EXISTS idx_messages_account_received ON messages(account_id, received_at, id);
+CREATE INDEX IF NOT EXISTS idx_messages_account_folder ON messages(account_id, folder, received_at, id);
 CREATE INDEX IF NOT EXISTS idx_messages_account_message_id ON messages(account_id, message_id);
 
 CREATE TABLE IF NOT EXISTS message_labels (
