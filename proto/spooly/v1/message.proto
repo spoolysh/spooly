@@ -343,40 +343,9 @@ message Message {
     }
   ];
 
-  // SMTP envelope sender (MAIL FROM): the bounce address, not the From or
-  // Sender header. Empty for bounces.
-  string mail_from = 3 [(google.api.field_behavior) = REQUIRED];
-  // SMTP envelope recipient (RCPT TO) it was delivered to, e.g.
-  // "hello+news@spooly.sh". The mailbox's address when created by mailbox ID.
-  string rcpt_to = 4 [(google.api.field_behavior) = REQUIRED];
-
-  // First address of the From header. Empty when there's none.
-  Address from = 5 [
-    (google.api.field_behavior) = REQUIRED,
-    (buf.validate.field).required = true
-  ];
-  repeated Address to = 6 [(google.api.field_behavior) = REQUIRED];
-  repeated Address cc = 7 [(google.api.field_behavior) = REQUIRED];
-  string subject = 8 [(google.api.field_behavior) = REQUIRED];
-  // Date header, as claimed by the sender. Absent when missing or invalid.
-  optional google.protobuf.Timestamp date = 9;
-
-  // Start of the text body, for list views.
-  string snippet = 10 [(google.api.field_behavior) = REQUIRED];
-  // Raw size in bytes.
-  int64 size = 11 [
-    (google.api.field_behavior) = REQUIRED,
-    (buf.validate.field).int64.gte = 0
-  ];
-  // Every part, in the order of the raw source. A part's index here is its
-  // index for GetMessagePart. The text body is the first text/plain part
-  // whose disposition isn't "attachment" and that has no name; the HTML
-  // body, the same for text/html. The rest are attachments.
-  repeated MessagePart parts = 12 [(google.api.field_behavior) = REQUIRED];
-
   // Where the message is: exactly one of inbox, archive, sent, drafts, junk,
   // and trash. New messages are in the inbox.
-  string folder = 13 [
+  string folder = 3 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       in: [
@@ -391,25 +360,58 @@ message Message {
   ];
   // Label names: what the message is about, such as "billing". A message
   // can have several, and keeps them in any folder.
-  repeated string labels = 14 [(google.api.field_behavior) = REQUIRED];
+  repeated string labels = 4 [(google.api.field_behavior) = REQUIRED];
 
   // Flags: the message's state, wherever it is. In IMAP's order, as its
   // \Seen, \Answered, \Flagged, \Draft, and $Forwarded, and named as JMAP's
   // keywords. New messages have none.
 
   // Read. The API never sets it on its own.
-  bool seen = 15 [(google.api.field_behavior) = REQUIRED];
+  bool seen = 5 [(google.api.field_behavior) = REQUIRED];
   // Replied to.
-  bool answered = 16 [(google.api.field_behavior) = REQUIRED];
+  bool answered = 6 [(google.api.field_behavior) = REQUIRED];
   // Starred.
-  bool flagged = 17 [(google.api.field_behavior) = REQUIRED];
+  bool flagged = 7 [(google.api.field_behavior) = REQUIRED];
   // Not finished, as mail clients mark the drafts they save.
-  bool draft = 18 [(google.api.field_behavior) = REQUIRED];
+  bool draft = 8 [(google.api.field_behavior) = REQUIRED];
   // Forwarded to someone.
-  bool forwarded = 19 [(google.api.field_behavior) = REQUIRED];
+  bool forwarded = 9 [(google.api.field_behavior) = REQUIRED];
+
+  // SMTP envelope sender (MAIL FROM): the bounce address, not the From or
+  // Sender header. Empty for bounces.
+  string mail_from = 10 [(google.api.field_behavior) = REQUIRED];
+  // SMTP envelope recipient (RCPT TO) it was delivered to, e.g.
+  // "hello+news@spooly.sh". The mailbox's address when created by mailbox ID.
+  string rcpt_to = 11 [(google.api.field_behavior) = REQUIRED];
+
+  // First address of the From header. Empty when there's none.
+  Address from = 12 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).required = true
+  ];
+  repeated Address to = 13 [(google.api.field_behavior) = REQUIRED];
+  repeated Address cc = 14 [(google.api.field_behavior) = REQUIRED];
+  string subject = 15 [(google.api.field_behavior) = REQUIRED];
+  // Date header, as claimed by the sender. Absent when missing or invalid.
+  optional google.protobuf.Timestamp date = 16;
+  // Start of the text body, for list views.
+  string snippet = 17 [(google.api.field_behavior) = REQUIRED];
+
+  // Raw size in bytes.
+  int64 size = 18 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).int64.gte = 0
+  ];
+  // How many attachments it has: its parts but the bodies.
+  int32 attachments = 19 [(google.api.field_behavior) = REQUIRED];
+  // Every part, in the order of the raw source. A part's index here is its
+  // index for GetMessagePart. The text body is the first text/plain part
+  // whose disposition isn't "attachment" and that has no name; the HTML
+  // body, the same for text/html. The rest are attachments.
+  repeated MessagePart parts = 20 [(google.api.field_behavior) = REQUIRED];
 
   // When the MTA accepted it.
-  google.protobuf.Timestamp received_at = 20 [
+  google.protobuf.Timestamp received_at = 21 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).required = true
   ];
@@ -578,10 +580,10 @@ message MessageSummary {
   // First address of the From header.
   Address from = 10 [(google.api.field_behavior) = REQUIRED];
   string subject = 11 [(google.api.field_behavior) = REQUIRED];
-  // Start of the text body.
-  string snippet = 12 [(google.api.field_behavior) = REQUIRED];
   // Date header, as claimed by the sender. Absent when missing or invalid.
-  optional google.protobuf.Timestamp date = 13;
+  optional google.protobuf.Timestamp date = 12;
+  // Start of the text body.
+  string snippet = 13 [(google.api.field_behavior) = REQUIRED];
   // Raw size in bytes.
   int64 size = 14 [(google.api.field_behavior) = REQUIRED];
   // How many attachments it has: its parts but the bodies.
