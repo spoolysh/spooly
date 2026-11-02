@@ -4,22 +4,22 @@ Self-hosted mail backend with multi-protocol API (gRPC, gRPC-Web, Connect, REST)
 
 ## Services
 
-`spooly.v1.AccountService` — create, list, get, and update accounts.
+`spooly.v1.MailboxService` — create, list, get, and update mailboxes.
 
 | RPC | Method | Path |
 |---|---|---|
-| `CreateAccount` | `POST` | `/v1/accounts` |
-| `ListAccounts` | `GET` | `/v1/accounts` |
-| `GetAccount` | `GET` | `/v1/accounts/{id_or_address}` |
-| `UpdateAccount` | `PATCH` | `/v1/accounts/{id_or_address}` |
+| `CreateMailbox` | `POST` | `/v1/mailboxes` |
+| `ListMailboxes` | `GET` | `/v1/mailboxes` |
+| `GetMailbox` | `GET` | `/v1/mailboxes/{id_or_address}` |
+| `UpdateMailbox` | `PATCH` | `/v1/mailboxes/{id_or_address}` |
 
 `spooly.v1.MessageService` — deliver, list, get, label, and delete messages, and read their headers, parts, and raw source.
 
 | RPC | Method | Path |
 |---|---|---|
-| `CreateMessage` | `POST` | `/v1/messages`, `/v1/accounts/{account_id_or_address}/messages` |
+| `CreateMessage` | `POST` | `/v1/messages`, `/v1/mailboxes/{mailbox_id_or_address}/messages` |
 | `GetMessage` | `GET` | `/v1/messages/{id}` |
-| `ListMessages` | `GET` | `/v1/messages`, `/v1/accounts/{account_id_or_address}/messages` |
+| `ListMessages` | `GET` | `/v1/messages`, `/v1/mailboxes/{mailbox_id_or_address}/messages` |
 | `UpdateMessage` | `PATCH` | `/v1/messages/{id}` |
 | `DeleteMessage` | `DELETE` | `/v1/messages/{id}` |
 | `GetMessageHeaders` | `GET` | `/v1/messages/{id}/headers` |

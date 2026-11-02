@@ -10,7 +10,7 @@ import "google/protobuf/timestamp.proto";
 option go_package = "github.com/spoolysh/spooly/gen/spooly/v1;spoolyv1";
 
 service LabelService {
-  // Create a user label. Admins only: labels are shared by every account.
+  // Create a user label. Admins only: labels are shared by every mailbox.
   rpc CreateLabel(CreateLabelRequest) returns (CreateLabelResponse) {
     option (google.api.http) = {
       post: "/v1/labels"
@@ -37,7 +37,7 @@ service LabelService {
 
 // A label says what a message is about, such as billing; a message can
 // have several, and keeps them in any folder. Labels are shared by all
-// accounts. A message's folder says where it is, and its flags its state.
+// mailboxes. A message's folder says where it is, and its flags its state.
 // No label can take a folder's or a flag's name.
 message Label {
   // Unique, e.g. "billing".

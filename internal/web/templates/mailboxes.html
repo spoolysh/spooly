@@ -1,11 +1,11 @@
 {{define "content"}}
 <div class="mb-8">
-  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Accounts</h2>
-  <p class="mt-1 text-sm text-gray-500">An account receives all mail sent to any of its addresses. Plus addresses reach it too: <code>hello+news@</code> lands in <code>hello@</code>.</p>
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">Mailboxes</h2>
+  <p class="mt-1 text-sm text-gray-500">A mailbox receives all mail sent to any of its addresses. Plus addresses reach it too: <code>hello+news@</code> lands in <code>hello@</code>.</p>
 </div>
 
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
-  <h3 class="text-sm font-semibold text-gray-900 mb-4">Create account</h3>
+  <h3 class="text-sm font-semibold text-gray-900 mb-4">Create mailbox</h3>
   <form id="create-form" class="flex flex-wrap gap-3">
     <label for="address" class="sr-only">Address</label>
     <input type="email" id="address" name="address" placeholder="hello@example.com" required maxlength="254"
@@ -20,7 +20,7 @@
 </div>
 
 <div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-  {{if .Accounts}}
+  {{if .Mailboxes}}
   <div class="overflow-x-auto">
     <table class="w-full text-left text-sm whitespace-nowrap">
       <thead class="bg-gray-50 text-gray-500 uppercase tracking-wider text-xs font-medium border-b border-gray-200">
@@ -32,11 +32,11 @@
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-200">
-        {{range .Accounts}}
+        {{range .Mailboxes}}
         <tr class="hover:bg-gray-50 transition-colors">
           <td class="px-6 py-3">
-            <a href="/accounts/{{.Address}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Address}}</a>
-            {{with len .Addresses}}{{if gt . 1}}<span class="ml-1 text-xs text-gray-400" title="More addresses reach this account">+{{sub . 1}}</span>{{end}}{{end}}
+            <a href="/mailboxes/{{.Address}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">{{.Address}}</a>
+            {{with len .Addresses}}{{if gt . 1}}<span class="ml-1 text-xs text-gray-400" title="More addresses reach this mailbox">+{{sub . 1}}</span>{{end}}{{end}}
           </td>
           <td class="px-6 py-3 text-gray-700">{{if .Name}}{{.Name}}{{else}}<span class="text-gray-400">&mdash;</span>{{end}}</td>
           <td class="px-6 py-3 tabular-nums"><a href="{{listURL .Address}}" title="Open the inbox" class="hover:underline {{if .Unread}}font-semibold text-gray-900{{else}}text-gray-400{{end}}">{{.Unread}}</a></td>
@@ -48,7 +48,7 @@
   </div>
   {{else}}
   <div class="px-6 py-12 text-center text-gray-500">
-    <p>No accounts yet. Create one above.</p>
+    <p>No mailboxes yet. Create one above.</p>
   </div>
   {{end}}
 </div>
@@ -56,8 +56,8 @@
 <script>
   document.getElementById('create-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const resp = await fetch('/ui/accounts', { method: 'POST', body: new FormData(e.target) });
-    if (resp.ok) { location.href = '/accounts/' + (await resp.json()).address; return; }
+    const resp = await fetch('/ui/mailboxes', { method: 'POST', body: new FormData(e.target) });
+    if (resp.ok) { location.href = '/mailboxes/' + (await resp.json()).address; return; }
     const error = document.getElementById('create-error');
     error.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
     error.classList.remove('hidden');

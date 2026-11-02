@@ -61,14 +61,14 @@ func newTestEnv(t *testing.T, opts Options) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateAccount(ctx, db.Account{ID: db.NewID(), Addresses: []string{"hello@spooly.sh"}}); err != nil {
+	if _, err := database.CreateMailbox(ctx, db.Mailbox{ID: db.NewID(), Addresses: []string{"hello@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 
 	svc := service.New(database, memory.New(), service.Options{Admins: []string{"vh@example.com"}})
 	env := &testEnv{t: t, db: database, key: key}
 	for _, raw := range []string{message1, message2, message3} {
-		m, err := svc.Store(ctx, service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
+		m, err := svc.Store(ctx, service.Incoming{MailboxIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
 		if err != nil {
 			t.Fatalf("Store: %v", err)
 		}
@@ -178,7 +178,7 @@ func TestSession(t *testing.T) {
 	if got := c.cmd("STAT"); !strings.HasPrefix(got, "-ERR") {
 		t.Errorf("STAT before login: %s", got)
 	}
-	// A plus address logs in to its account.
+	// A plus address logs in to its mailbox.
 	c.ok("USER Hello+pop@spooly.sh")
 	c.ok("PASS " + e.key)
 
@@ -293,7 +293,7 @@ func TestMaxMessages(t *testing.T) {
 	}
 }
 
-// Several clients can use the same account at once, each downloading every
+// Several clients can use the same mailbox at once, each downloading every
 // message.
 func TestConcurrentSessions(t *testing.T) {
 	e := newTestEnv(t, Options{})

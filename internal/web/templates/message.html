@@ -1,14 +1,14 @@
 {{define "content"}}
 {{$m := .Message}}
 <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-  <a href="{{listURL .Account.Address}}" class="text-sm text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; {{.Account.Address}}</a>
+  <a href="{{listURL .Mailbox.Address}}" class="text-sm text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; {{.Mailbox.Address}}</a>
   <div class="flex flex-wrap items-center gap-2" role="toolbar" aria-label="Message actions">
     {{if eq $m.Folder "inbox"}}
     <button type="button" onclick="update({ folder: 'archive' })" class="btn">Archive</button>
     {{else}}
     <button type="button" onclick="update({ folder: 'inbox' })" class="btn">Move to inbox</button>
     {{end}}
-    <button type="button" onclick="update({ seen: false }, '{{listURL .Account.Address}}')" class="btn">Mark unread</button>
+    <button type="button" onclick="update({ seen: false }, '{{listURL .Mailbox.Address}}')" class="btn">Mark unread</button>
     {{if $m.Flagged}}
     <button type="button" onclick="update({ flagged: false })" class="btn"><span class="text-amber-500">&#9733;</span> Unstar</button>
     {{else}}
@@ -152,7 +152,7 @@
     });
     if (resp.ok) {
       // Moving the message (archive, trash, junk) goes back to the inbox.
-      location.href = next || (body.folder ? '{{listURL .Account.Address}}' : location.pathname);
+      location.href = next || (body.folder ? '{{listURL .Mailbox.Address}}' : location.pathname);
       return;
     }
     const status = document.getElementById('action-status');

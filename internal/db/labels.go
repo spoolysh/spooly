@@ -13,7 +13,7 @@ import (
 const (
 	FolderInbox   = "inbox"
 	FolderArchive = "archive"
-	FolderSent    = "sent" // mail sent from an account
+	FolderSent    = "sent" // mail sent from a mailbox
 	FolderDrafts  = "drafts"
 	FolderJunk    = "junk"
 	FolderTrash   = "trash"
@@ -106,7 +106,8 @@ func (d *DB) ListLabels(ctx context.Context) ([]Label, error) {
 	return labels, rows.Err()
 }
 
-// DeleteLabel deletes a label and removes it from its messages.
+// DeleteLabel deletes a label and removes it from its messages, which
+// changes them.
 func (d *DB) DeleteLabel(ctx context.Context, name string) error {
 	if _, err := d.GetLabel(ctx, name); err != nil {
 		return err
@@ -117,6 +118,30 @@ func (d *DB) DeleteLabel(ctx context.Context, name string) error {
 		return fmt.Errorf("deleting label: %w", err)
 	}
 	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, d.q(`SELECT m.id, m.mailbox_id FROM message_labels l JOIN messages m ON m.id = l.message_id WHERE l.label = ?`), name)
+	if err != nil {
+		return fmt.Errorf("deleting label: %w", err)
+	}
+	type labeled struct{ id, mailboxID string }
+	var messages []labeled
+	for rows.Next() {
+		var m labeled
+		if err := rows.Scan(&m.id, &m.mailboxID); err != nil {
+			rows.Close()
+			return fmt.Errorf("deleting label: %w", err)
+		}
+		messages = append(messages, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("deleting label: %w", err)
+	}
+	for _, m := range messages {
+		c := &change{d: d, tx: tx, mailboxID: m.mailboxID}
+		if err := d.touch(ctx, c, m.id, &MessageChanges{RemoveLabels: []string{name}}); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM message_labels WHERE label = ?`), name); err != nil {
 		return fmt.Errorf("deleting label: %w", err)
 	}

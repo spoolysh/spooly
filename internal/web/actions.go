@@ -36,29 +36,29 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) createMailbox(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
-	req := &spoolyv1.CreateAccountRequest{Addresses: []string{r.FormValue("address")}}
+	req := &spoolyv1.CreateMailboxRequest{Addresses: []string{r.FormValue("address")}}
 	if name := r.FormValue("name"); name != "" {
 		req.Name = &name
 	}
 	if err := validate(req); err != nil {
-		writeError(w, "createAccount", err)
+		writeError(w, "createMailbox", err)
 		return
 	}
-	resp, err := h.svc.CreateAccount(r.Context(), req)
+	resp, err := h.svc.CreateMailbox(r.Context(), req)
 	if err != nil {
-		writeError(w, "createAccount", err)
+		writeError(w, "createMailbox", err)
 		return
 	}
-	writeJSON(w, map[string]string{"id": resp.Account.Id, "address": resp.Account.Addresses[0]})
+	writeJSON(w, map[string]string{"id": resp.Mailbox.Id, "address": resp.Mailbox.Addresses[0]})
 }
 
-// updateAccount changes an account's name and addresses: the body is
-// {"name": ..., "addresses": [...]}, as in PATCH /v1/accounts/{id}.
-func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
+// updateMailbox changes a mailbox's name and addresses: the body is
+// {"name": ..., "addresses": [...]}, as in PATCH /v1/mailboxes/{id}.
+func (h *Handler) updateMailbox(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
 	}
@@ -70,24 +70,24 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	req := &spoolyv1.UpdateAccountRequest{
+	req := &spoolyv1.UpdateMailboxRequest{
 		IdOrAddress: r.PathValue("id"),
 		Name:        body.Name,
 		Addresses:   body.Addresses,
 	}
 	if err := validate(req); err != nil {
-		writeError(w, "updateAccount", err)
+		writeError(w, "updateMailbox", err)
 		return
 	}
-	resp, err := h.svc.UpdateAccount(r.Context(), req)
+	resp, err := h.svc.UpdateMailbox(r.Context(), req)
 	if err != nil {
-		writeError(w, "updateAccount", err)
+		writeError(w, "updateMailbox", err)
 		return
 	}
-	writeJSON(w, map[string]string{"address": resp.Account.Addresses[0]})
+	writeJSON(w, map[string]string{"address": resp.Mailbox.Addresses[0]})
 }
 
-// share gives a user access to an account: the form has their sign-in
+// share gives a user access to a mailbox: the form has their sign-in
 // email.
 func (h *Handler) share(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
@@ -204,28 +204,18 @@ func (h *Handler) updateMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("select 1 to %d messages", maxBulk), http.StatusBadRequest)
 		return
 	}
-	// Check every request first, so a bad one changes nothing.
-	reqs := make([]*spoolyv1.UpdateMessageRequest, len(body.IDs))
-	for i, id := range body.IDs {
-		reqs[i] = body.request(id)
-		if err := validate(reqs[i]); err != nil {
-			writeError(w, "updateMessages", err)
-			return
-		}
+	u := body.messageUpdate
+	req := &spoolyv1.BatchUpdateMessagesRequest{Ids: body.IDs, Folder: u.Folder, AddLabels: u.AddLabels, RemoveLabels: u.RemoveLabels, Seen: u.Seen, Flagged: u.Flagged}
+	if err := validate(req); err != nil {
+		writeError(w, "updateMessages", err)
+		return
 	}
-	updated := 0
-	for _, req := range reqs {
-		_, err := h.svc.UpdateMessage(r.Context(), req)
-		if connect.CodeOf(err) == connect.CodeNotFound && strings.Contains(err.Error(), "message not found") {
-			continue // deleted meanwhile
-		}
-		if err != nil {
-			writeError(w, "updateMessages", err)
-			return
-		}
-		updated++
+	resp, err := h.svc.BatchUpdateMessages(r.Context(), req)
+	if err != nil {
+		writeError(w, "updateMessages", err)
+		return
 	}
-	writeJSON(w, map[string]int{"updated": updated})
+	writeJSON(w, map[string]int{"updated": int(resp.Updated)})
 }
 
 // revokeKeys deletes all of a user's API keys.
@@ -241,7 +231,7 @@ func (h *Handler) revokeKeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]int{"revoked": n})
 }
 
-// removeAccess takes a user off every account shared with them.
+// removeAccess takes a user off every mailbox shared with them.
 func (h *Handler) removeAccess(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {
 		return
@@ -294,7 +284,7 @@ func (h *Handler) deleteMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]int{"deleted": deleted})
 }
 
-// emptyFolder deletes for good all of an account's mail in the trash or
+// emptyFolder deletes for good all of a mailbox's mail in the trash or
 // junk: the body is {"folder": "trash"}.
 func (h *Handler) emptyFolder(w http.ResponseWriter, r *http.Request) {
 	if !h.signedIn(w, r) {

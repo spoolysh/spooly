@@ -1,7 +1,10 @@
-// Package imap serves accounts over IMAP4rev1 (RFC 3501), with the IDLE,
+// Package imap serves mailboxes over IMAP4rev1 (RFC 3501), with the IDLE,
 // MOVE, UIDPLUS, and SPECIAL-USE extensions, on top of go-imap's server.
 //
-// The username is an account's address and the password is an API key, as
+// IMAP calls folders mailboxes. Here, a mailbox is Spooly's, what a client
+// logs in to; what IMAP calls a mailbox is a folder.
+//
+// The username is a mailbox's address and the password is an API key, as
 // for POP3. The IMAP folders are Spooly's folders (INBOX, Archive, Sent,
 // Drafts, Junk, Trash), then a folder per label, as Proton Mail Bridge shows
 // its folders and labels. There's no All Mail, which would have clients
@@ -98,7 +101,7 @@ func (s *Server) Close() error {
 	return s.srv.Close()
 }
 
-// folder is a mailbox as clients see it.
+// folder is a folder as clients see it: what IMAP calls a mailbox.
 type folder struct {
 	name  string // IMAP name
 	key   string // db view: a folder or a label
@@ -160,7 +163,7 @@ func (m *msg) flags() []goimap.Flag {
 
 type session struct {
 	s       *Server
-	account *db.Account
+	mailbox *db.Mailbox
 	// ctx carries the logged-in user, for service calls that check access.
 	ctx context.Context
 
@@ -176,14 +179,14 @@ var _ imapserver.SessionMove = (*session)(nil)
 
 func (c *session) Close() error { return nil }
 
-// Login authenticates an account's address with an API key.
+// Login authenticates a mailbox's address with an API key.
 func (c *session) Login(username, password string) error {
-	account, ctx, err := c.s.svc.LoginMail(context.Background(), username, password)
+	mailbox, ctx, err := c.s.svc.LoginMail(context.Background(), username, password)
 	if err != nil {
 		time.Sleep(c.s.authDelay)
 		return imapserver.ErrAuthFailed
 	}
-	c.account, c.ctx = account, ctx
+	c.mailbox, c.ctx = mailbox, ctx
 	return nil
 }
 
@@ -254,7 +257,7 @@ func (c *session) Status(name string, options *goimap.StatusOptions) (*goimap.St
 }
 
 func (c *session) status(f *folder, options *goimap.StatusOptions) (*goimap.StatusData, error) {
-	mb, err := c.s.db.ListBySeq(context.Background(), c.account.ID, f.key)
+	mb, err := c.s.db.ListBySeq(context.Background(), c.mailbox.ID, f.key)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +294,7 @@ func (c *session) Select(name string, options *goimap.SelectOptions) (*goimap.Se
 	if err != nil {
 		return nil, err
 	}
-	mb, err := c.s.db.ListBySeq(context.Background(), c.account.ID, f.key)
+	mb, err := c.s.db.ListBySeq(context.Background(), c.mailbox.ID, f.key)
 	if err != nil {
 		return nil, err
 	}
@@ -320,8 +323,8 @@ func (c *session) Unselect() error {
 	return nil
 }
 
-// Create makes a user label. Labels are shared by all accounts, so it
-// appears in every account's folder list.
+// Create makes a user label. Labels are shared by all mailboxes, so it
+// appears in every mailbox's folder list.
 func (c *session) Create(name string, options *goimap.CreateOptions) error {
 	if _, err := c.folder(name); err == nil {
 		return &goimap.Error{Type: goimap.StatusResponseTypeNo, Code: goimap.ResponseCodeAlreadyExists, Text: "Mailbox already exists"}
@@ -338,10 +341,10 @@ func (c *session) Create(name string, options *goimap.CreateOptions) error {
 	return nil
 }
 
-// Delete refuses: a label is shared by all accounts, so deleting it from
+// Delete refuses: a label is shared by all mailboxes, so deleting it from
 // one mail client would remove it everywhere. Delete labels in the dashboard.
 func (c *session) Delete(name string) error {
-	return noErr("Folders are labels shared by all accounts; delete them in the Spooly dashboard")
+	return noErr("Folders are labels shared by all mailboxes; delete them in the Spooly dashboard")
 }
 
 func (c *session) Rename(name, newName string, options *goimap.RenameOptions) error {
@@ -453,7 +456,7 @@ func (c *session) Append(name string, r goimap.LiteralReader, options *goimap.Ap
 		labels = []string{f.key}
 	}
 	m, err := c.s.svc.Store(context.Background(), service.Incoming{
-		AccountIDOrAddress: c.account.ID,
+		MailboxIDOrAddress: c.mailbox.ID,
 		Raw:                raw,
 		ReceivedAt:         options.Time,
 		Folder:             folder,
@@ -469,7 +472,7 @@ func (c *session) Append(name string, r goimap.LiteralReader, options *goimap.Ap
 	if err != nil {
 		return nil, noErr("Can't store the message: " + err.Error())
 	}
-	mb, err := c.s.db.ListBySeq(context.Background(), c.account.ID, f.key)
+	mb, err := c.s.db.ListBySeq(context.Background(), c.mailbox.ID, f.key)
 	if err != nil {
 		return nil, err
 	}
@@ -759,7 +762,7 @@ func (c *session) copyTo(idx []int, destName string, moving bool) (*goimap.CopyD
 			return nil, err
 		}
 	}
-	mb, err := c.s.db.ListBySeq(context.Background(), c.account.ID, dest.key)
+	mb, err := c.s.db.ListBySeq(context.Background(), c.mailbox.ID, dest.key)
 	if err != nil {
 		return nil, err
 	}
@@ -828,7 +831,7 @@ func (c *session) left(idx []int) (map[int]bool, error) {
 	if len(idx) == 0 {
 		return gone, nil
 	}
-	mb, err := c.s.db.ListBySeq(context.Background(), c.account.ID, c.selected.key)
+	mb, err := c.s.db.ListBySeq(context.Background(), c.mailbox.ID, c.selected.key)
 	if err != nil {
 		return nil, err
 	}
@@ -864,7 +867,7 @@ func (c *session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
 	if c.selected == nil {
 		return nil
 	}
-	mb, err := c.s.db.ListBySeq(context.Background(), c.account.ID, c.selected.key)
+	mb, err := c.s.db.ListBySeq(context.Background(), c.mailbox.ID, c.selected.key)
 	if err != nil {
 		return err
 	}

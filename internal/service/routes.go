@@ -44,7 +44,7 @@ func (s *Service) requireAPIKey(next http.Handler) http.Handler {
 // mount is Mount with the authentication supplied, so tests can skip it.
 func (s *Service) mount(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) error {
 	server := connect.NewServer(validate.NewServerInterceptor())
-	spoolyv1connect.RegisterAccountServiceHandler(server, s)
+	spoolyv1connect.RegisterMailboxServiceHandler(server, s)
 	spoolyv1connect.RegisterLabelServiceHandler(server, s)
 	spoolyv1connect.RegisterMessageServiceHandler(server, s)
 

@@ -2,10 +2,10 @@
 <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
   <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">{{.View.Title}}</h2>
   <div class="flex flex-wrap items-center gap-3">
-    <label for="account-filter" class="sr-only">Account</label>
-    <select id="account-filter" onchange="location.href = this.value" class="select">
-      <option value="{{listURL "" .View}}">All accounts</option>
-      {{range .Accounts}}<option value="{{listURL .Address $.View}}"{{if eq .Address $.Account}} selected{{end}}>{{.Address}}</option>{{end}}
+    <label for="mailbox-filter" class="sr-only">Mailbox</label>
+    <select id="mailbox-filter" onchange="location.href = this.value" class="select">
+      <option value="{{listURL "" .View}}">All mailboxes</option>
+      {{range .Mailboxes}}<option value="{{listURL .Address $.View}}"{{if eq .Address $.Mailbox}} selected{{end}}>{{.Address}}</option>{{end}}
     </select>
   </div>
 </div>
@@ -14,7 +14,7 @@
   <nav aria-label="Folders and labels" class="md:w-48 shrink-0 flex md:flex-col gap-1 overflow-x-auto">
     {{range .Views}}
     {{if .FirstLabel}}<div role="separator" class="shrink-0 self-stretch border-l border-gray-200 mx-1 md:mx-3 md:my-2 md:border-l-0 md:border-t"></div>{{end}}
-    <a href="{{listURL $.Account .View}}"
+    <a href="{{listURL $.Mailbox .View}}"
       class="flex items-center justify-between gap-3 whitespace-nowrap px-3 py-2 rounded-md text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if .Active}}bg-brand-50 text-brand-700 font-semibold{{else}}text-gray-700 hover:bg-gray-100{{end}}"
       {{if .Active}}aria-current="page"{{end}}>
       <span class="truncate">{{.View.Title}}</span>
@@ -59,13 +59,13 @@
     {{if and .Total (or (eq .View.Folder "trash") (eq .View.Folder "junk"))}}
     <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-gray-200 px-4 py-2.5 text-sm text-gray-600">
       <span>{{if eq .View.Folder "trash"}}Messages in Trash stay until you delete them.{{else}}Junk stays until you delete it.{{end}}</span>
-      {{if .AccountID}}
+      {{if .MailboxID}}
       <button type="button" onclick="emptyFolder(this.dataset)"
-        data-url="/ui/accounts/{{.AccountID}}/empty" data-folder="{{.View.Folder}}"
-        data-confirm="Delete all {{.Total}} {{if eq .View.Folder "trash"}}messages in Trash{{else}}junk messages{{end}} of {{.Account}} forever?"
+        data-url="/ui/mailboxes/{{.MailboxID}}/empty" data-folder="{{.View.Folder}}"
+        data-confirm="Delete all {{.Total}} {{if eq .View.Folder "trash"}}messages in Trash{{else}}junk messages{{end}} of {{.Mailbox}} forever?"
         class="font-medium text-red-600 hover:text-red-800 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">{{if eq .View.Folder "trash"}}Empty Trash{{else}}Delete all junk{{end}}</button>
       {{else}}
-      <span class="text-gray-500">Choose an account to empty its {{.View.Folder}}.</span>
+      <span class="text-gray-500">Choose a mailbox to empty its {{.View.Folder}}.</span>
       {{end}}
     </div>
     {{end}}
@@ -107,12 +107,12 @@
     <div class="px-6 py-12 text-center text-gray-500">
       <p>No messages on this page. <a href="{{.Base}}" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Back to newest</a></p>
     </div>
-    {{else if not .Accounts}}
+    {{else if not .Mailboxes}}
     <div class="px-6 py-12 text-center text-gray-500">
       {{if .Admin}}
-      <p>No accounts yet. <a href="/accounts" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Create one</a> to start receiving mail.</p>
+      <p>No mailboxes yet. <a href="/mailboxes" class="text-brand-600 hover:text-brand-800 hover:underline font-medium">Create one</a> to start receiving mail.</p>
       {{else}}
-      <p>No accounts are shared with you yet. Ask an admin to share one.</p>
+      <p>No mailboxes are shared with you yet. Ask an admin to share one.</p>
       {{end}}
     </div>
     {{else}}
@@ -121,7 +121,7 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
       </svg>
       <p class="mb-4">No messages here. Deliver one through the API:</p>
-      <pre class="inline-block text-left text-xs bg-gray-900 text-gray-100 rounded-lg px-4 py-3 overflow-x-auto max-w-full"><code>curl -X POST "{{.Hostname}}/v1/accounts/{{(index .Accounts 0).Address}}/messages" \
+      <pre class="inline-block text-left text-xs bg-gray-900 text-gray-100 rounded-lg px-4 py-3 overflow-x-auto max-w-full"><code>curl -X POST "{{.Hostname}}/v1/mailboxes/{{(index .Mailboxes 0).Address}}/messages" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: message/rfc822" \
   --data-binary @message.eml</code></pre>
@@ -171,7 +171,7 @@
     send('/ui/messages/update', { ids, ...update });
   }
 
-  const forever = 'This can\'t be undone, and applies to everyone with access to the account.';
+  const forever = 'This can\'t be undone, and applies to everyone with access to the mailbox.';
 
   function deleteForever() {
     const ids = checks.filter((c) => c.checked).map((c) => c.value);

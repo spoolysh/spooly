@@ -10,7 +10,7 @@ import (
 type UserInfo struct {
 	db.User
 	Admin      bool
-	AccountIDs []string // the accounts shared with them
+	MailboxIDs []string // the mailboxes shared with them
 	Keys       int      // how many API keys they have
 }
 
@@ -33,7 +33,7 @@ func (s *Service) ListUsers(ctx context.Context) ([]UserInfo, error) {
 	}
 	infos := make([]UserInfo, len(users))
 	for i, u := range users {
-		infos[i] = UserInfo{User: u, Admin: s.IsAdmin(u.Email), AccountIDs: access[u.ID], Keys: keys[u.ID]}
+		infos[i] = UserInfo{User: u, Admin: s.IsAdmin(u.Email), MailboxIDs: access[u.ID], Keys: keys[u.ID]}
 	}
 	return infos, nil
 }
@@ -51,7 +51,7 @@ func (s *Service) RevokeKeys(ctx context.Context, userID string) (int, error) {
 	return n, nil
 }
 
-// RemoveAccess takes a user off every account shared with them and returns
+// RemoveAccess takes a user off every mailbox shared with them and returns
 // how many there were. Admins only.
 func (s *Service) RemoveAccess(ctx context.Context, userID string) (int, error) {
 	if err := s.requireUser(ctx, userID); err != nil {

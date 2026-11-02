@@ -10,28 +10,28 @@ import (
 // ErrUserNotFound reports that no user has the requested ID or email.
 var ErrUserNotFound = errors.New("user not found")
 
-// AddUser gives a user access to an account.
-func (d *DB) AddUser(ctx context.Context, accountID, userID string) error {
-	_, err := d.sql.ExecContext(ctx, d.q(`INSERT INTO account_users (account_id, user_id)
-		VALUES (?, ?) ON CONFLICT DO NOTHING`), accountID, userID)
+// AddUser gives a user access to a mailbox.
+func (d *DB) AddUser(ctx context.Context, mailboxID, userID string) error {
+	_, err := d.sql.ExecContext(ctx, d.q(`INSERT INTO mailbox_users (mailbox_id, user_id)
+		VALUES (?, ?) ON CONFLICT DO NOTHING`), mailboxID, userID)
 	if err != nil {
-		return fmt.Errorf("sharing account: %w", err)
+		return fmt.Errorf("sharing mailbox: %w", err)
 	}
 	return nil
 }
 
-// RemoveUser takes a user's access to an account away.
-func (d *DB) RemoveUser(ctx context.Context, accountID, userID string) error {
-	if _, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM account_users WHERE account_id = ? AND user_id = ?`), accountID, userID); err != nil {
-		return fmt.Errorf("unsharing account: %w", err)
+// RemoveUser takes a user's access to a mailbox away.
+func (d *DB) RemoveUser(ctx context.Context, mailboxID, userID string) error {
+	if _, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM mailbox_users WHERE mailbox_id = ? AND user_id = ?`), mailboxID, userID); err != nil {
+		return fmt.Errorf("unsharing mailbox: %w", err)
 	}
 	return nil
 }
 
-// HasAccess reports whether an account is shared with a user.
-func (d *DB) HasAccess(ctx context.Context, accountID, userID string) (bool, error) {
+// HasAccess reports whether a mailbox is shared with a user.
+func (d *DB) HasAccess(ctx context.Context, mailboxID, userID string) (bool, error) {
 	var one int
-	err := d.sql.QueryRowContext(ctx, d.q(`SELECT 1 FROM account_users WHERE account_id = ? AND user_id = ?`), accountID, userID).Scan(&one)
+	err := d.sql.QueryRowContext(ctx, d.q(`SELECT 1 FROM mailbox_users WHERE mailbox_id = ? AND user_id = ?`), mailboxID, userID).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -41,9 +41,9 @@ func (d *DB) HasAccess(ctx context.Context, accountID, userID string) (bool, err
 	return true, nil
 }
 
-// AccountIDsFor returns the IDs of the accounts shared with a user.
-func (d *DB) AccountIDsFor(ctx context.Context, userID string) ([]string, error) {
-	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT account_id FROM account_users WHERE user_id = ?`), userID)
+// MailboxIDsFor returns the IDs of the mailboxes shared with a user.
+func (d *DB) MailboxIDsFor(ctx context.Context, userID string) ([]string, error) {
+	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT mailbox_id FROM mailbox_users WHERE user_id = ?`), userID)
 	if err != nil {
 		return nil, fmt.Errorf("listing access: %w", err)
 	}
@@ -59,11 +59,11 @@ func (d *DB) AccountIDsFor(ctx context.Context, userID string) ([]string, error)
 	return ids, rows.Err()
 }
 
-// AccountUsers returns the users an account is shared with, by email.
-func (d *DB) AccountUsers(ctx context.Context, accountID string) ([]User, error) {
+// MailboxUsers returns the users a mailbox is shared with, by email.
+func (d *DB) MailboxUsers(ctx context.Context, mailboxID string) ([]User, error) {
 	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT u.id, u.google_id, u.email, u.name, u.created_at
-		FROM account_users a JOIN users u ON u.id = a.user_id
-		WHERE a.account_id = ? ORDER BY u.email`), accountID)
+		FROM mailbox_users a JOIN users u ON u.id = a.user_id
+		WHERE a.mailbox_id = ? ORDER BY u.email`), mailboxID)
 	if err != nil {
 		return nil, fmt.Errorf("listing access: %w", err)
 	}
@@ -111,31 +111,31 @@ func (d *DB) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
-// AllAccess returns the IDs of the accounts shared with each user, by user
+// AllAccess returns the IDs of the mailboxes shared with each user, by user
 // ID.
 func (d *DB) AllAccess(ctx context.Context) (map[string][]string, error) {
-	rows, err := d.sql.QueryContext(ctx, `SELECT user_id, account_id FROM account_users ORDER BY account_id`)
+	rows, err := d.sql.QueryContext(ctx, `SELECT user_id, mailbox_id FROM mailbox_users ORDER BY mailbox_id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing access: %w", err)
 	}
 	defer rows.Close()
 	access := map[string][]string{}
 	for rows.Next() {
-		var userID, accountID string
-		if err := rows.Scan(&userID, &accountID); err != nil {
+		var userID, mailboxID string
+		if err := rows.Scan(&userID, &mailboxID); err != nil {
 			return nil, fmt.Errorf("scanning access: %w", err)
 		}
-		access[userID] = append(access[userID], accountID)
+		access[userID] = append(access[userID], mailboxID)
 	}
 	return access, rows.Err()
 }
 
-// RemoveAllAccess takes a user off every account and returns how many they
+// RemoveAllAccess takes a user off every mailbox and returns how many they
 // had.
 func (d *DB) RemoveAllAccess(ctx context.Context, userID string) (int, error) {
-	result, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM account_users WHERE user_id = ?`), userID)
+	result, err := d.sql.ExecContext(ctx, d.q(`DELETE FROM mailbox_users WHERE user_id = ?`), userID)
 	if err != nil {
-		return 0, fmt.Errorf("unsharing accounts: %w", err)
+		return 0, fmt.Errorf("unsharing mailboxes: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	return int(n), nil

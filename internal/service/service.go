@@ -1,4 +1,4 @@
-// Package service implements the Spooly API: AccountService, LabelService, and
+// Package service implements the Spooly API: MailboxService, LabelService, and
 // MessageService.
 package service
 
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -25,23 +26,30 @@ type Service struct {
 	db     *db.DB
 	store  storage.Storage
 	admins []string // lowercased emails
+	opts   Options
 }
 
 var (
-	_ spoolyv1connect.AccountServiceHandler = (*Service)(nil)
+	_ spoolyv1connect.MailboxServiceHandler = (*Service)(nil)
 	_ spoolyv1connect.LabelServiceHandler   = (*Service)(nil)
 	_ spoolyv1connect.MessageServiceHandler = (*Service)(nil)
 )
 
 // Options configure a Service.
 type Options struct {
-	// Admins are the emails of users who can see and manage every account,
-	// and create accounts.
+	// Admins are the emails of users who can see and manage every mailbox,
+	// and create mailboxes.
 	Admins []string
+	// ExpungeAfter is how long a message deleted for good can still be
+	// restored, its raw source kept; 0 removes it at once.
+	ExpungeAfter time.Duration
+	// EventsRetention is how long changes are kept for lists of changes; it
+	// must be at least ExpungeAfter.
+	EventsRetention time.Duration
 }
 
 func New(database *db.DB, store storage.Storage, opts Options) *Service {
-	s := &Service{db: database, store: store}
+	s := &Service{db: database, store: store, opts: opts}
 	for _, email := range opts.Admins {
 		if email = strings.ToLower(strings.TrimSpace(email)); email != "" {
 			s.admins = append(s.admins, email)
@@ -54,7 +62,8 @@ func New(database *db.DB, store storage.Storage, opts Options) *Service {
 func dbError(err error) error {
 	code := connect.CodeInternal
 	switch {
-	case errors.Is(err, db.ErrAccountNotFound), errors.Is(err, db.ErrMessageNotFound), errors.Is(err, db.ErrLabelNotFound),
+	case errors.Is(err, db.ErrMailboxNotFound), errors.Is(err, db.ErrMessageNotFound), errors.Is(err, db.ErrLabelNotFound),
+		errors.Is(err, db.ErrNotRestorable),
 		errors.Is(err, db.ErrUserNotFound), errors.Is(err, storage.ErrNotFound):
 		code = connect.CodeNotFound
 	case errors.Is(err, db.ErrAddressTaken), errors.Is(err, db.ErrLabelExists):
@@ -63,6 +72,8 @@ func dbError(err error) error {
 		code = connect.CodeInvalidArgument
 	case errors.Is(err, db.ErrUnknownLabel), errors.Is(err, db.ErrUnknownFolder), errors.Is(err, db.ErrReservedLabel):
 		code = connect.CodeInvalidArgument
+	case errors.Is(err, db.ErrChangesPruned):
+		code = connect.CodeFailedPrecondition
 	}
 	return connect.NewError(code, err.Error()).WithCause(err)
 }
@@ -74,15 +85,15 @@ func listLimit(limit *int32) int {
 	return int(*limit)
 }
 
-// Accounts
+// Mailboxes
 
-func accountProto(a *db.Account) *spoolyv1.Account {
-	return &spoolyv1.Account{Id: a.ID, Addresses: a.Addresses, Name: a.Name, CreatedAt: timestamppb.New(a.CreatedAt)}
+func mailboxProto(a *db.Mailbox) *spoolyv1.Mailbox {
+	return &spoolyv1.Mailbox{Id: a.ID, Addresses: a.Addresses, Name: a.Name, CreatedAt: timestamppb.New(a.CreatedAt)}
 }
 
-// checkAddresses lowercases an account's addresses and rejects
+// checkAddresses lowercases a mailbox's addresses and rejects
 // duplicates, and a "+", which separates a tag from the address it reaches,
-// so it can't be part of an account's own address.
+// so it can't be part of a mailbox's own address.
 func checkAddresses(addresses []string) ([]string, error) {
 	out := make([]string, 0, len(addresses))
 	for _, address := range addresses {
@@ -98,7 +109,7 @@ func checkAddresses(addresses []string) ([]string, error) {
 	return out, nil
 }
 
-func (s *Service) CreateAccount(ctx context.Context, req *spoolyv1.CreateAccountRequest) (*spoolyv1.CreateAccountResponse, error) {
+func (s *Service) CreateMailbox(ctx context.Context, req *spoolyv1.CreateMailboxRequest) (*spoolyv1.CreateMailboxResponse, error) {
 	if err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	}
@@ -106,76 +117,76 @@ func (s *Service) CreateAccount(ctx context.Context, req *spoolyv1.CreateAccount
 	if err != nil {
 		return nil, err
 	}
-	a, err := s.db.CreateAccount(ctx, db.Account{Addresses: addresses, Name: req.GetName()})
+	a, err := s.db.CreateMailbox(ctx, db.Mailbox{Addresses: addresses, Name: req.GetName()})
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &spoolyv1.CreateAccountResponse{Account: accountProto(a)}, nil
+	return &spoolyv1.CreateMailboxResponse{Mailbox: mailboxProto(a)}, nil
 }
 
-func (s *Service) ListAccounts(ctx context.Context, req *spoolyv1.ListAccountsRequest) (*spoolyv1.ListAccountsResponse, error) {
+func (s *Service) ListMailboxes(ctx context.Context, req *spoolyv1.ListMailboxesRequest) (*spoolyv1.ListMailboxesResponse, error) {
 	userID, admin, err := s.caller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	f := db.AccountFilter{After: req.GetAfter(), Limit: listLimit(req.Limit)}
+	f := db.MailboxFilter{After: req.GetAfter(), Limit: listLimit(req.Limit)}
 	if !admin {
 		f.UserID = userID
 	}
-	accounts, err := s.db.ListAccounts(ctx, f)
+	mailboxes, err := s.db.ListMailboxes(ctx, f)
 	if err != nil {
 		return nil, dbError(err)
 	}
-	resp := &spoolyv1.ListAccountsResponse{Accounts: make([]*spoolyv1.Account, 0, len(accounts))}
-	for i := range accounts {
-		resp.Accounts = append(resp.Accounts, accountProto(&accounts[i]))
+	resp := &spoolyv1.ListMailboxesResponse{Mailboxes: make([]*spoolyv1.Mailbox, 0, len(mailboxes))}
+	for i := range mailboxes {
+		resp.Mailboxes = append(resp.Mailboxes, mailboxProto(&mailboxes[i]))
 	}
 	return resp, nil
 }
 
-func (s *Service) GetAccount(ctx context.Context, req *spoolyv1.GetAccountRequest) (*spoolyv1.GetAccountResponse, error) {
-	a, _, err := s.resolveAccount(ctx, req.IdOrAddress)
+func (s *Service) GetMailbox(ctx context.Context, req *spoolyv1.GetMailboxRequest) (*spoolyv1.GetMailboxResponse, error) {
+	a, _, err := s.resolveMailbox(ctx, req.IdOrAddress)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.Require(ctx, a.ID); err != nil {
 		return nil, err
 	}
-	return &spoolyv1.GetAccountResponse{Account: accountProto(a)}, nil
+	return &spoolyv1.GetMailboxResponse{Mailbox: mailboxProto(a)}, nil
 }
 
-func (s *Service) UpdateAccount(ctx context.Context, req *spoolyv1.UpdateAccountRequest) (*spoolyv1.UpdateAccountResponse, error) {
-	a, _, err := s.resolveAccount(ctx, req.IdOrAddress)
+func (s *Service) UpdateMailbox(ctx context.Context, req *spoolyv1.UpdateMailboxRequest) (*spoolyv1.UpdateMailboxResponse, error) {
+	a, _, err := s.resolveMailbox(ctx, req.IdOrAddress)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.requireManage(ctx, a.ID); err != nil {
 		return nil, err
 	}
-	u := db.AccountUpdate{Name: req.Name}
+	u := db.MailboxUpdate{Name: req.Name}
 	if len(req.Addresses) > 0 {
 		if u.Addresses, err = checkAddresses(req.Addresses); err != nil {
 			return nil, err
 		}
 	}
-	a, err = s.db.UpdateAccount(ctx, a.ID, u)
+	a, err = s.db.UpdateMailbox(ctx, a.ID, u)
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &spoolyv1.UpdateAccountResponse{Account: accountProto(a)}, nil
+	return &spoolyv1.UpdateMailboxResponse{Mailbox: mailboxProto(a)}, nil
 }
 
-// resolveAccount finds an account by ID, or by address if idOrAddress contains
+// resolveMailbox finds a mailbox by ID, or by address if idOrAddress contains
 // "@", and returns it with the address mail to it was sent to: the given
-// address, lowercased, or the account's first address for an ID.
-func (s *Service) resolveAccount(ctx context.Context, idOrAddress string) (*db.Account, string, error) {
-	var a *db.Account
+// address, lowercased, or the mailbox's first address for an ID.
+func (s *Service) resolveMailbox(ctx context.Context, idOrAddress string) (*db.Mailbox, string, error) {
+	var a *db.Mailbox
 	var err error
 	recipient := strings.ToLower(idOrAddress)
 	if strings.Contains(idOrAddress, "@") {
-		a, err = s.db.ResolveAccount(ctx, recipient)
+		a, err = s.db.ResolveMailbox(ctx, recipient)
 	} else {
-		a, err = s.db.GetAccount(ctx, idOrAddress)
+		a, err = s.db.GetMailbox(ctx, idOrAddress)
 		if err == nil {
 			recipient = a.Address()
 		}
@@ -192,7 +203,7 @@ func labelProto(l *db.Label) *spoolyv1.Label {
 	return &spoolyv1.Label{Name: l.Name, CreatedAt: timestamppb.New(l.CreatedAt)}
 }
 
-// CreateLabel is for admins only: a label is shared by every account.
+// CreateLabel is for admins only: a label is shared by every mailbox.
 func (s *Service) CreateLabel(ctx context.Context, req *spoolyv1.CreateLabelRequest) (*spoolyv1.CreateLabelResponse, error) {
 	if err := s.requireAdmin(ctx); err != nil {
 		return nil, err
@@ -219,8 +230,8 @@ func (s *Service) ListLabels(ctx context.Context, _ *spoolyv1.ListLabelsRequest)
 	return resp, nil
 }
 
-// DeleteLabel is for admins only: a label is shared by all accounts, so
-// deleting it takes it off messages in accounts others can't see.
+// DeleteLabel is for admins only: a label is shared by all mailboxes, so
+// deleting it takes it off messages in mailboxes others can't see.
 func (s *Service) DeleteLabel(ctx context.Context, req *spoolyv1.DeleteLabelRequest) (*spoolyv1.DeleteLabelResponse, error) {
 	if err := s.requireAdmin(ctx); err != nil {
 		return nil, err

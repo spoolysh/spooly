@@ -1,16 +1,16 @@
-// Package pop3 serves accounts over POP3 (RFC 1939), with the CAPA (RFC
+// Package pop3 serves mailboxes over POP3 (RFC 1939), with the CAPA (RFC
 // 2449), STLS (RFC 2595), and AUTH PLAIN (RFC 5034) extensions.
 //
-// The username is an account's address and the password is an API key, so
-// any key can open any account, as over the API. The maildrop is the newest
-// messages of the account's inbox, numbered oldest first when the session
+// The username is a mailbox's address and the password is an API key, so
+// any key can open any mailbox, as over the API. The maildrop is the newest
+// messages of the mailbox's inbox, numbered oldest first when the session
 // starts; the unique ID of a message is its ID. When the client quits,
 // retrieved messages are marked read, unless Options.KeepUnread is set, and
 // deleted ones are handled as Options.Delete says: by default they are
 // kept, as in a WildDuck patched to ignore DELE.
 //
 // Unlike RFC 1939, a maildrop isn't locked to one session: several people's
-// clients poll the same account, as with WildDuck. Deleting only moves
+// clients poll the same mailbox, as with WildDuck. Deleting only moves
 // messages, which concurrent sessions can safely repeat.
 package pop3
 
@@ -153,7 +153,7 @@ type session struct {
 	user     string // from USER, waiting for PASS
 	failures int
 
-	account   *db.Account // set once logged in
+	mailbox   *db.Mailbox // set once logged in
 	messages  []db.MaildropEntry
 	deleted   []bool
 	retrieved []bool
@@ -191,7 +191,7 @@ func (c *session) handle(cmd, arg string) (quit bool) {
 		c.capa()
 		return false
 	}
-	if c.account == nil {
+	if c.mailbox == nil {
 		switch cmd {
 		case "STLS":
 			c.startTLS()
@@ -269,7 +269,7 @@ func (c *session) capa() {
 	c.reply("RESP-CODES")
 	c.reply("AUTH-RESP-CODE")
 	c.reply("PIPELINING")
-	if c.account == nil {
+	if c.mailbox == nil {
 		if c.s.tls != nil && !c.tls {
 			c.reply("STLS")
 		}
@@ -372,24 +372,24 @@ func (c *session) auth(arg string) (quit bool) {
 // login authenticates address with an API key and opens its maildrop.
 func (c *session) login(address, key string) (quit bool) {
 	ctx := context.Background()
-	account, _, err := c.s.svc.LoginMail(ctx, address, key)
+	mailbox, _, err := c.s.svc.LoginMail(ctx, address, key)
 	if err != nil {
 		c.failures++
 		time.Sleep(c.s.authDelay)
 		c.reply("-ERR [AUTH] invalid address or API key")
 		return c.failures >= maxAuthFailures
 	}
-	c.account = account
+	c.mailbox = mailbox
 
-	c.messages, err = c.s.db.ListMaildrop(ctx, account.ID, db.FolderInbox, c.s.opts.MaxMessages)
+	c.messages, err = c.s.db.ListMaildrop(ctx, mailbox.ID, db.FolderInbox, c.s.opts.MaxMessages)
 	if err != nil {
-		log.Printf("pop3: listing %s: %v", account.Address(), err)
+		log.Printf("pop3: listing %s: %v", mailbox.Address(), err)
 		c.reply("-ERR [SYS/TEMP] can't open the maildrop")
 		return true
 	}
 	c.deleted = make([]bool, len(c.messages))
 	c.retrieved = make([]bool, len(c.messages))
-	c.reply("+OK %s has %d messages", account.Address(), len(c.messages))
+	c.reply("+OK %s has %d messages", mailbox.Address(), len(c.messages))
 	return false
 }
 
@@ -453,7 +453,7 @@ func (c *session) send(i, bodyLines int) {
 
 // quit ends the session, applying reads and deletions if logged in.
 func (c *session) quit() {
-	if c.account == nil {
+	if c.mailbox == nil {
 		c.reply("+OK bye")
 		return
 	}

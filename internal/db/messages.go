@@ -105,7 +105,7 @@ type Flags struct {
 // labels, and flags.
 type Message struct {
 	ID        string
-	AccountID string
+	MailboxID string
 	MailFrom  string // SMTP envelope sender (MAIL FROM)
 	RcptTo    string // SMTP envelope recipient (RCPT TO)
 	From      Address
@@ -140,7 +140,7 @@ var (
 )
 
 // messageColumns are the columns of a message.
-const messageColumns = `id, account_id, mail_from, rcpt_to, from_name, from_address, to_addresses, cc_addresses,
+const messageColumns = `id, mailbox_id, mail_from, rcpt_to, from_name, from_address, to_addresses, cc_addresses,
 	subject, date, snippet, size, parts, folder, seen, answered, flagged, draft, forwarded,
 	idempotency_key, received_at`
 
@@ -149,7 +149,7 @@ func scanMessage(row interface{ Scan(...any) error }, extra ...any) (*Message, e
 	var to, cc, parts string
 	var date sql.NullTime
 	var key sql.NullString
-	dest := []any{&m.ID, &m.AccountID, &m.MailFrom, &m.RcptTo, &m.From.Name, &m.From.Address, &to, &cc,
+	dest := []any{&m.ID, &m.MailboxID, &m.MailFrom, &m.RcptTo, &m.From.Name, &m.From.Address, &to, &cc,
 		&m.Subject, &date, &m.Snippet, &m.Size, &parts, &m.Folder, &m.Seen, &m.Answered, &m.Flagged, &m.Draft, &m.Forwarded,
 		&key, &m.ReceivedAt}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
@@ -179,14 +179,14 @@ func marshalJSON(v any) string {
 }
 
 // CreateMessage stores m in its folder, with its flags and the given labels.
-// If m has an idempotency key that its account already used, the stored
+// If m has an idempotency key that its mailbox already used, the stored
 // message is returned instead, with created false.
 func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (stored *Message, created bool, err error) {
 	if !IsFolder(m.Folder) {
 		return nil, false, fmt.Errorf("%w: %q", ErrUnknownFolder, m.Folder)
 	}
 	if m.IdempotencyKey != "" {
-		existing, err := d.messageByIdempotencyKey(ctx, m.AccountID, m.IdempotencyKey)
+		existing, err := d.messageByIdempotencyKey(ctx, m.MailboxID, m.IdempotencyKey)
 		if err == nil {
 			return existing, false, nil
 		}
@@ -195,6 +195,32 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 		}
 	}
 
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("inserting message: %w", err)
+	}
+	defer tx.Rollback()
+	if err := d.insertMessage(ctx, tx, m, labels, EventMessageCreated); err != nil {
+		tx.Rollback()
+		// Lost a race with a retry using the same idempotency key.
+		if m.IdempotencyKey != "" {
+			if existing, gerr := d.messageByIdempotencyKey(ctx, m.MailboxID, m.IdempotencyKey); gerr == nil {
+				return existing, false, nil
+			}
+		}
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("inserting message: %w", err)
+	}
+
+	stored, err = d.GetMessage(ctx, m.ID)
+	return stored, true, err
+}
+
+// insertMessage inserts m in its folder, with its flags and labels, and logs
+// it as event, created or restored.
+func (d *DB) insertMessage(ctx context.Context, tx *sql.Tx, m Message, labels []string, event string) error {
 	if m.To == nil {
 		m.To = []Address{}
 	}
@@ -213,49 +239,35 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 		date = sql.NullTime{Time: m.Date.UTC(), Valid: true}
 	}
 
-	tx, err := d.sql.BeginTx(ctx, nil)
+	c := &change{d: d, tx: tx, mailboxID: m.MailboxID}
+	seq, err := c.next(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("inserting message: %w", err)
+		return err
 	}
-	defer tx.Rollback()
-
-	seq, err := d.nextSeq(ctx, tx, m.AccountID)
-	if err != nil {
-		return nil, false, err
-	}
-	query := d.q(`INSERT INTO messages (` + messageColumns + `, message_id, in_reply_to, folder_seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	query := d.q(`INSERT INTO messages (` + messageColumns + `, message_id, in_reply_to, folder_seq, attachments)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err = tx.ExecContext(ctx, query,
-		m.ID, m.AccountID, m.MailFrom, m.RcptTo, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
+		m.ID, m.MailboxID, m.MailFrom, m.RcptTo, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
 		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Parts), m.Folder,
 		m.Seen, m.Answered, m.Flagged, m.Draft, m.Forwarded, key, m.ReceivedAt.UTC(),
-		m.MessageID, m.InReplyTo, seq)
+		m.MessageID, m.InReplyTo, seq, len(m.Parts.AttachmentIndexes()))
 	if err != nil {
-		tx.Rollback()
-		// Lost a race with a retry using the same idempotency key.
-		if m.IdempotencyKey != "" {
-			if existing, gerr := d.messageByIdempotencyKey(ctx, m.AccountID, m.IdempotencyKey); gerr == nil {
-				return existing, false, nil
-			}
-		}
-		return nil, false, fmt.Errorf("inserting message: %w", err)
+		return fmt.Errorf("inserting message: %w", err)
+	}
+	if err := d.logEvent(ctx, tx, event, m.ID, nil); err != nil {
+		return err
 	}
 	for _, label := range labels {
-		if err := d.addLabel(ctx, tx, m.AccountID, m.ID, label); err != nil {
-			return nil, false, err
+		if _, err := d.addLabel(ctx, c, m.ID, label); err != nil {
+			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, fmt.Errorf("inserting message: %w", err)
-	}
-
-	stored, err = d.GetMessage(ctx, m.ID)
-	return stored, true, err
+	return nil
 }
 
-func (d *DB) messageByIdempotencyKey(ctx context.Context, accountID, key string) (*Message, error) {
+func (d *DB) messageByIdempotencyKey(ctx context.Context, mailboxID, key string) (*Message, error) {
 	var id string
-	err := d.sql.QueryRowContext(ctx, d.q(`SELECT id FROM messages WHERE account_id = ? AND idempotency_key = ?`), accountID, key).Scan(&id)
+	err := d.sql.QueryRowContext(ctx, d.q(`SELECT id FROM messages WHERE mailbox_id = ? AND idempotency_key = ?`), mailboxID, key).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("%w: idempotency key %s", ErrMessageNotFound, key)
 	}
@@ -296,10 +308,10 @@ func getMessage(ctx context.Context, d *DB, q querier, id string) (*Message, err
 // MessageFilter selects messages for ListMessages and CountFiltered. Empty
 // fields match all.
 type MessageFilter struct {
-	AccountID string
-	// AccountIDs, if not nil, limits messages to these accounts, such as
+	MailboxID string
+	// MailboxIDs, if not nil, limits messages to these mailboxes, such as
 	// the ones shared with a user. Empty matches nothing.
-	AccountIDs []string
+	MailboxIDs []string
 	Folder     string
 	NotFolders []string // folders messages must not be in
 	Label      string
@@ -311,7 +323,11 @@ type MessageFilter struct {
 	// come after that one (older), Before the ones before it (newer).
 	After  string
 	Before string
-	Limit  int
+	// Arrival lists summaries in the order messages came into Label, or
+	// without one, Folder, after seq AfterSeq, instead of by received.
+	Arrival  bool
+	AfterSeq uint32
+	Limit    int
 }
 
 // View returns the filter for a folder's messages, or with no folder, for
@@ -329,16 +345,16 @@ func View(folder, label string) MessageFilter {
 func (f MessageFilter) where() (string, []any) {
 	where := ` WHERE 1 = 1`
 	var args []any
-	if f.AccountID != "" {
-		where += ` AND account_id = ?`
-		args = append(args, f.AccountID)
+	if f.MailboxID != "" {
+		where += ` AND mailbox_id = ?`
+		args = append(args, f.MailboxID)
 	}
-	if f.AccountIDs != nil {
-		if len(f.AccountIDs) == 0 {
+	if f.MailboxIDs != nil {
+		if len(f.MailboxIDs) == 0 {
 			where += ` AND 1 = 0`
 		} else {
-			where += ` AND account_id IN (` + placeholders(len(f.AccountIDs)) + `)`
-			for _, id := range f.AccountIDs {
+			where += ` AND mailbox_id IN (` + placeholders(len(f.MailboxIDs)) + `)`
+			for _, id := range f.MailboxIDs {
 				args = append(args, id)
 			}
 		}
@@ -480,6 +496,11 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 	if err != nil {
 		return nil, err
 	}
+	// What actually changes, for the event: adding a label the message has
+	// already, or setting a flag that's set, changes nothing, and logs no
+	// event.
+	var c MessageChanges
+	ch := &change{d: d, tx: tx, mailboxID: m.MailboxID}
 
 	for _, label := range u.AddLabels {
 		var exists int
@@ -490,46 +511,71 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 		if err != nil {
 			return nil, fmt.Errorf("checking label: %w", err)
 		}
-		if err := d.addLabel(ctx, tx, m.AccountID, id, label); err != nil {
+		added, err := d.addLabel(ctx, ch, id, label)
+		if err != nil {
 			return nil, err
+		}
+		if added {
+			c.AddLabels = append(c.AddLabels, label)
 		}
 	}
 	for _, label := range u.RemoveLabels {
-		if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM message_labels WHERE message_id = ? AND label = ?`), id, label); err != nil {
+		res, err := tx.ExecContext(ctx, d.q(`DELETE FROM message_labels WHERE message_id = ? AND label = ?`), id, label)
+		if err != nil {
 			return nil, fmt.Errorf("removing label: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return nil, fmt.Errorf("removing label: %w", err)
+		} else if n > 0 {
+			c.RemoveLabels = append(c.RemoveLabels, label)
 		}
 	}
 
-	// A message coming into a folder gets the next number there. Back from
-	// junk or trash, it also rejoins its labels' views, and needs new numbers
-	// in those too.
+	// A message coming into a folder takes the change's seq there. Back from
+	// junk or trash, it also rejoins its labels' views, and takes it in those
+	// too.
 	if u.Folder != "" && u.Folder != m.Folder {
 		if !IsFolder(u.Folder) {
 			return nil, fmt.Errorf("%w: %q", ErrUnknownFolder, u.Folder)
 		}
-		seq, err := d.nextSeq(ctx, tx, m.AccountID)
+		seq, err := ch.next(ctx)
 		if err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, d.q(`UPDATE messages SET folder = ?, folder_seq = ? WHERE id = ?`), u.Folder, seq, id); err != nil {
 			return nil, fmt.Errorf("moving message: %w", err)
 		}
+		c.Folder = []string{m.Folder, u.Folder}
 		if slices.Contains(Unlisted, m.Folder) && !slices.Contains(Unlisted, u.Folder) {
-			if err := d.relist(ctx, tx, m.AccountID, id); err != nil {
+			if err := d.relist(ctx, ch, id); err != nil {
 				return nil, err
 			}
 		}
 	}
 
 	for _, f := range []struct {
-		column string
-		value  *bool
-	}{{"seen", u.Seen}, {"answered", u.Answered}, {"flagged", u.Flagged}, {"draft", u.Draft}, {"forwarded", u.Forwarded}} {
-		if f.value == nil {
+		column  string
+		value   *bool
+		current bool
+		changed **bool
+	}{
+		{"seen", u.Seen, m.Seen, &c.Seen},
+		{"answered", u.Answered, m.Answered, &c.Answered},
+		{"flagged", u.Flagged, m.Flagged, &c.Flagged},
+		{"draft", u.Draft, m.Draft, &c.Draft},
+		{"forwarded", u.Forwarded, m.Forwarded, &c.Forwarded},
+	} {
+		if f.value == nil || *f.value == f.current {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, d.q(`UPDATE messages SET `+f.column+` = ? WHERE id = ?`), *f.value, id); err != nil {
 			return nil, fmt.Errorf("updating flags: %w", err)
+		}
+		*f.changed = f.value
+	}
+	if !c.IsZero() {
+		if err := d.touch(ctx, ch, id, &c); err != nil {
+			return nil, err
 		}
 	}
 
@@ -556,11 +602,11 @@ type MaildropEntry struct {
 }
 
 // ListMaildrop returns the IDs and sizes of the newest received limit
-// messages of an account in folder, oldest first, as POP3 numbers them.
-func (d *DB) ListMaildrop(ctx context.Context, accountID, folder string, limit int) ([]MaildropEntry, error) {
+// messages of a mailbox in folder, oldest first, as POP3 numbers them.
+func (d *DB) ListMaildrop(ctx context.Context, mailboxID, folder string, limit int) ([]MaildropEntry, error) {
 	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT id, size FROM messages
-		WHERE account_id = ? AND folder = ?
-		ORDER BY received_at DESC, id DESC LIMIT ?`), accountID, folder, limit)
+		WHERE mailbox_id = ? AND folder = ?
+		ORDER BY received_at DESC, id DESC LIMIT ?`), mailboxID, folder, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing maildrop: %w", err)
 	}
@@ -576,20 +622,4 @@ func (d *DB) ListMaildrop(ctx context.Context, accountID, folder string, limit i
 	}
 	slices.Reverse(entries)
 	return entries, rows.Err()
-}
-
-// DeleteMessage deletes a message's row and labels for good. Its raw source
-// is the caller's to remove. Deleting a missing message is not an error.
-func (d *DB) DeleteMessage(ctx context.Context, id string) error {
-	tx, err := d.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("deleting message: %w", err)
-	}
-	defer tx.Rollback()
-	for _, query := range []string{`DELETE FROM message_labels WHERE message_id = ?`, `DELETE FROM messages WHERE id = ?`} {
-		if _, err := tx.ExecContext(ctx, d.q(query), id); err != nil {
-			return fmt.Errorf("deleting message: %w", err)
-		}
-	}
-	return tx.Commit()
 }

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	gonanoid "github.com/matoous/go-nanoid/v2"
+	"github.com/oklog/ulid/v2"
 	"github.com/pressly/goose/v3"
 
 	"github.com/spoolysh/spooly/internal/db/migrations"
@@ -33,16 +33,31 @@ type APIKey struct {
 	CreatedAt time.Time
 }
 
-// NewID returns a new message ID: a nanoid of 21 random characters, as
-// stashy's file IDs. Users, API keys, and accounts are numbered by the
-// database instead.
+// NewID returns a new ID for a mailbox, a message, or an event: a ULID,
+// lowercase, so IDs sort by when they were made. ulid.Make is monotonic
+// within this process, even within one millisecond. Users and API keys are
+// numbered by the database instead.
 func NewID() string {
-	return gonanoid.Must()
+	return strings.ToLower(ulid.Make().String())
 }
 
 type DB struct {
 	sql     *sql.DB
 	dialect string
+	// settle is how long after an event's ULID was made readers wait to
+	// see it: a transaction logging it commits within it, so no event
+	// still to commit sorts before what a reader has seen.
+	settle time.Duration
+}
+
+// DefaultSettle is how long readers wait to see events, unless SetSettle
+// says otherwise.
+const DefaultSettle = 2 * time.Second
+
+// SetSettle sets how long readers wait to see events; 0 sees them at once,
+// which only a single writer, as in tests, can afford.
+func (d *DB) SetSettle(settle time.Duration) {
+	d.settle = settle
 }
 
 func New(ctx context.Context, driver, dsn string) (*DB, error) {
@@ -63,7 +78,7 @@ func New(ctx context.Context, driver, dsn string) (*DB, error) {
 		sqlDB.SetMaxOpenConns(1)
 	}
 
-	return &DB{sql: sqlDB, dialect: dialect}, nil
+	return &DB{sql: sqlDB, dialect: dialect, settle: DefaultSettle}, nil
 }
 
 // Migrate runs all pending database migrations for the connected dialect.

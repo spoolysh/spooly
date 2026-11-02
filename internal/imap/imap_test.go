@@ -48,7 +48,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.CreateAccount(ctx, db.Account{ID: db.NewID(), Addresses: []string{"hello@spooly.sh"}}); err != nil {
+	if _, err := database.CreateMailbox(ctx, db.Mailbox{ID: db.NewID(), Addresses: []string{"hello@spooly.sh"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.CreateLabel(ctx, "billing"); err != nil {
@@ -75,7 +75,7 @@ func newTestEnv(t *testing.T) *testEnv {
 func (e *testEnv) deliver(subject string) string {
 	e.t.Helper()
 	raw := "From: Ann <ann@example.com>\r\nTo: hello@spooly.sh\r\nSubject: " + subject + "\r\n\r\nHello, " + subject + "\r\n"
-	m, err := e.svc.Store(e.t.Context(), service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
+	m, err := e.svc.Store(e.t.Context(), service.Incoming{MailboxIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestFetchHeaders(t *testing.T) {
 	e := newTestEnv(t)
 	raw := "From: Ann <ann@example.com>\r\nTo: hello@spooly.sh\r\nSubject: Re: plan\r\n" +
 		"Message-ID: <reply@example.com>\r\nIn-Reply-To: <plan@example.com> <other@example.com>\r\n\r\nSounds good.\r\n"
-	if _, err := e.svc.Store(t.Context(), service.Incoming{AccountIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)}); err != nil {
+	if _, err := e.svc.Store(t.Context(), service.Incoming{MailboxIDOrAddress: "hello@spooly.sh", Raw: []byte(raw)}); err != nil {
 		t.Fatal(err)
 	}
 	c := e.dial(nil)
@@ -652,7 +652,7 @@ func TestUpdates(t *testing.T) {
 	}
 }
 
-// Only users the account is shared with, and admins, can log in to it.
+// Only users the mailbox is shared with, and admins, can log in to it.
 func TestLoginNeedsAccess(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := t.Context()
@@ -670,10 +670,10 @@ func TestLoginNeedsAccess(t *testing.T) {
 	}
 	defer c.Close()
 	if err := c.Login("hello@spooly.sh", key).Wait(); err == nil {
-		t.Fatal("logged in to an account not shared with the user")
+		t.Fatal("logged in to a mailbox not shared with the user")
 	}
 
-	a, err := e.db.GetAccountByAddress(ctx, "hello@spooly.sh")
+	a, err := e.db.GetMailboxByAddress(ctx, "hello@spooly.sh")
 	if err != nil {
 		t.Fatal(err)
 	}

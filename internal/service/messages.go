@@ -44,7 +44,7 @@ func addressesProto(list []db.Address) []*spoolyv1.Address {
 func messageProto(m *db.Message) *spoolyv1.Message {
 	p := &spoolyv1.Message{
 		Id:         m.ID,
-		AccountId:  m.AccountID,
+		MailboxId:  m.MailboxID,
 		MailFrom:   m.MailFrom,
 		RcptTo:     m.RcptTo,
 		From:       addressProto(m.From),
@@ -77,7 +77,7 @@ func messageProto(m *db.Message) *spoolyv1.Message {
 
 // Incoming is a message to store, as CreateMessage receives it.
 type Incoming struct {
-	AccountIDOrAddress string
+	MailboxIDOrAddress string
 	MailFrom           string
 	ReceivedAt         time.Time // zero means now
 	IdempotencyKey     string
@@ -93,18 +93,18 @@ type Incoming struct {
 	Flags db.Flags
 }
 
-// Store parses and stores an incoming message in the account it was sent
+// Store parses and stores an incoming message in the mailbox it was sent
 // to, in the inbox unless in.Folder says otherwise. A repeated idempotency
 // key returns the stored message. Callers check access first. Errors are
 // connect errors.
 func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
-	if in.AccountIDOrAddress == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "account_id_or_address is required")
+	if in.MailboxIDOrAddress == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "mailbox_id_or_address is required")
 	}
 	if len(in.Raw) == 0 {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "raw: the message is empty")
 	}
-	account, rcptTo, err := s.resolveAccount(ctx, in.AccountIDOrAddress)
+	mailbox, rcptTo, err := s.resolveMailbox(ctx, in.MailboxIDOrAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -145,26 +145,10 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	if _, err := s.store.Put(ctx, id, "message/rfc822", bytes.NewReader(in.Raw)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, "storing raw message").WithCause(err)
 	}
-	m, created, err := s.db.CreateMessage(ctx, db.Message{
-		ID:             id,
-		AccountID:      account.ID,
-		MailFrom:       strings.TrimSpace(in.MailFrom),
-		RcptTo:         rcptTo,
-		From:           parsed.From,
-		To:             parsed.To,
-		Cc:             parsed.Cc,
-		Subject:        parsed.Subject,
-		Date:           parsed.Date,
-		Snippet:        parsed.Snippet,
-		Size:           int64(len(in.Raw)),
-		Parts:          parsed.Parts,
-		MessageID:      parsed.MessageID,
-		InReplyTo:      parsed.InReplyTo,
-		Folder:         folder,
-		IdempotencyKey: in.IdempotencyKey,
-		ReceivedAt:     receivedAt,
-		Flags:          in.Flags,
-	}, labels)
+	m := parsedMessage(id, mailbox.ID, parsed, len(in.Raw))
+	m.MailFrom, m.RcptTo = strings.TrimSpace(in.MailFrom), rcptTo
+	m.Folder, m.Flags, m.IdempotencyKey, m.ReceivedAt = folder, in.Flags, in.IdempotencyKey, receivedAt
+	stored, created, err := s.db.CreateMessage(ctx, m, labels)
 	if err != nil || !created {
 		if derr := s.store.Delete(ctx, id); derr != nil {
 			log.Printf("removing raw message %s: %v", id, derr)
@@ -173,7 +157,7 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return m, nil
+	return stored, nil
 }
 
 func (s *Service) CreateMessage(ctx context.Context, stream spoolyv1connect.MessageServiceCreateMessageServerStream) (*spoolyv1.CreateMessageResponse, error) {
@@ -189,7 +173,7 @@ func (s *Service) CreateMessage(ctx context.Context, stream spoolyv1connect.Mess
 			return nil, err
 		}
 		if first {
-			in.AccountIDOrAddress = msg.AccountIdOrAddress
+			in.MailboxIDOrAddress = msg.MailboxIdOrAddress
 			in.MailFrom = msg.MailFrom
 			in.Folder, in.Labels = msg.Folder, msg.Labels
 			in.Flags = db.Flags{Seen: msg.Seen, Answered: msg.Answered, Flagged: msg.Flagged, Draft: msg.Draft, Forwarded: msg.Forwarded}
@@ -202,7 +186,7 @@ func (s *Service) CreateMessage(ctx context.Context, stream spoolyv1connect.Mess
 			}
 			// Reject unknown addresses before reading the message: a relay
 			// may forward every address of a domain, spam included.
-			if err := s.requireDelivery(ctx, in.AccountIDOrAddress); err != nil {
+			if err := s.requireDelivery(ctx, in.MailboxIDOrAddress); err != nil {
 				return nil, err
 			}
 		}
@@ -244,20 +228,20 @@ func idempotencyKey(ctx context.Context) (string, error) {
 	return key, nil
 }
 
-// requireDelivery checks that ctx's user may deliver mail to an account:
+// requireDelivery checks that ctx's user may deliver mail to a mailbox:
 // they have access to it.
 func (s *Service) requireDelivery(ctx context.Context, idOrAddress string) error {
 	if idOrAddress == "" {
-		return connect.Errorf(connect.CodeInvalidArgument, "account_id_or_address is required")
+		return connect.Errorf(connect.CodeInvalidArgument, "mailbox_id_or_address is required")
 	}
-	a, _, err := s.resolveAccount(ctx, idOrAddress)
+	a, _, err := s.resolveMailbox(ctx, idOrAddress)
 	if err != nil {
 		return err
 	}
 	return s.Require(ctx, a.ID)
 }
 
-// requireMessage checks that ctx's user has access to a message's account,
+// requireMessage checks that ctx's user has access to a message's mailbox,
 // and returns the message. A message they can't see is reported as not
 // found.
 func (s *Service) requireMessage(ctx context.Context, id string) (*db.Message, error) {
@@ -268,7 +252,7 @@ func (s *Service) requireMessage(ctx context.Context, id string) (*db.Message, e
 	if err != nil {
 		return nil, dbError(err)
 	}
-	if err := s.Require(ctx, m.AccountID); err != nil {
+	if err := s.Require(ctx, m.MailboxID); err != nil {
 		if connect.CodeOf(err) == connect.CodeNotFound {
 			return nil, connect.Errorf(connect.CodeNotFound, "%s: %s", db.ErrMessageNotFound, id)
 		}
@@ -279,41 +263,105 @@ func (s *Service) requireMessage(ctx context.Context, id string) (*db.Message, e
 
 func (s *Service) ListMessages(ctx context.Context, req *spoolyv1.ListMessagesRequest) (*spoolyv1.ListMessagesResponse, error) {
 	// As in the dashboard and IMAP, junk and trash show only under their
-	// own labels.
+	// own folders.
 	f := db.View(req.GetFolder(), req.GetLabel())
 	f.Seen, f.Flagged, f.After, f.Limit = req.Seen, req.Flagged, req.GetAfter(), listLimit(req.Limit)
-	if req.AccountIdOrAddress != nil {
-		a, _, err := s.resolveAccount(ctx, *req.AccountIdOrAddress)
+	if req.MailboxIdOrAddress != nil {
+		a, _, err := s.resolveMailbox(ctx, *req.MailboxIdOrAddress)
 		if err != nil {
 			return nil, err
 		}
 		if err := s.Require(ctx, a.ID); err != nil {
 			return nil, err
 		}
-		f.AccountID = a.ID
+		f.MailboxID = a.ID
 	} else {
-		ids, err := s.VisibleAccounts(ctx)
+		ids, err := s.VisibleMailboxes(ctx)
 		if err != nil {
 			return nil, err
 		}
-		f.AccountIDs = ids
+		f.MailboxIDs = ids
 	}
-	messages, err := s.db.ListMessages(ctx, f)
+	messages, err := s.db.ListSummaries(ctx, f)
 	if err != nil {
 		return nil, dbError(err)
 	}
-	resp := &spoolyv1.ListMessagesResponse{Messages: make([]*spoolyv1.Message, 0, len(messages))}
-	for _, m := range messages {
-		resp.Messages = append(resp.Messages, messageProto(m))
+	return &spoolyv1.ListMessagesResponse{Messages: summaryProtos(messages)}, nil
+}
+
+func (s *Service) ListMessagesBySeq(ctx context.Context, req *spoolyv1.ListMessagesBySeqRequest) (*spoolyv1.ListMessagesBySeqResponse, error) {
+	a, err := s.requireMailbox(ctx, req.MailboxIdOrAddress)
+	if err != nil {
+		return nil, err
+	}
+	f := db.View(req.GetFolder(), req.GetLabel())
+	f.MailboxID, f.Arrival, f.AfterSeq, f.Limit = a.ID, true, req.GetAfter(), listLimit(req.Limit)
+	messages, err := s.db.ListSummaries(ctx, f)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	// Bounds after: next_seq is above every seq listed. A message coming in
+	// meanwhile is below it but unlisted, and lists after the last seq.
+	since, next, err := s.db.SeqBounds(ctx, a.ID, req.GetFolder()+req.GetLabel())
+	if err != nil {
+		return nil, dbError(err)
+	}
+	resp := &spoolyv1.ListMessagesBySeqResponse{
+		Messages: make([]*spoolyv1.ListMessagesBySeqResponse_Entry, 0, len(messages)),
+		Since:    timestamppb.New(since),
+		NextSeq:  next,
+	}
+	for i := range messages {
+		resp.Messages = append(resp.Messages, &spoolyv1.ListMessagesBySeqResponse_Entry{Seq: messages[i].Seq, Message: summaryProto(&messages[i])})
 	}
 	return resp, nil
 }
 
-func (s *Service) UpdateMessage(ctx context.Context, req *spoolyv1.UpdateMessageRequest) (*spoolyv1.UpdateMessageResponse, error) {
-	for _, l := range req.AddLabels {
-		if slices.Contains(req.RemoveLabels, l) {
-			return nil, connect.Errorf(connect.CodeInvalidArgument, "label %q is both added and removed", l)
+func summaryProtos(messages []db.Summary) []*spoolyv1.MessageSummary {
+	list := make([]*spoolyv1.MessageSummary, 0, len(messages))
+	for i := range messages {
+		list = append(list, summaryProto(&messages[i]))
+	}
+	return list
+}
+
+func summaryProto(m *db.Summary) *spoolyv1.MessageSummary {
+	p := &spoolyv1.MessageSummary{
+		Id:          m.ID,
+		MailboxId:   m.MailboxID,
+		Folder:      m.Folder,
+		Labels:      m.Labels,
+		Seen:        m.Seen,
+		Answered:    m.Answered,
+		Flagged:     m.Flagged,
+		Draft:       m.Draft,
+		Forwarded:   m.Forwarded,
+		From:        addressProto(m.From),
+		Subject:     m.Subject,
+		Snippet:     m.Snippet,
+		Size:        m.Size,
+		Attachments: int32(m.Attachments),
+		ReceivedAt:  timestamppb.New(m.ReceivedAt),
+	}
+	if m.Date != nil {
+		p.Date = timestamppb.New(*m.Date)
+	}
+	return p
+}
+
+// checkLabels refuses a label that's both added and removed.
+func checkLabels(add, remove []string) error {
+	for _, l := range add {
+		if slices.Contains(remove, l) {
+			return connect.Errorf(connect.CodeInvalidArgument, "label %q is both added and removed", l)
 		}
+	}
+	return nil
+}
+
+func (s *Service) UpdateMessage(ctx context.Context, req *spoolyv1.UpdateMessageRequest) (*spoolyv1.UpdateMessageResponse, error) {
+	if err := checkLabels(req.AddLabels, req.RemoveLabels); err != nil {
+		return nil, err
 	}
 	if _, err := s.requireMessage(ctx, req.Id); err != nil {
 		return nil, err
@@ -332,6 +380,85 @@ func (s *Service) UpdateMessage(ctx context.Context, req *spoolyv1.UpdateMessage
 		return nil, dbError(err)
 	}
 	return &spoolyv1.UpdateMessageResponse{Message: messageProto(m)}, nil
+}
+
+// BatchUpdateMessages applies one update to each message, skipping those that
+// don't exist or that the caller can't see.
+func (s *Service) BatchUpdateMessages(ctx context.Context, req *spoolyv1.BatchUpdateMessagesRequest) (*spoolyv1.BatchUpdateMessagesResponse, error) {
+	if err := checkLabels(req.AddLabels, req.RemoveLabels); err != nil {
+		return nil, err
+	}
+	u := db.MessageUpdate{
+		Folder:       req.GetFolder(),
+		AddLabels:    req.AddLabels,
+		RemoveLabels: req.RemoveLabels,
+		Seen:         req.Seen,
+		Answered:     req.Answered,
+		Flagged:      req.Flagged,
+		Draft:        req.Draft,
+		Forwarded:    req.Forwarded,
+	}
+	resp := &spoolyv1.BatchUpdateMessagesResponse{}
+	for _, id := range req.Ids {
+		_, err := s.requireMessage(ctx, id)
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		_, err = s.db.UpdateMessage(ctx, id, u)
+		if errors.Is(err, db.ErrMessageNotFound) {
+			continue // deleted meanwhile
+		}
+		if err != nil {
+			return nil, dbError(err)
+		}
+		resp.Updated++
+	}
+	return resp, nil
+}
+
+// defaultChangesLimit is how many events a page of changes reads unless
+// asked.
+const defaultChangesLimit = 1000
+
+// requireMailbox resolves a mailbox the caller has access to.
+func (s *Service) requireMailbox(ctx context.Context, idOrAddress string) (*db.Mailbox, error) {
+	a, _, err := s.resolveMailbox(ctx, idOrAddress)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Require(ctx, a.ID); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+func (s *Service) ListChanges(ctx context.Context, req *spoolyv1.ListChangesRequest) (*spoolyv1.ListChangesResponse, error) {
+	a, err := s.requireMailbox(ctx, req.MailboxIdOrAddress)
+	if err != nil {
+		return nil, err
+	}
+	// Without a cursor, from now: just where to start.
+	if req.Cursor == "" {
+		return &spoolyv1.ListChangesResponse{Created: []*spoolyv1.MessageSummary{}, Updated: []*spoolyv1.MessageSummary{}, Deleted: []string{}, Cursor: s.db.Now()}, nil
+	}
+	limit := defaultChangesLimit
+	if req.Limit != nil {
+		limit = int(*req.Limit)
+	}
+	c, err := s.db.ListChanges(ctx, a.ID, strings.ToLower(req.Cursor), limit)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	return &spoolyv1.ListChangesResponse{
+		Created: summaryProtos(c.Created),
+		Updated: summaryProtos(c.Updated),
+		Deleted: c.Deleted,
+		Cursor:  c.LastEventID,
+		HasMore: c.HasMore,
+	}, nil
 }
 
 func (s *Service) GetMessage(ctx context.Context, req *spoolyv1.GetMessageRequest) (*spoolyv1.GetMessageResponse, error) {
@@ -468,7 +595,14 @@ func (s *Service) GetMessageRaw(ctx context.Context, req *spoolyv1.GetMessageRaw
 	if _, err := s.requireMessage(ctx, req.Id); err != nil {
 		return err
 	}
-	m, rc, err := s.OpenRaw(ctx, req.Id)
+	var m *db.Message
+	var rc io.ReadCloser
+	var err error
+	if req.Offset == nil && req.Length == nil {
+		m, rc, err = s.OpenRaw(ctx, req.Id)
+	} else {
+		m, rc, err = s.openRawRange(ctx, req.Id, req.GetOffset(), req.Length)
+	}
 	if err != nil {
 		return err
 	}
@@ -481,6 +615,27 @@ func (s *Service) GetMessageRaw(ctx context.Context, req *spoolyv1.GetMessageRaw
 	return sendChunks(rc, "message/rfc822", func(chunk *httpbody.HttpBody) error {
 		return stream.Send(&spoolyv1.GetMessageRawResponse{Raw: chunk})
 	})
+}
+
+// openRawRange returns a message and length bytes of its raw source from
+// offset, or to the end with no length; past the end, none.
+func (s *Service) openRawRange(ctx context.Context, id string, offset int64, length *int64) (*db.Message, io.ReadCloser, error) {
+	m, err := s.db.GetMessage(ctx, id)
+	if err != nil {
+		return nil, nil, dbError(err)
+	}
+	n := max(m.Size-offset, 0)
+	if length != nil {
+		n = min(n, *length)
+	}
+	if n == 0 {
+		return m, io.NopCloser(strings.NewReader("")), nil
+	}
+	rc, err := s.store.GetRange(ctx, id, offset, n)
+	if err != nil {
+		return nil, nil, dbError(err)
+	}
+	return m, rc, nil
 }
 
 // sendChunks sends r's content in chunks, the first with contentType, and
@@ -583,17 +738,17 @@ func (s *Service) DeleteMessage(ctx context.Context, req *spoolyv1.DeleteMessage
 	return &spoolyv1.DeleteMessageResponse{}, nil
 }
 
-// EmptyFolder deletes for good every message of an account in folder,
+// EmptyFolder deletes for good every message of a mailbox in folder,
 // which must be trash or junk, and returns how many it deleted.
-func (s *Service) EmptyFolder(ctx context.Context, accountID, folder string) (int, error) {
+func (s *Service) EmptyFolder(ctx context.Context, mailboxID, folder string) (int, error) {
 	if folder != db.FolderTrash && folder != db.FolderJunk {
 		return 0, connect.Errorf(connect.CodeInvalidArgument, "only trash and junk can be emptied, not %q", folder)
 	}
-	if err := s.Require(ctx, accountID); err != nil {
+	if err := s.Require(ctx, mailboxID); err != nil {
 		return 0, err
 	}
 	f := db.View(folder, "")
-	f.AccountID, f.Limit = accountID, 500
+	f.MailboxID, f.Limit = mailboxID, 500
 	deleted := 0
 	for {
 		messages, err := s.db.ListMessages(ctx, f)
@@ -612,16 +767,130 @@ func (s *Service) EmptyFolder(ctx context.Context, accountID, folder string) (in
 	}
 }
 
-// PurgeMessage deletes a message for good: its row, labels, and raw
-// source. Callers check access first.
+// PurgeMessage deletes a message for good: its row and labels, and its raw
+// source, now or, if it can be restored for a while, when Prune expunges it.
+// Callers check access first.
 func (s *Service) PurgeMessage(ctx context.Context, id string) error {
-	if err := s.db.DeleteMessage(ctx, id); err != nil {
+	restorable := s.opts.ExpungeAfter > 0
+	if err := s.db.DeleteMessage(ctx, id, restorable); err != nil {
 		return dbError(err)
 	}
-	// The row is gone, so the message is already unreachable; leftover
-	// bytes from a failed delete are orphans, not corruption.
+	if !restorable {
+		s.deleteRaw(ctx, id)
+	}
+	return nil
+}
+
+// deleteRaw removes a message's raw source. Its row is gone, so it's
+// unreachable already; leftover bytes from a failed delete are orphans, not
+// corruption.
+func (s *Service) deleteRaw(ctx context.Context, id string) {
 	if err := s.store.Delete(ctx, id); err != nil {
 		log.Printf("deleting raw message %s: %v", id, err)
 	}
+}
+
+// Prune expunges messages deleted ExpungeAfter before now, removing their
+// raw sources, then removes changes older than EventsRetention.
+func (s *Service) Prune(ctx context.Context, now time.Time) error {
+	expired, err := s.db.Expirable(ctx, now.Add(-s.opts.ExpungeAfter))
+	if err != nil {
+		return err
+	}
+	for _, m := range expired {
+		s.deleteRaw(ctx, m.ID)
+		if err := s.db.Expunge(ctx, m); err != nil {
+			return err
+		}
+	}
+	n, err := s.db.PruneEvents(ctx, now.Add(-s.opts.EventsRetention))
+	if err != nil {
+		return err
+	}
+	if len(expired) > 0 || n > 0 {
+		log.Printf("expunged %d deleted messages, pruned %d events", len(expired), n)
+	}
 	return nil
+}
+
+// ListDeleted returns a mailbox's messages deleted for good that can still
+// be restored, most recently deleted first. Admins only: it's not in the
+// API, but for the dashboard. Errors are connect errors.
+func (s *Service) ListDeleted(ctx context.Context, mailboxIDOrAddress string) ([]*db.DeletedMessage, error) {
+	if err := s.requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	a, _, err := s.resolveMailbox(ctx, mailboxIDOrAddress)
+	if err != nil {
+		return nil, err
+	}
+	list, err := s.db.ListDeleted(ctx, a.ID)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	return list, nil
+}
+
+// Restore brings back a message deleted for good, until it's expunged,
+// under its ID, in its folder, with its flags and the labels that still
+// exist. It's parsed again from its raw source, which is all the database
+// kept besides its envelope, place, and state. Admins only: it's not in the
+// API, but for the dashboard. Errors are connect errors.
+func (s *Service) Restore(ctx context.Context, id string) (*db.Message, error) {
+	if err := s.requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	del, err := s.db.GetDeleted(ctx, id)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	rc, err := s.store.Get(ctx, id)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	raw, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, "reading raw message").WithCause(err)
+	}
+	parsed, err := mailparse.Parse(raw)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, "parsing raw message").WithCause(err)
+	}
+	m := parsedMessage(del.ID, del.MailboxID, parsed, len(raw))
+	m.MailFrom, m.RcptTo = del.MailFrom, del.RcptTo
+	m.Folder, m.Flags, m.IdempotencyKey, m.ReceivedAt = del.Folder, del.Flags, del.IdempotencyKey, del.ReceivedAt
+	// Labels deleted meanwhile are left off.
+	var labels []string
+	for _, l := range del.Labels {
+		if _, err := s.db.GetLabel(ctx, l); err == nil {
+			labels = append(labels, l)
+		} else if !errors.Is(err, db.ErrLabelNotFound) {
+			return nil, dbError(err)
+		}
+	}
+	restored, err := s.db.RestoreMessage(ctx, m, labels)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	return restored, nil
+}
+
+// parsedMessage is a message with ID id in a mailbox, with what's parsed
+// from its raw source of size bytes.
+func parsedMessage(id, mailboxID string, parsed *mailparse.Parsed, size int) db.Message {
+	return db.Message{
+		ID:        id,
+		MailboxID: mailboxID,
+		From:      parsed.From,
+		To:        parsed.To,
+		Cc:        parsed.Cc,
+		Subject:   parsed.Subject,
+		Date:      parsed.Date,
+		Snippet:   parsed.Snippet,
+		Size:      int64(size),
+		Parts:     parsed.Parts,
+		MessageID: parsed.MessageID,
+		InReplyTo: parsed.InReplyTo,
+	}
 }

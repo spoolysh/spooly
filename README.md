@@ -1,25 +1,25 @@
 # Spooly
 
-Mail backend. Incoming mail is stored per account, raw and parsed, organized
+Mail backend. Incoming mail is stored per mailbox, raw and parsed, organized
 with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
 
 > Early prototype: receiving mail, the API, the dashboard, POP3, and IMAP
 > work; sending mail is next.
 
-- **Accounts**: receive mail for any of their addresses, looked up by ID or
+- **Mailboxes**: receive mail for any of their addresses, looked up by ID or
   address; plus addresses (`hello+billing@`) reach `hello@`, labeled
   `billing`. Shared with the people who work them
 - **Folders, labels, and flags**: as in Proton Mail, a message is in one
   folder (inbox, archive, sent, drafts, junk, trash) and has any labels;
   flags say its state: read, answered, starred, draft, forwarded. Labels are
-  shared by all accounts
+  shared by all mailboxes
 - **Raw first**: every message is kept as received (RFC 5322); headers,
   bodies, and attachments are read from it, only the part asked for
 - **Any inbound**: a Cloudflare Email Routing worker first; anything that can
   POST the raw message works
-- **POP3 and IMAP**: mail clients read an account, with an API key as the
+- **POP3 and IMAP**: mail clients read a mailbox, with an API key as the
   password; over IMAP, labels are folders too
-- **Dashboard**: read mail, move it and label it, and manage accounts,
+- **Dashboard**: read mail, move it and label it, and manage mailboxes,
   labels, and API keys, signed in with Google
 
 ## Quick start
@@ -33,7 +33,7 @@ just serve
 # or: go run ./cmd/spooly serve --migrate --mail
 ```
 
-Visit `http://localhost:8080` to sign in, create an account, and generate an
+Visit `http://localhost:8080` to sign in, create a mailbox, and generate an
 API key. Uses SQLite by default, with PostgreSQL available when you need a
 separate database, and keeps raw messages in `./storage`. With Docker:
 `cp .env.example .env`, fill it in, and `docker compose up`.
@@ -44,7 +44,7 @@ An inbound worker posts the raw message as the body, with the envelope in the
 query string:
 
 ```bash
-curl -X POST "https://spooly.example.com/v1/accounts/hello@spooly.sh/messages?mail_from=bounce@example.com" \
+curl -X POST "https://spooly.example.com/v1/mailboxes/hello@spooly.sh/messages?mail_from=bounce@example.com" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: message/rfc822" \
   -H "Idempotency-Key: 9b2f…" \
@@ -53,12 +53,12 @@ curl -X POST "https://spooly.example.com/v1/accounts/hello@spooly.sh/messages?ma
 
 The address in the path is the envelope recipient (Cloudflare's
 `message.to`) and is kept as the message's `rcpt_to`. Plus addresses reach
-the base account: `hello+news@spooly.sh` lands in `hello@spooly.sh` with
+the base mailbox: `hello+news@spooly.sh` lands in `hello@spooly.sh` with
 `rcpt_to` `hello+news@spooly.sh`. A plus address's tag is also a label, if
 one by that name exists: mail to `hello+billing@spooly.sh` is labeled
 `billing`. An unknown address gets `404`, so the worker can reject the mail.
 Send an `Idempotency-Key` header to make retries safe: a repeat with the
-same key, in the same account, returns the stored message. New messages go
+same key, in the same mailbox, returns the stored message. New messages go
 to the inbox, with no labels or flags.
 
 To mirror an existing mailbox, such as Gmail, pass each message's own
@@ -88,7 +88,7 @@ export default {
     const raw = await new Response(message.raw).arrayBuffer();
     const to = encodeURIComponent(message.to);
     const query = new URLSearchParams({ mail_from: message.from });
-    const resp = await fetch(`${env.SPOOLY_URL}/v1/accounts/${to}/messages?${query}`, {
+    const resp = await fetch(`${env.SPOOLY_URL}/v1/mailboxes/${to}/messages?${query}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.SPOOLY_KEY}`,
@@ -109,15 +109,15 @@ As in Proton Mail, a message's folder says where it is, its labels what it's
 about, and its flags what state it's in.
 
 A message is in exactly one folder: `inbox`, `archive`, `sent`, `drafts`,
-`junk`, or `trash`. Combine a folder with an account to get, say, one
-address's inbox: `GET /v1/accounts/support@spooly.sh/messages?folder=inbox`.
+`junk`, or `trash`. Combine a folder with a mailbox to get, say, one
+address's inbox: `GET /v1/mailboxes/support@spooly.sh/messages?folder=inbox`.
 Without a folder, lists show all mail but junk and trash, as Gmail's All
 Mail; those are listed only under `folder=junk` and `folder=trash`.
 
 A label is just its name: up to 64 lowercase letters and digits, separated by
 single `_` or `-` (`billing`, `customer-issues`). A message can have several,
 and keeps them in any folder: a trashed message drops out of `billing` until
-it's restored, and is back there then. Labels are shared by all accounts, so
+it's restored, and is back there then. Labels are shared by all mailboxes, so
 `billing` means the same across every address. No label can be named after a
 folder or a flag, or `spam`, `unread`, and `starred`.
 
@@ -154,14 +154,82 @@ curl -X PATCH "https://spooly.example.com/v1/messages/$ID" \
 Trash is only a folder: Spooly keeps trashed mail until it's deleted for good,
 with `DELETE /v1/messages/{id}`, from a mail client, or with the dashboard's
 **Delete forever**, and **Empty Trash** or **Delete all junk** for one
-account. Deleting removes the raw source too, for everyone
-with access to the account, and can't be undone.
+mailbox. Deleting is for everyone with access to the mailbox: the message is
+found no more, and [lists of changes](#syncing) report it deleted. For
+`EXPUNGE_AFTER` (7 days by default), an admin can still restore it, which
+brings it back under its ID, in its folder, with its flags and the labels
+that still exist. Then it's expunged: its raw source is removed, and it's
+gone for good. With `EXPUNGE_AFTER=0`, that's at once.
+
+## Syncing
+
+A client that keeps its own copy of a mailbox, such as an IMAP gateway or
+a service working the mail, lists it once and then follows its changes.
+Every change to a message, deleting it included, is logged as an event
+under a [ULID](https://github.com/ulid/spec), so events sort in time, and
+the last one seen is where a client resumes. Events are the organization's,
+one stream for every mailbox: webhooks will send them all, and a mailbox's
+changes are its own of them.
+
+Syncing is over Connect or gRPC only, not mapped to REST:
+`MessageService/ListMessagesBySeq` and `MessageService/ListChanges`.
+
+1. Take a cursor to start from: `ListChanges` without one, as
+   `POST /spooly.v1.MessageService/ListChanges` with
+   `{"mailbox_id_or_address": "hello@spooly.sh"}`, has no changes, only the
+   `cursor` for changes from now. Taken before listing, it misses no change
+   made while the client lists.
+2. List each folder in the order messages came there, with
+   `ListMessagesBySeq` and `{"mailbox_id_or_address": "hello@spooly.sh",
+   "folder": "inbox"}`; a message is in exactly one folder, and its summary
+   has its labels. Each comes with its `seq` there; page with `after`, the
+   last one's seq. A label lists the same way, with `label` for `folder`.
+3. Follow the changes from the cursor: `ListChanges` with
+   `"cursor": "01j9z3…"`. The response
+   has, each once, the messages `created` since, delivered or restored, and
+   those `updated`, there before and changed, both as they are now; the IDs
+   of the ones `deleted`, even those created since; and the `cursor` to pass
+   next time. `has_more` says there's another page right away. A change
+   made while listing can show again: a created message may be listed
+   already, and a deleted one never seen, so apply created and updated
+   messages alike, and ignore deletions of unknown ones. `limit` counts
+   the organization's events read, other mailboxes' included, so a page
+   can have fewer changes.
+
+Lists and changes show messages as summaries: ID, mailbox, folder, labels,
+flags, sender, subject, snippet, date, size, number of attachments, and
+`received_at`. Get a message for its recipients, envelope, and parts.
+
+Events show a couple of seconds after they're logged, once any change
+still committing that sorts before them has: a client resuming after the
+last one it saw misses none.
+
+Every change is kept as an event, named as webhooks will send it:
+`message.created`, `message.updated` (with what changed: the folder moved
+from and to, labels added and removed, flags), `message.deleted`, and
+`message.restored`. An update that changes nothing, such as adding a label
+the message has, is no change. Events are kept for `EVENTS_RETENTION` (30
+days by default), then pruned. A cursor from before the newest event
+pruned fails with `FAILED_PRECONDITION`: start over, from step 1.
+
+A message's seq in a folder or label is higher than that of any message
+that came there before it: moved to the archive, or back from the trash, it
+gets a new one. An IMAP gateway uses seqs as UIDs.
+
+Messages can be updated a thousand at a time, as `PATCH` does each, over
+Connect or gRPC only for now:
+
+```bash
+curl -X POST "https://spooly.example.com/spooly.v1.MessageService/BatchUpdateMessages" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"ids": ["01j9z3…", "..."], "seen": true}'
+```
 
 ## POP3
 
-Mail clients log in with the account's address as the username and an API
+Mail clients log in with the mailbox's address as the username and an API
 key as the password, over plain POP3 with STLS, or POP3S. The maildrop is the
-newest 250 messages of the account's inbox, and the unique ID (UIDL) of a
+newest 250 messages of the mailbox's inbox, and the unique ID (UIDL) of a
 message is its ID. Retrieving a message marks it read for everyone, as with
 WildDuck; set `POP3_MARK_READ=false` to have POP3 leave read status alone.
 
@@ -176,16 +244,16 @@ What a client's delete does is set by `POP3_DELETE`, applied when it quits:
 `keep` matches a WildDuck patched to ignore `DELE`, so clients set to delete
 after downloading can't remove mail that others read through the API.
 
-Several people's clients can use the same account at once, as with WildDuck:
+Several people's clients can use the same mailbox at once, as with WildDuck:
 unlike RFC 1939, a session doesn't lock the maildrop. Each client downloads
 every message once, tracking them by UIDL. With `archive` or `trash`, the
 first client to delete a message removes it from everyone else's maildrop. Any
-API key can log in to any account, as over the API. Without a TLS
+API key can log in to any mailbox, as over the API. Without a TLS
 certificate, logins are plaintext; use that only on a trusted network.
 
 ## IMAP
 
-Mail clients log in as for POP3: the account's address and an API key.
+Mail clients log in as for POP3: the mailbox's address and an API key.
 Spooly's folders come first, then a folder per label, as Proton Mail Bridge
 shows them. A message is in its folder and in each of its labels' folders.
 There's no All Mail folder, which would have clients download every message
@@ -222,17 +290,16 @@ gather flagged mail themselves, and the dashboard has a Starred view.
   included.
 - **Drafts** a client saves go to the Drafts folder, usually with `\Draft`;
   discarding one deletes it for good.
-- **Creating** a folder creates a label, which every account then has.
+- **Creating** a folder creates a label, which every mailbox then has.
   Folders can't be deleted or renamed from a mail client, since labels are
-  shared by all accounts; use the dashboard.
+  shared by all mailboxes; use the dashboard.
 - **Saving** a message (`APPEND`), such as a copy of sent mail, stores it in
   that folder; saved to a label's folder, it's archived, with the label.
 - **New mail and changes** reach clients that have a folder open within a few
   seconds (IDLE).
 
-Messages are numbered per folder (IMAP UIDs) from a per-account sequence:
-a message gets the next number whenever it comes into a folder or gets a
-label, so every folder's numbers only grow, as IMAP requires.
+A message's UID in a folder is its seq there, which a message coming in
+later always has higher, as IMAP requires.
 
 ### Where the mail protocols run
 
@@ -252,26 +319,27 @@ delivered through the API shows up in POP3 and IMAP at once.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/accounts` | Create an account (admins only): `addresses` (the first is primary), `name` |
-| `GET` | `/v1/accounts` | List accounts, newest first. Query: `limit` (1–100, default 50), `after` (last ID of the previous page) |
-| `GET` | `/v1/accounts/{id_or_address}` | Get an account by ID or any of its addresses |
-| `PATCH` | `/v1/accounts/{id_or_address}` | Update an account (admins only): `name`, `addresses` (replaces them, in order) |
-| `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `account_id_or_address`, `mail_from`, `received_at`, `folder`, `labels`, `seen`, `answered`, `flagged`, `draft`, `forwarded`. Header: `Idempotency-Key` |
-| `POST` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
+| `POST` | `/v1/mailboxes` | Create a mailbox (admins only): `addresses` (the first is primary), `name` |
+| `GET` | `/v1/mailboxes` | List mailboxes, newest first. Query: `limit` (1–100, default 50), `after` (last ID of the previous page) |
+| `GET` | `/v1/mailboxes/{id_or_address}` | Get a mailbox by ID or any of its addresses |
+| `PATCH` | `/v1/mailboxes/{id_or_address}` | Update a mailbox (admins only): `name`, `addresses` (replaces them, in order) |
+| `POST` | `/v1/messages` | Store an incoming message. Body: raw message (`message/rfc822`). Query: `mailbox_id_or_address`, `mail_from`, `received_at`, `folder`, `labels`, `seen`, `answered`, `flagged`, `draft`, `forwarded`. Header: `Idempotency-Key` |
+| `POST` | `/v1/mailboxes/{mailbox_id_or_address}/messages` | Same, for one mailbox |
 | `GET` | `/v1/messages/{id}` | Get a message, with its `parts` listed |
-| `GET` | `/v1/messages` | List messages, newest received first. Query: `account_id_or_address`, `folder`, `label`, `seen`, `flagged`, `limit`, `after` |
-| `GET` | `/v1/accounts/{account_id_or_address}/messages` | Same, for one account |
+| `GET` | `/v1/messages` | List messages as summaries, newest received first. Query: `mailbox_id_or_address`, `folder`, `label`, `seen`, `flagged`, `limit`, `after` |
+| `GET` | `/v1/mailboxes/{mailbox_id_or_address}/messages` | Same, for one mailbox |
 | `PATCH` | `/v1/messages/{id}` | Update a message: `folder`, `add_labels`, `remove_labels`, and the flags `seen`, `answered`, `flagged`, `draft`, and `forwarded` |
 | `DELETE` | `/v1/messages/{id}` | Delete a message for good, with its raw source |
 | `GET` | `/v1/messages/{id}/headers` | Get a message's header fields |
 | `GET` | `/v1/messages/{id}/parts/{index}` | Get a part, decoded, by its position in `parts` (from 0): the text or HTML body, or an attachment |
-| `GET` | `/v1/messages/{id}/raw` | Get a message's raw source |
+| `GET` | `/v1/messages/{id}/raw` | Get a message's raw source. Query: `offset`, `length`, for just those bytes |
 | `GET` | `/v1/labels` | List labels |
 | `POST` | `/v1/labels` | Create a label (admins only) |
 | `DELETE` | `/v1/labels/{name}` | Delete a label (admins only) |
 
-Accounts are numbered in order from 1, and messages have 21-character
-[nanoid](https://github.com/ai/nanoid) IDs. Accounts are listed newest
+Mailboxes, messages, and events have [ULID](https://github.com/ulid/spec)
+IDs, lowercase, such as `01j9z3kq7v0m4t2x8r5b6n1c9d`: 26 characters that
+sort by when they were made. Mailboxes are listed newest
 created first, and messages newest received first: by
 `received_at`, which the relay can set, so imported old mail sorts by its
 real date. Lists page by ID: pass the last ID as `after`; a page shorter
@@ -304,7 +372,7 @@ Cloudflare's `message.from` and `message.to`, named as in JMAP's
 `envelope`), not the `From`, `Sender`, and `To` headers; `mail_from` is empty
 for bounces.
 
-An account's address can't contain `+`, since `+` starts a tag. The API
+A mailbox's address can't contain `+`, since `+` starts a tag. The API
 never changes `seen` on its own; the dashboard sets it when you open a
 message. Raw messages, up to 40 MiB each, are kept in object storage under the
 message ID. The database keeps what lists and filters need (addresses,
@@ -334,7 +402,9 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `POP3_MAX_MESSAGES` | How many of the newest inbox messages POP3 lists | `250` |
 | `IMAP_ADDR` | IMAP listen address for `serve --mail` and `mail`, with STARTTLS when a certificate is set; empty disables IMAP | `:1143` |
 | `IMAPS_ADDR` | IMAP over TLS listen address, such as `:993` | — |
-| `ADMIN_EMAILS` | Comma-separated sign-in emails of admins, who manage accounts, labels, and users, and reach every account | — (no admins) |
+| `EVENTS_RETENTION` | How long changes are kept for lists of changes; at least `EXPUNGE_AFTER` | `720h` (30 days) |
+| `EXPUNGE_AFTER` | How long a message deleted for good can still be restored by an admin, its raw source kept; `0` removes it at once | `168h` (7 days) |
+| `ADMIN_EMAILS` | Comma-separated sign-in emails of admins, who manage mailboxes, labels, and users, and reach every mailbox | — (no admins) |
 | `SESSION_SECRET` | HMAC key for signing session cookies | required |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID | required |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret | required |
@@ -348,27 +418,27 @@ Migrations are managed by [goose](https://github.com/pressly/goose): run
 ## Access
 
 Users sign in to the dashboard with Google, and each creates their own API
-keys, which act as them. Admins, listed in `ADMIN_EMAILS`, reach every account
-and manage them: they create accounts, change their addresses, and share
+keys, which act as them. Admins, listed in `ADMIN_EMAILS`, reach every mailbox
+and manage them: they create mailboxes, change their addresses, and share
 them by the email someone signs in with (they sign in once first). Everyone
-else works with the mail of the accounts shared with them. Without access,
-an account and its mail don't exist for a user: lists leave them out and
-lookups answer 404. Labels are shared by every account, so admins create and
+else works with the mail of the mailboxes shared with them. Without access,
+a mailbox and its mail don't exist for a user: lists leave them out and
+lookups answer 404. Labels are shared by every mailbox, so admins create and
 delete them; everyone applies them.
 
 The dashboard's Users page, for admins, lists everyone who has signed in,
-the accounts shared with them, and their API keys. To offboard someone,
+the mailboxes shared with them, and their API keys. To offboard someone,
 revoke their keys, which also signs out their mail clients, and remove
 their access.
 
-An account receives mail for every one of its addresses, which are in
-order: the first is primary, shown for the account. Each address belongs to
-one account. A relay that forwards a whole domain to Spooly, such as a
+A mailbox receives mail for every one of its addresses, which are in
+order: the first is primary, shown for the mailbox. Each address belongs to
+one mailbox. A relay that forwards a whole domain to Spooly, such as a
 Cloudflare catch-all rule, works:
-mail to an address no account has is rejected before it's read. The relay
-uses an admin's API key, so it can deliver to every account.
+mail to an address no mailbox has is rejected before it's read. The relay
+uses an admin's API key, so it can deliver to every mailbox.
 
-Mail clients log in to an account with one of its addresses and the API key
+Mail clients log in to a mailbox with one of its addresses and the API key
 of someone with access.
 
 ## Development
@@ -386,7 +456,7 @@ just build      # build the spooly binary
 | Package | |
 |---|---|
 | [cmd/spooly](cmd/spooly) | Entry point: `serve`, `mail`, and `migrate` |
-| [internal/service](internal/service) | The API: Account, Label, and Message services, mounted for Connect, gRPC, and REST |
+| [internal/service](internal/service) | The API: Mailbox, Label, and Message services, mounted for Connect, gRPC, and REST |
 | [internal/mailparse](internal/mailparse) | Parses raw messages into header fields, bodies, a snippet, and attachments |
 | [internal/db](internal/db) | SQLite and PostgreSQL storage, with migrations |
 | [internal/pop3](internal/pop3) | The POP3 server |

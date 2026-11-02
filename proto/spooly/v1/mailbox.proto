@@ -9,60 +9,60 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/spoolysh/spooly/gen/spooly/v1;spoolyv1";
 
-service AccountService {
-  // Create an account. Admins only.
-  rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse) {
+service MailboxService {
+  // Create a mailbox. Admins only.
+  rpc CreateMailbox(CreateMailboxRequest) returns (CreateMailboxResponse) {
     option (google.api.http) = {
-      post: "/v1/accounts"
+      post: "/v1/mailboxes"
       body: "*"
-      response_body: "account"
+      response_body: "mailbox"
     };
   }
 
-  // List the accounts you can see, newest first by ID. A page shorter than
+  // List the mailboxes you can see, newest first by ID. A page shorter than
   // limit is the last one.
-  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse) {
+  rpc ListMailboxes(ListMailboxesRequest) returns (ListMailboxesResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
     option (google.api.http) = {
-      get: "/v1/accounts"
-      response_body: "accounts"
+      get: "/v1/mailboxes"
+      response_body: "mailboxes"
     };
   }
 
-  // Get an account by ID or any of its addresses. "local+tag@domain" finds
+  // Get a mailbox by ID or any of its addresses. "local+tag@domain" finds
   // "local@domain".
-  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse) {
+  rpc GetMailbox(GetMailboxRequest) returns (GetMailboxResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
     option (google.api.http) = {
-      get: "/v1/accounts/{id_or_address}"
-      response_body: "account"
+      get: "/v1/mailboxes/{id_or_address}"
+      response_body: "mailbox"
     };
   }
 
-  // Update an account's name and addresses. Absent fields are left
+  // Update a mailbox's name and addresses. Absent fields are left
   // unchanged. Admins only.
-  rpc UpdateAccount(UpdateAccountRequest) returns (UpdateAccountResponse) {
+  rpc UpdateMailbox(UpdateMailboxRequest) returns (UpdateMailboxResponse) {
     option idempotency_level = IDEMPOTENT;
     option (google.api.http) = {
-      patch: "/v1/accounts/{id_or_address}"
+      patch: "/v1/mailboxes/{id_or_address}"
       body: "*"
-      response_body: "account"
+      response_body: "mailbox"
     };
   }
 }
 
-// An account receives all mail sent to any of its addresses.
-message Account {
+// A mailbox receives all mail sent to any of its addresses.
+message Mailbox {
   // Assigned in order, from 1.
   string id = 1 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field) = {
       required: true
-      string: {pattern: "^[1-9][0-9]{0,18}$"}
+      string: {pattern: "^[0-9a-hjkmnp-tv-z]{26}$"}
     }
   ];
   // Lowercased, in order, e.g. ["hello@spooly.sh"]. The first is primary:
-  // it's shown for the account. Mail to any of them reaches it.
+  // it's shown for the mailbox. Mail to any of them reaches it.
   repeated string addresses = 2 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).repeated.min_items = 1
@@ -78,9 +78,9 @@ message Account {
   ];
 }
 
-message CreateAccountRequest {
+message CreateMailboxRequest {
   // In order; the first is primary. Each must not belong to another
-  // account.
+  // mailbox.
   repeated string addresses = 1 [(buf.validate.field).repeated = {
     min_items: 1
     max_items: 100
@@ -95,53 +95,53 @@ message CreateAccountRequest {
   optional string name = 2 [(buf.validate.field).string.max_len = 128];
 }
 
-message CreateAccountResponse {
-  Account account = 1 [(buf.validate.field).required = true];
+message CreateMailboxResponse {
+  Mailbox mailbox = 1 [(buf.validate.field).required = true];
 }
 
-message ListAccountsRequest {
+message ListMailboxesRequest {
   // Absent means 50.
   optional int32 limit = 1 [(buf.validate.field).int32 = {
     gte: 1
     lte: 100
   }];
-  // ID of the last account from the previous page.
-  optional string after = 2 [(buf.validate.field).string.pattern = "^[1-9][0-9]{0,18}$"];
+  // ID of the last mailbox from the previous page.
+  optional string after = 2 [(buf.validate.field).string.pattern = "^[0-9a-hjkmnp-tv-z]{26}$"];
 }
 
-message ListAccountsResponse {
-  repeated Account accounts = 1;
+message ListMailboxesResponse {
+  repeated Mailbox mailboxes = 1;
 }
 
-message GetAccountRequest {
+message GetMailboxRequest {
   // Treated as an address if it contains "@".
   string id_or_address = 1 [(buf.validate.field) = {
     required: true
     cel: {
       id: "id_or_address"
-      message: "must be an account ID or an email address"
-      expression: "this.matches('^[1-9][0-9]{0,18}$') || this.isEmail()"
+      message: "must be a mailbox ID or an email address"
+      expression: "this.matches('^[0-9a-hjkmnp-tv-z]{26}$') || this.isEmail()"
     }
   }];
 }
 
-message GetAccountResponse {
-  Account account = 1 [(buf.validate.field).required = true];
+message GetMailboxResponse {
+  Mailbox mailbox = 1 [(buf.validate.field).required = true];
 }
 
-message UpdateAccountRequest {
+message UpdateMailboxRequest {
   // Treated as an address if it contains "@".
   string id_or_address = 1 [(buf.validate.field) = {
     required: true
     cel: {
       id: "id_or_address"
-      message: "must be an account ID or an email address"
-      expression: "this.matches('^[1-9][0-9]{0,18}$') || this.isEmail()"
+      message: "must be a mailbox ID or an email address"
+      expression: "this.matches('^[0-9a-hjkmnp-tv-z]{26}$') || this.isEmail()"
     }
   }];
   optional string name = 2 [(buf.validate.field).string.max_len = 128];
-  // Replaces the account's addresses, in order: the first is primary.
-  // Each must not belong to another account. Empty leaves them unchanged.
+  // Replaces the mailbox's addresses, in order: the first is primary.
+  // Each must not belong to another mailbox. Empty leaves them unchanged.
   repeated string addresses = 3 [(buf.validate.field).repeated = {
     max_items: 100
     unique: true
@@ -154,6 +154,6 @@ message UpdateAccountRequest {
   }];
 }
 
-message UpdateAccountResponse {
-  Account account = 1 [(buf.validate.field).required = true];
+message UpdateMailboxResponse {
+  Mailbox mailbox = 1 [(buf.validate.field).required = true];
 }

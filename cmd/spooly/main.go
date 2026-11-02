@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -272,9 +273,23 @@ func newService(database *db.DB, store storage.Storage) *service.Service {
 		admins = strings.Split(v, ",")
 	}
 	if len(admins) == 0 {
-		log.Printf("ADMIN_EMAILS is empty: no one can create accounts")
+		log.Printf("ADMIN_EMAILS is empty: no one can create mailboxes")
 	}
-	return service.New(database, store, service.Options{Admins: admins})
+	expungeAfter, eventsRetention := duration("EXPUNGE_AFTER", "168h"), duration("EVENTS_RETENTION", "720h")
+	if eventsRetention == 0 || expungeAfter > eventsRetention {
+		log.Fatalf("EVENTS_RETENTION (%s) must be positive and at least EXPUNGE_AFTER (%s)", eventsRetention, expungeAfter)
+	}
+	return service.New(database, store, service.Options{Admins: admins, ExpungeAfter: expungeAfter, EventsRetention: eventsRetention})
+}
+
+// duration reads an environment variable as a duration, such as 720h.
+func duration(key, fallback string) time.Duration {
+	v := env(key, fallback)
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		log.Fatalf("%s: %q isn't a duration such as %s", key, v, fallback)
+	}
+	return d
 }
 
 // openBackend opens the database, migrating it if asked, and raw message
@@ -319,6 +334,17 @@ func cmdMail() {
 
 // cmdServe serves the API and dashboard, and with mail, the mail protocols
 // too, for a single server or local development.
+// prune expunges deleted messages and prunes old changes, now and then
+// hourly.
+func prune(svc *service.Service) {
+	for {
+		if err := svc.Prune(context.Background(), time.Now()); err != nil {
+			log.Printf("pruning: %v", err)
+		}
+		time.Sleep(time.Hour)
+	}
+}
+
 func cmdServe(migrate, mail bool) {
 	port := env("PORT", "8080")
 
@@ -343,6 +369,7 @@ func cmdServe(migrate, mail bool) {
 	)
 
 	svc := newService(database, store)
+	go prune(svc)
 
 	if mail {
 		startMail(database, svc)

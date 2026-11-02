@@ -15,7 +15,7 @@ require (
 	github.com/google/gnostic v0.7.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/joho/godotenv v1.5.1
-	github.com/matoous/go-nanoid/v2 v2.1.0
+	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pressly/goose/v3 v3.29.0
 	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.37.0
