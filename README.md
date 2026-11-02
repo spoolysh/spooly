@@ -4,7 +4,7 @@ Mail backend. Incoming mail is stored per mailbox, raw and parsed, organized
 with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
 
 > Early prototype: receiving mail, the API, and the dashboard work, and
-> POP3 and IMAP through the gateway; sending mail is next.
+> POP3 and IMAP through the bridge; sending mail is next.
 
 - **Mailboxes**: receive mail for any of their addresses, looked up by ID or
   address; plus addresses (`hello+billing@`) reach `hello@`, labeled
@@ -18,7 +18,7 @@ with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
 - **Any inbound**: a Cloudflare Email Routing worker first; anything that can
   POST the raw message works
 - **POP3 and IMAP**: mail clients read a mailbox through the
-  [gateway](#mail-clients), with an API key as the password
+  [bridge](#mail-clients), with an API key as the password
 - **Dashboard**: read mail, move it and label it, and manage mailboxes,
   labels, and API keys, signed in with Google
 
@@ -163,7 +163,7 @@ gone for good. With `EXPUNGE_AFTER=0`, that's at once.
 
 ## Syncing
 
-A client that keeps its own copy of a mailbox, such as an IMAP gateway or
+A client that keeps its own copy of a mailbox, such as an IMAP bridge or
 a service working the mail, lists it once and then follows its changes.
 Every change to a message, deleting it included, is logged as an event,
 numbered in the order changes commit, and the cursor a client passes back
@@ -214,7 +214,7 @@ pruned fails with `FAILED_PRECONDITION`: start over, from step 1.
 
 A message's seq in a folder or label is higher than that of any message
 that came there before it: moved to the archive, or back from the trash, it
-gets a new one. An IMAP gateway uses seqs as UIDs.
+gets a new one. The IMAP bridge uses seqs as UIDs.
 
 Messages can be updated a thousand at a time, as `PATCH` does each, over
 Connect or gRPC only for now:
@@ -228,9 +228,10 @@ curl -X POST "https://spooly.example.com/spooly.v1.MessageService/BatchUpdateMes
 ## Mail clients
 
 Mail clients read mailboxes over POP3 and IMAP through the
-[gateway](../gateway), a separate, stateless server that calls this API
-with each client's API key. It runs wherever raw TCP gets through, such as
-a small VM next to a Cloud Run deployment, or inside a desktop app.
+[bridge](https://github.com/spoolysh/bridge), a separate, stateless
+server that calls this API with each client's API key. It runs wherever
+raw TCP gets through, such as a small VM next to a Cloud Run deployment, or
+inside a desktop app.
 
 ## API
 
@@ -369,4 +370,4 @@ just build      # build the spooly binary
 | [internal/storage](internal/storage) | Raw message storage: local disk, S3-compatible, GCS, or memory |
 | [internal/web](internal/web) | The dashboard |
 | [internal/auth](internal/auth) | Google sign-in and session cookies |
-| [spoolytest](spoolytest) | Runs the API in-process for other modules' tests, such as the gateway's |
+| [spoolytest](spoolytest) | Runs the API in-process for other modules' tests, such as the bridge's |

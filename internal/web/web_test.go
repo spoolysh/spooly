@@ -234,6 +234,7 @@ func TestLabelTitle(t *testing.T) {
 	for name, want := range map[string]string{
 		"":                 "All Mail",
 		"inbox":            "Inbox",
+		"junk":             "Spam",
 		"billing":          "Billing",
 		"customer-issues":  "Customer Issues",
 		"q3_invoices-2026": "Q3 Invoices 2026",
@@ -452,7 +453,7 @@ func TestDeleteForever(t *testing.T) {
 	move(ids[2], db.FolderJunk)
 	move(ids[3], db.FolderTrash)
 
-	if page := u.get("/?folder=trash", 200); !strings.Contains(page, "Choose a mailbox to empty its trash.") || strings.Contains(page, "Empty Trash") {
+	if page := u.get("/?folder=trash", 200); !strings.Contains(page, "Choose a mailbox to empty its Trash.") || strings.Contains(page, "Empty Trash") {
 		t.Error("Trash for all mailboxes offers to empty it")
 	}
 	mailboxID := hello.Mailbox.Id

@@ -343,12 +343,13 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			data.Older = data.Base + "&after=" + template.URL(messages[len(messages)-1].ID)
 		}
 	}
-	// All Mail, the folders with starred mail after the inbox, then the
+	// The folders with starred mail after the inbox, All Mail, then the
 	// labels.
-	views := []view{{}, {Folder: db.FolderInbox}, {Flagged: true}}
+	views := []view{{Folder: db.FolderInbox}, {Flagged: true}}
 	for _, folder := range db.Folders[1:] {
 		views = append(views, view{Folder: folder})
 	}
+	views = append(views, view{})
 	for _, l := range labels {
 		views = append(views, view{Label: l.Name})
 	}
@@ -1070,12 +1071,16 @@ func listURL(address string, v ...view) template.URL {
 	return template.URL("/?" + strings.ReplaceAll(q.Encode(), "%40", "@"))
 }
 
-// labelTitle is how a label is shown: "customer-issues" as "Customer
-// Issues", and "" as all mail. Label names are lowercase ASCII words, so
-// each word's first byte is its first letter.
+// labelTitle is how a label or folder is shown: "customer-issues" as
+// "Customer Issues", "" as all mail, and junk as Spam, as in Gmail. Label
+// names are lowercase ASCII words, so each word's first byte is its first
+// letter.
 func labelTitle(name string) string {
-	if name == "" {
+	switch name {
+	case "":
 		return "All Mail"
+	case db.FolderJunk:
+		return "Spam"
 	}
 	words := strings.FieldsFunc(name, func(r rune) bool { return r == '-' || r == '_' })
 	for i, w := range words {

@@ -11,7 +11,7 @@ import (
 // A message coming into a folder (messages.folder_seq) or getting a label
 // (message_labels.seq) takes its mailbox's next seq, the order of arrivals
 // there: later arrivals always have higher seqs, though not consecutive
-// ones. An IMAP gateway uses them as UIDs.
+// ones. An IMAP bridge uses them as UIDs.
 
 // nextSeq takes a mailbox's next seq.
 func (d *DB) nextSeq(ctx context.Context, tx *sql.Tx, mailboxID string) (uint32, error) {

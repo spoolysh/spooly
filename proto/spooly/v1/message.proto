@@ -296,7 +296,7 @@ service MessageService {
   }
 
   // List a mailbox's messages in a folder or with a label in the order they
-  // came there, each with its seq there, for sync clients: an IMAP gateway
+  // came there, each with its seq there, for sync clients: an IMAP bridge
   // uses seqs as UIDs. Junk and trash show only in their own folders. A
   // page shorter than limit is the last one. Over Connect or gRPC only: not
   // mapped to REST.

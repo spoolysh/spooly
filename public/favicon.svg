@@ -2,9 +2,10 @@
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
       <stop stop-color="#6366F1"/>
-      <stop offset="1" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#4338CA"/>
     </linearGradient>
   </defs>
-  <rect x="2" y="5" width="28" height="22" rx="5" fill="url(#g)"/>
-  <path d="M7 11l9 6 9-6" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#g)"/>
+  <path fill="#fff" d="M7.5 8h17a2.25 2.25 0 0 1 0 4.5H23v7h1.5a2.25 2.25 0 0 1 0 4.5h-17a2.25 2.25 0 0 1 0-4.5H9v-7H7.5a2.25 2.25 0 0 1 0-4.5z"/>
+  <path d="M11.5 14.2l4.5 3.2 4.5-3.2" stroke="#4F46E5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

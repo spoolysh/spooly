@@ -1,5 +1,5 @@
 // Package spoolytest runs Spooly's API in-process for other modules' tests,
-// such as the gateway's: SQLite in a temporary directory, and raw messages
+// such as the bridge's: SQLite in a temporary directory, and raw messages
 // in memory.
 package spoolytest
 

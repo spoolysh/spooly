@@ -36,7 +36,7 @@
       <button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ seen: true })">Mark read</button>
       <button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ seen: false })">Mark unread</button>
       <button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ flagged: true })">Star</button>
-      {{if ne .View.Folder "junk"}}<button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ folder: 'junk' })">Junk</button>{{end}}
+      {{if ne .View.Folder "junk"}}<button type="button" class="tb" data-bulk disabled onclick="bulkUpdate({ folder: 'junk' })">Spam</button>{{end}}
       {{if ne .View.Folder "trash"}}<button type="button" class="tb text-red-600" data-bulk disabled onclick="bulkUpdate({ folder: 'trash' })">Trash</button>{{end}}
       {{if or (eq .View.Folder "trash") (eq .View.Folder "junk")}}<button type="button" class="tb text-red-600" data-bulk disabled onclick="deleteForever()">Delete forever</button>{{end}}
       {{if .Labels}}
@@ -58,14 +58,14 @@
     {{end}}
     {{if and .Total (or (eq .View.Folder "trash") (eq .View.Folder "junk"))}}
     <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-gray-200 px-4 py-2.5 text-sm text-gray-600">
-      <span>{{if eq .View.Folder "trash"}}Messages in Trash stay until you delete them.{{else}}Junk stays until you delete it.{{end}}</span>
+      <span>Messages in {{labelTitle .View.Folder}} stay until you delete them.</span>
       {{if .MailboxID}}
       <button type="button" onclick="emptyFolder(this.dataset)"
         data-url="/ui/mailboxes/{{.MailboxID}}/empty" data-folder="{{.View.Folder}}"
-        data-confirm="Delete all {{.Total}} {{if eq .View.Folder "trash"}}messages in Trash{{else}}junk messages{{end}} of {{.Mailbox}} forever?"
-        class="font-medium text-red-600 hover:text-red-800 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">{{if eq .View.Folder "trash"}}Empty Trash{{else}}Delete all junk{{end}}</button>
+        data-confirm="Delete all {{.Total}} messages in {{labelTitle .View.Folder}} of {{.Mailbox}} forever?"
+        class="font-medium text-red-600 hover:text-red-800 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">Empty {{labelTitle .View.Folder}}</button>
       {{else}}
-      <span class="text-gray-500">Choose a mailbox to empty its {{.View.Folder}}.</span>
+      <span class="text-gray-500">Choose a mailbox to empty its {{labelTitle .View.Folder}}.</span>
       {{end}}
     </div>
     {{end}}

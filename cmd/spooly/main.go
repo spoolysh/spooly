@@ -95,7 +95,7 @@ Commands:
   serve [--migrate]   Start the API and dashboard (default)
   migrate             Run database migrations and exit
 
-Mail clients (POP3, IMAP) connect through the gateway, which calls the API.
+Mail clients (POP3, IMAP) connect through the bridge, which calls the API.
 `
 
 func main() {

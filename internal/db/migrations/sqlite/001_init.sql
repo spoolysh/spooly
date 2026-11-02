@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
 
 -- A message coming into a folder (messages.folder_seq) or getting a label
 -- (message_labels.seq) takes its mailbox's next seq, the order of arrivals
--- there: later arrivals always have higher seqs. An IMAP gateway uses them
+-- there: later arrivals always have higher seqs. An IMAP bridge uses them
 -- as UIDs.
 CREATE TABLE IF NOT EXISTS mailboxes (
     id TEXT PRIMARY KEY,
