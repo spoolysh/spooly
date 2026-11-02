@@ -44,20 +44,6 @@ func NewID() string {
 type DB struct {
 	sql     *sql.DB
 	dialect string
-	// settle is how long after an event's ULID was made readers wait to
-	// see it: a transaction logging it commits within it, so no event
-	// still to commit sorts before what a reader has seen.
-	settle time.Duration
-}
-
-// DefaultSettle is how long readers wait to see events, unless SetSettle
-// says otherwise.
-const DefaultSettle = 2 * time.Second
-
-// SetSettle sets how long readers wait to see events; 0 sees them at once,
-// which only a single writer, as in tests, can afford.
-func (d *DB) SetSettle(settle time.Duration) {
-	d.settle = settle
 }
 
 func New(ctx context.Context, driver, dsn string) (*DB, error) {
@@ -78,7 +64,7 @@ func New(ctx context.Context, driver, dsn string) (*DB, error) {
 		sqlDB.SetMaxOpenConns(1)
 	}
 
-	return &DB{sql: sqlDB, dialect: dialect, settle: DefaultSettle}, nil
+	return &DB{sql: sqlDB, dialect: dialect}, nil
 }
 
 // Migrate runs all pending database migrations for the connected dialect.

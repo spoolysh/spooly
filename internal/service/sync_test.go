@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,17 +101,14 @@ func listBySeq(t *testing.T, srv *httptest.Server, view string, afterSeq uint32,
 }
 
 // startCursor takes a mailbox's cursor for changes from now, as a sync
-// client does before listing it. Tests read events at once, so it keeps a
-// millisecond clear on either side: a cursor is a millisecond's start.
+// client does before listing it.
 func startCursor(t *testing.T, srv *httptest.Server, mailbox string) string {
 	t.Helper()
-	time.Sleep(2 * time.Millisecond)
 	var start changesJSON
 	listChanges(t, srv, mailbox, "", 0, 200, &start)
-	if len(start.Created) != 0 || len(start.Updated) != 0 || len(start.Deleted) != 0 || len(start.Cursor) != 26 {
+	if len(start.Created) != 0 || len(start.Updated) != 0 || len(start.Deleted) != 0 || start.Cursor == "" {
 		t.Fatalf("starting changes = %+v", start)
 	}
-	time.Sleep(2 * time.Millisecond)
 	return start.Cursor
 }
 
@@ -156,7 +154,7 @@ func TestSync(t *testing.T) {
 	// Every change since the start is every message; none since then.
 	var changes changesJSON
 	listChanges(t, srv, "a@spooly.sh", start, 0, 200, &changes)
-	if !slices.Equal(entryIDs(changes.Created), ids) || len(changes.Updated) != 0 || len(changes.Deleted) != 0 || changes.Cursor <= start || changes.HasMore {
+	if !slices.Equal(entryIDs(changes.Created), ids) || len(changes.Updated) != 0 || len(changes.Deleted) != 0 || changes.Cursor == start || changes.HasMore {
 		t.Errorf("changes since the start = %+v", changes)
 	}
 	synced := changes.Cursor
@@ -164,14 +162,7 @@ func TestSync(t *testing.T) {
 	if len(changes.Created) != 0 || len(changes.Updated) != 0 || len(changes.Deleted) != 0 || changes.Cursor != synced {
 		t.Errorf("changes since = %+v", changes)
 	}
-	listChanges(t, srv, "a@spooly.sh", "not-an-event", 0, 400, nil)
-	if synced != strings.ToLower(synced) {
-		t.Errorf("cursor %s isn't lowercase", synced)
-	}
-	listChanges(t, srv, "a@spooly.sh", strings.ToUpper(synced), 0, 200, &changes)
-	if len(changes.Created) != 0 || len(changes.Updated) != 0 || changes.Cursor != synced {
-		t.Errorf("changes since, in uppercase = %+v", changes)
-	}
+	listChanges(t, srv, "a@spooly.sh", "not-a-cursor", 0, 400, nil)
 
 	// Archive one, label two at once, and delete one of those.
 	call(t, srv, "PATCH", "/v1/messages/"+ids[0], "application/json", `{"folder": "archive"}`, 200, nil)
@@ -401,14 +392,14 @@ func TestEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events, err := svc.db.ListEvents(t.Context(), "", 100)
+	events, err := svc.db.ListEvents(t.Context(), 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var got []string
 	for _, e := range events {
 		if e.ObjectID != m.ID {
-			t.Errorf("event %s is for %s", e.ID, e.ObjectID)
+			t.Errorf("event %d is for %s", e.ID, e.ObjectID)
 		}
 		desc := e.Type
 		if e.Data != nil {
@@ -426,32 +417,53 @@ func TestEvents(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	// ULIDs, in the order of the changes.
+	// Numbered in the order of the changes.
 	for i, e := range events {
-		if len(e.ID) != 26 || (i > 0 && e.ID <= events[i-1].ID) {
-			t.Errorf("event %d has ID %s", i+1, e.ID)
+		if e.ID != int64(i)+1 {
+			t.Errorf("event %d has ID %d", i+1, e.ID)
 		}
 	}
 }
 
-// Readers see an event only once it has settled: a change committing late
-// can't sort before what they've seen.
-func TestEventsSettle(t *testing.T) {
-	srv, svc, _ := newTestServerWith(t, Options{})
+// Changes show as soon as they're committed, and a reader following them
+// while others write misses none.
+func TestChangesWhileWriting(t *testing.T) {
+	srv := newTestServer(t)
 	createMailbox(t, srv, "a@spooly.sh")
 	start := startCursor(t, srv, "a@spooly.sh")
-	deliver(t, srv, "a@spooly.sh", "", 1)
-
-	svc.db.SetSettle(time.Hour)
-	var got changesJSON
-	listChanges(t, srv, "a@spooly.sh", start, 0, 200, &got)
-	if len(got.Created) != 0 || got.Cursor != start {
-		t.Errorf("unsettled changes = %+v", got)
+	first := deliver(t, srv, "a@spooly.sh", "", 0)
+	var changes changesJSON
+	listChanges(t, srv, "a@spooly.sh", start, 0, 200, &changes)
+	if !slices.Equal(entryIDs(changes.Created), []string{first.ID}) {
+		t.Fatalf("changes right after delivering = %+v", changes)
 	}
-	svc.db.SetSettle(0)
-	listChanges(t, srv, "a@spooly.sh", start, 0, 200, &got)
-	if len(got.Created) != 1 || got.Cursor <= start {
-		t.Errorf("settled changes = %+v", got)
+
+	const writers = 20
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Go(func() { deliver(t, srv, "a@spooly.sh", "", i+1) })
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	seen := map[string]bool{first.ID: true}
+	cursor := changes.Cursor
+	for finished := false; ; {
+		select {
+		case <-done:
+			finished = true
+		default:
+		}
+		listChanges(t, srv, "a@spooly.sh", cursor, 1, 200, &changes)
+		for _, m := range changes.Created {
+			seen[m.ID] = true
+		}
+		cursor = changes.Cursor
+		if finished && !changes.HasMore && len(changes.Created) == 0 {
+			break
+		}
+	}
+	if len(seen) != writers+1 {
+		t.Errorf("followed %d messages, want %d", len(seen), writers+1)
 	}
 }
 

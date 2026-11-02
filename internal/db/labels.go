@@ -113,7 +113,7 @@ func (d *DB) DeleteLabel(ctx context.Context, name string) error {
 		return err
 	}
 
-	tx, err := d.sql.BeginTx(ctx, nil)
+	tx, err := d.begin(ctx)
 	if err != nil {
 		return fmt.Errorf("deleting label: %w", err)
 	}
@@ -138,9 +138,7 @@ func (d *DB) DeleteLabel(ctx context.Context, name string) error {
 	}
 	for _, m := range messages {
 		c := &change{d: d, tx: tx, mailboxID: m.mailboxID}
-		if err := d.touch(ctx, c, m.id, &MessageChanges{RemoveLabels: []string{name}}); err != nil {
-			return err
-		}
+		d.touch(c, m.id, &MessageChanges{RemoveLabels: []string{name}})
 	}
 	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM message_labels WHERE label = ?`), name); err != nil {
 		return fmt.Errorf("deleting label: %w", err)
@@ -148,5 +146,5 @@ func (d *DB) DeleteLabel(ctx context.Context, name string) error {
 	if _, err := tx.ExecContext(ctx, d.q(`DELETE FROM labels WHERE name = ?`), name); err != nil {
 		return fmt.Errorf("deleting label: %w", err)
 	}
-	return tx.Commit()
+	return d.commit(ctx, tx)
 }

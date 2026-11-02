@@ -127,26 +127,3 @@ func (s *Service) MailboxUsers(ctx context.Context, mailboxID string) ([]db.User
 	}
 	return users, nil
 }
-
-// ErrLoginFailed reports a mail client login that didn't work, for any
-// reason, so it doesn't reveal which mailboxes exist.
-var ErrLoginFailed = errors.New("invalid address or API key")
-
-// LoginMail authenticates a mail client (IMAP, POP3): a mailbox's address
-// and an API key of a user with access to it. It returns the mailbox and a
-// context acting as the user, for the session's service calls.
-func (s *Service) LoginMail(ctx context.Context, address, key string) (*db.Mailbox, context.Context, error) {
-	k, err := s.db.LookupAPIKey(ctx, key)
-	if err != nil {
-		return nil, nil, ErrLoginFailed
-	}
-	a, err := s.db.ResolveMailbox(ctx, strings.ToLower(strings.TrimSpace(address)))
-	if err != nil {
-		return nil, nil, ErrLoginFailed
-	}
-	userCtx := auth.ContextWithUserID(context.Background(), k.UserID)
-	if err := s.Require(userCtx, a.ID); err != nil {
-		return nil, nil, ErrLoginFailed
-	}
-	return a, userCtx, nil
-}

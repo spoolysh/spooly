@@ -8,6 +8,7 @@ import (
 	"log"
 	"mime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -419,6 +420,20 @@ func (s *Service) BatchUpdateMessages(ctx context.Context, req *spoolyv1.BatchUp
 	return resp, nil
 }
 
+// A changes cursor is opaque to clients: it's the ID of the last event
+// read, in decimal, but may become anything ListChanges returns.
+func encodeCursor(eventID int64) string {
+	return strconv.FormatInt(eventID, 10)
+}
+
+func decodeCursor(cursor string) (int64, error) {
+	eventID, err := strconv.ParseInt(cursor, 10, 64)
+	if err != nil || eventID < 0 {
+		return 0, connect.Errorf(connect.CodeInvalidArgument, "cursor: pass one ListChanges returned")
+	}
+	return eventID, nil
+}
+
 // defaultChangesLimit is how many events a page of changes reads unless
 // asked.
 const defaultChangesLimit = 1000
@@ -442,13 +457,21 @@ func (s *Service) ListChanges(ctx context.Context, req *spoolyv1.ListChangesRequ
 	}
 	// Without a cursor, from now: just where to start.
 	if req.Cursor == "" {
-		return &spoolyv1.ListChangesResponse{Created: []*spoolyv1.MessageSummary{}, Updated: []*spoolyv1.MessageSummary{}, Deleted: []string{}, Cursor: s.db.Now()}, nil
+		now, err := s.db.Now(ctx)
+		if err != nil {
+			return nil, dbError(err)
+		}
+		return &spoolyv1.ListChangesResponse{Created: []*spoolyv1.MessageSummary{}, Updated: []*spoolyv1.MessageSummary{}, Deleted: []string{}, Cursor: encodeCursor(now)}, nil
+	}
+	since, err := decodeCursor(req.Cursor)
+	if err != nil {
+		return nil, err
 	}
 	limit := defaultChangesLimit
 	if req.Limit != nil {
 		limit = int(*req.Limit)
 	}
-	c, err := s.db.ListChanges(ctx, a.ID, strings.ToLower(req.Cursor), limit)
+	c, err := s.db.ListChanges(ctx, a.ID, since, limit)
 	if err != nil {
 		return nil, dbError(err)
 	}
@@ -456,7 +479,7 @@ func (s *Service) ListChanges(ctx context.Context, req *spoolyv1.ListChangesRequ
 		Created: summaryProtos(c.Created),
 		Updated: summaryProtos(c.Updated),
 		Deleted: c.Deleted,
-		Cursor:  c.LastEventID,
+		Cursor:  encodeCursor(c.LastID),
 		HasMore: c.HasMore,
 	}, nil
 }

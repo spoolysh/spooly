@@ -806,14 +806,11 @@ message ListChangesRequest {
       expression: "this.matches('^[0-9a-hjkmnp-tv-z]{26}$') || this.isEmail()"
     }
   }];
-  // The cursor from the last changes, a ULID, lowercase, or in any case.
-  // Absent means from now: no changes, just the cursor to start from. A
-  // sync client takes it before listing a mailbox, so it misses no change
-  // made meanwhile.
-  string cursor = 2 [(buf.validate.field) = {
-    ignore: IGNORE_IF_ZERO_VALUE
-    string: {pattern: "^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$"}
-  }];
+  // The cursor from the last changes. Opaque: pass back what ListChanges
+  // returned. Absent means from now: no changes, just the cursor to start
+  // from. A sync client takes it before listing a mailbox, so it misses no
+  // change made meanwhile.
+  string cursor = 2 [(buf.validate.field).string.max_len = 64];
   // How many of the organization's events to read, other mailboxes'
   // included: a page can have fewer changes. Absent means 1000.
   optional int32 limit = 3 [(buf.validate.field).int32 = {
@@ -833,7 +830,7 @@ message ListChangesResponse {
   // IDs of messages deleted since, even those created since: a client that
   // listed the mailbox after taking the cursor may have them.
   repeated string deleted = 3;
-  // The last event read, a lowercase ULID: pass it as cursor next time.
+  // Where these changes end, opaque: pass it as cursor next time.
   string cursor = 4;
   // Whether there are more changes after it already.
   bool has_more = 5;

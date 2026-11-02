@@ -10,7 +10,6 @@ require (
 	connectrpc.com/vanguard v0.5.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.6
-	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/emersion/go-message v0.18.2
 	github.com/google/gnostic v0.7.1
 	github.com/jackc/pgx/v5 v5.11.0
@@ -51,7 +50,6 @@ require (
 	github.com/aws/smithy-go v1.28.7 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
-	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

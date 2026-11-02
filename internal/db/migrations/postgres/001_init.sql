@@ -119,15 +119,18 @@ CREATE TABLE IF NOT EXISTS message_labels (
 CREATE INDEX IF NOT EXISTS idx_message_labels_label ON message_labels(label, message_id);
 CREATE INDEX IF NOT EXISTS idx_message_labels_label_seq ON message_labels(label, seq);
 
--- Every change in the organization, by a ULID: sorted by time, it's also
--- where lists of changes resume. The type, named as webhooks would send it,
--- says which kind of object object_id is, such as message.updated, and data,
--- as JSON, what the type has to say: what an update changed, say. A
--- message.deleted event's data is the mailbox the message was in, and until
--- the message is expunged, under restore, what restoring it needs besides
--- its raw source, which stays in storage until then.
+-- Every change in the organization, by its place in commit order: lists
+-- of changes resume after an ID. IDs come from state's events counter as
+-- the transaction logging them commits: that row stays locked until then,
+-- so no event commits with an ID below one already read. The type, named as
+-- webhooks would send it, says which kind of object object_id is, such as
+-- message.updated, and data, as JSON, what the type has to say: what an
+-- update changed, say. A message.deleted event's data is the mailbox the
+-- message was in, and until the message is expunged, under restore, what
+-- restoring it needs besides its raw source, which stays in storage until
+-- then.
 CREATE TABLE IF NOT EXISTS events (
-    id TEXT PRIMARY KEY,
+    id BIGINT PRIMARY KEY,
     type TEXT NOT NULL,
     object_id TEXT NOT NULL,
     data TEXT,
@@ -137,12 +140,15 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_restorable ON events(object_id)
     WHERE type = 'message.deleted' AND (data::jsonb -> 'restore') IS NOT NULL;
 
--- The organization's state, by name: pruned, the newest event pruned.
--- Changes since an event before it can no longer be told.
+-- The organization's counters, by name: events, the last event's ID;
+-- pruned, the newest event pruned. Changes since an event before it
+-- can no longer be told.
 CREATE TABLE IF NOT EXISTS state (
     name TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+    value BIGINT NOT NULL
 );
+
+INSERT INTO state (name, value) VALUES ('events', 0);
 
 -- +goose Down
 DROP TABLE IF EXISTS state;

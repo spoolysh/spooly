@@ -37,8 +37,6 @@ func newTestDB(t *testing.T) *db.DB {
 	if err := database.Migrate(t.Context()); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	// Tests write one at a time, so they read events at once.
-	database.SetSettle(0)
 	return database
 }
 
@@ -750,14 +748,6 @@ func TestAccess(t *testing.T) {
 	}
 	as("admin", "PATCH", "/v1/mailboxes/help@spooly.sh", "application/json", `{"addresses": ["help@spooly.sh", "contact@domain2.com"]}`, 200, nil)
 	as("admin", "POST", "/v1/mailboxes/support@spooly.sh/messages", "message/rfc822", rawMessage(5), 404, nil)
-
-	// Mail clients log in with access only.
-	if _, _, err := svc.LoginMail(ctx, "vh@spooly.sh", keys["alice"]); err == nil {
-		t.Error("alice logged in to a mailbox not shared with her")
-	}
-	if _, _, err := svc.LoginMail(ctx, "help@spooly.sh", keys["alice"]); err != nil {
-		t.Errorf("alice's login: %v", err)
-	}
 }
 
 // Lists go by received date, not delivery order: imported old mail sorts

@@ -29,14 +29,14 @@ func (d *DB) nextSeq(ctx context.Context, tx *sql.Tx, mailboxID string) (uint32,
 // takes none, and every place one change brings it to shares it.
 type change struct {
 	d         *DB
-	tx        *sql.Tx
+	tx        *txn
 	mailboxID string
 	seq       uint32
 }
 
 func (c *change) next(ctx context.Context) (uint32, error) {
 	if c.seq == 0 {
-		seq, err := c.d.nextSeq(ctx, c.tx, c.mailboxID)
+		seq, err := c.d.nextSeq(ctx, c.tx.Tx, c.mailboxID)
 		if err != nil {
 			return 0, err
 		}
@@ -80,8 +80,8 @@ func (d *DB) relist(ctx context.Context, c *change, messageID string) error {
 }
 
 // touch logs a message as updated with changes.
-func (d *DB) touch(ctx context.Context, c *change, messageID string, changes *MessageChanges) error {
-	return d.logEvent(ctx, c.tx, EventMessageUpdated, messageID, changes)
+func (d *DB) touch(c *change, messageID string, changes *MessageChanges) {
+	d.logEvent(c.tx, EventMessageUpdated, messageID, changes)
 }
 
 // labelsOf returns a message's labels.
@@ -215,25 +215,6 @@ func (d *DB) ListSummaries(ctx context.Context, f MessageFilter) ([]Summary, err
 	return list, nil
 }
 
-// SeqMessage is a message in a view, with its seq there as IMAP
-// numbers it.
-type SeqMessage struct {
-	Seq        uint32
-	ID         string
-	Size       int64
-	ReceivedAt time.Time
-	Flags
-}
-
-// SeqList is a mailbox's messages in a view, by sequence number.
-type SeqList struct {
-	// Since is when the view began: a label's creation, or for folders, the
-	// mailbox's. Only a label deleted and created again starts over.
-	Since    time.Time
-	NextSeq  uint32       // higher than any number in the list, now or later
-	Messages []SeqMessage // by Seq
-}
-
 // SeqBounds returns when a mailbox's seqs in view, a folder or a label,
 // began, and a seq higher than any there, now or later: IMAP's UIDVALIDITY
 // and UIDNEXT.
@@ -250,28 +231,4 @@ func (d *DB) SeqBounds(ctx context.Context, mailboxID, view string) (since time.
 		since = l.CreatedAt
 	}
 	return since, next, nil
-}
-
-// ListBySeq returns all of a mailbox's messages in view, by sequence
-// number: in a folder, or with a label. Junk and trash show only in their
-// own folders.
-func (d *DB) ListBySeq(ctx context.Context, mailboxID, view string) (*SeqList, error) {
-	f := View(view, "")
-	if !IsFolder(view) {
-		f = View("", view)
-	}
-	f.MailboxID, f.Arrival = mailboxID, true
-	summaries, err := d.ListSummaries(ctx, f)
-	if err != nil {
-		return nil, err
-	}
-	// Bounds after, so NextSeq is above every seq listed.
-	list := &SeqList{}
-	if list.Since, list.NextSeq, err = d.SeqBounds(ctx, mailboxID, view); err != nil {
-		return nil, err
-	}
-	for _, m := range summaries {
-		list.Messages = append(list.Messages, SeqMessage{Seq: m.Seq, ID: m.ID, Size: m.Size, ReceivedAt: m.ReceivedAt, Flags: m.Flags})
-	}
-	return list, nil
 }

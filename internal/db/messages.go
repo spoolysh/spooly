@@ -195,7 +195,7 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 		}
 	}
 
-	tx, err := d.sql.BeginTx(ctx, nil)
+	tx, err := d.begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("inserting message: %w", err)
 	}
@@ -210,7 +210,7 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 		}
 		return nil, false, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return nil, false, fmt.Errorf("inserting message: %w", err)
 	}
 
@@ -220,7 +220,7 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 
 // insertMessage inserts m in its folder, with its flags and labels, and logs
 // it as event, created or restored.
-func (d *DB) insertMessage(ctx context.Context, tx *sql.Tx, m Message, labels []string, event string) error {
+func (d *DB) insertMessage(ctx context.Context, tx *txn, m Message, labels []string, event string) error {
 	if m.To == nil {
 		m.To = []Address{}
 	}
@@ -254,9 +254,7 @@ func (d *DB) insertMessage(ctx context.Context, tx *sql.Tx, m Message, labels []
 	if err != nil {
 		return fmt.Errorf("inserting message: %w", err)
 	}
-	if err := d.logEvent(ctx, tx, event, m.ID, nil); err != nil {
-		return err
-	}
+	d.logEvent(tx, event, m.ID, nil)
 	for _, label := range labels {
 		if _, err := d.addLabel(ctx, c, m.ID, label); err != nil {
 			return err
@@ -486,7 +484,7 @@ func (u MessageUpdate) IsZero() bool {
 
 // UpdateMessage applies u to message id and returns the updated message.
 func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Message, error) {
-	tx, err := d.sql.BeginTx(ctx, nil)
+	tx, err := d.begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("updating message: %w", err)
 	}
@@ -574,12 +572,10 @@ func (d *DB) UpdateMessage(ctx context.Context, id string, u MessageUpdate) (*Me
 		*f.changed = f.value
 	}
 	if !c.IsZero() {
-		if err := d.touch(ctx, ch, id, &c); err != nil {
-			return nil, err
-		}
+		d.touch(ch, id, &c)
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return nil, fmt.Errorf("updating message: %w", err)
 	}
 	return d.GetMessage(ctx, id)
@@ -593,33 +589,4 @@ func (d *DB) CountFiltered(ctx context.Context, f MessageFilter) (int, error) {
 		return 0, fmt.Errorf("counting messages: %w", err)
 	}
 	return n, nil
-}
-
-// MaildropEntry is a message as POP3 lists it.
-type MaildropEntry struct {
-	ID   string
-	Size int64
-}
-
-// ListMaildrop returns the IDs and sizes of the newest received limit
-// messages of a mailbox in folder, oldest first, as POP3 numbers them.
-func (d *DB) ListMaildrop(ctx context.Context, mailboxID, folder string, limit int) ([]MaildropEntry, error) {
-	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT id, size FROM messages
-		WHERE mailbox_id = ? AND folder = ?
-		ORDER BY received_at DESC, id DESC LIMIT ?`), mailboxID, folder, limit)
-	if err != nil {
-		return nil, fmt.Errorf("listing maildrop: %w", err)
-	}
-	defer rows.Close()
-
-	var entries []MaildropEntry
-	for rows.Next() {
-		var e MaildropEntry
-		if err := rows.Scan(&e.ID, &e.Size); err != nil {
-			return nil, fmt.Errorf("scanning maildrop: %w", err)
-		}
-		entries = append(entries, e)
-	}
-	slices.Reverse(entries)
-	return entries, rows.Err()
 }

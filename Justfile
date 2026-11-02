@@ -1,13 +1,9 @@
 default:
     @just --list
 
-# Run the API and dashboard, and the mail protocols (POP3, IMAP)
+# Run the API and dashboard
 serve:
-    go run ./cmd/spooly serve --migrate --mail
-
-# Run only the mail protocols (POP3, IMAP)
-mail:
-    go run ./cmd/spooly mail
+    go run ./cmd/spooly serve --migrate
 
 # Build the binary
 build:

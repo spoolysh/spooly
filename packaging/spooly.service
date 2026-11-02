@@ -10,7 +10,6 @@ Group=spooly
 EnvironmentFile=/etc/spooly/spooly.env
 # public/ is read from the working directory
 WorkingDirectory=/usr/share/spooly
-# Add --mail for POP3 and IMAP: systemctl edit spooly
 ExecStart=/usr/bin/spooly serve --migrate
 Restart=on-failure
 StateDirectory=spooly

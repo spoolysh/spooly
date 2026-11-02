@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/oklog/ulid/v2"
 )
 
 // Event types, named as webhooks would send them: the kind of object, then
@@ -44,57 +42,80 @@ func (c *MessageChanges) IsZero() bool {
 // Event is a logged change in the organization: to the object of
 // ObjectID, of the kind its Type starts with.
 type Event struct {
-	ID        string // a ULID: events sort by it, in time
+	ID        int64 // its place in commit order
 	Type      string
 	ObjectID  string
 	Data      json.RawMessage // what the type has to say: MessageChanges for message.updated
 	CreatedAt time.Time
 }
 
-// logEvent logs a change to an object, under a new ULID, with data, if any,
-// as its type has it: an update's changes, or a deleted message, say.
-func (d *DB) logEvent(ctx context.Context, tx *sql.Tx, typ, objectID string, data any) error {
-	var dataJSON sql.NullString
-	if data != nil {
-		dataJSON = sql.NullString{String: marshalJSON(data), Valid: true}
-	}
-	_, err := tx.ExecContext(ctx, d.q(`INSERT INTO events (id, type, object_id, data, created_at)
-		VALUES (?, ?, ?, ?, ?)`), NewID(), typ, objectID, dataJSON, time.Now().UTC())
+// txn is a transaction that may log events, which its commit stores.
+type txn struct {
+	*sql.Tx
+	events []Event
+}
+
+// begin starts a transaction that may log events; end it with commit.
+func (d *DB) begin(ctx context.Context) (*txn, error) {
+	tx, err := d.sql.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("logging event: %w", err)
+		return nil, err
 	}
-	return nil
+	return &txn{Tx: tx}, nil
 }
 
-// ulidAt returns the lowest event ID of time t: every event logged before t
-// sorts below it.
-func ulidAt(t time.Time) string {
-	return strings.ToLower(ulid.MustNew(ulid.Timestamp(t), nil).String())
-}
-
-// settled returns the condition that leaves out events too recent to read:
-// a transaction logging one may still commit an event that sorts before
-// it. Readers that resume after the last event they saw then miss none.
-func (d *DB) settled() (string, []any) {
-	if d.settle == 0 {
-		return "", nil
+// logEvent logs a change to an object, with data, if any, as its type has
+// it: an update's changes, or a deleted message, say. It's stored when tx
+// commits.
+func (d *DB) logEvent(tx *txn, typ, objectID string, data any) {
+	e := Event{Type: typ, ObjectID: objectID, CreatedAt: time.Now().UTC()}
+	if data != nil {
+		e.Data = json.RawMessage(marshalJSON(data))
 	}
-	return ` AND id < ?`, []any{ulidAt(time.Now().Add(-d.settle))}
+	tx.events = append(tx.events, e)
 }
 
-// Now returns a cursor for changes from now: the lowest event ID of the
-// settle window's start. Events after it are still to read; any before it
-// has settled. It needs no event to exist.
-func (d *DB) Now() string {
-	return ulidAt(time.Now().Add(-d.settle))
+// commit stores the events tx logged, in the order logged, then commits
+// it. Their IDs come from the events counter, whose row stays locked until
+// the commit, so they follow commit order: no event commits with an ID
+// below one a reader has seen. The counter is locked last, after any
+// mailbox, so transactions can't deadlock on it.
+func (d *DB) commit(ctx context.Context, tx *txn) error {
+	if n := len(tx.events); n > 0 {
+		var last int64
+		if err := tx.QueryRowContext(ctx, d.q(`UPDATE state SET value = value + ? WHERE name = 'events' RETURNING value`), n).
+			Scan(&last); err != nil {
+			return fmt.Errorf("logging events: %w", err)
+		}
+		for i, e := range tx.events {
+			var data sql.NullString
+			if e.Data != nil {
+				data = sql.NullString{String: string(e.Data), Valid: true}
+			}
+			if _, err := tx.ExecContext(ctx, d.q(`INSERT INTO events (id, type, object_id, data, created_at) VALUES (?, ?, ?, ?, ?)`),
+				last-int64(n)+int64(i)+1, e.Type, e.ObjectID, data, e.CreatedAt); err != nil {
+				return fmt.Errorf("logging events: %w", err)
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// Now returns the ID of the last event committed: changes from now on come
+// after it. It needs no event to exist.
+func (d *DB) Now(ctx context.Context) (int64, error) {
+	var id int64
+	if err := d.sql.QueryRowContext(ctx, `SELECT value FROM state WHERE name = 'events'`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("reading the events counter: %w", err)
+	}
+	return id, nil
 }
 
 // ListEvents returns up to limit of the organization's events after the
-// event since, or from the first, oldest first: what webhooks send.
-func (d *DB) ListEvents(ctx context.Context, since string, limit int) ([]Event, error) {
-	cond, args := d.settled()
+// event since, in commit order: what webhooks send.
+func (d *DB) ListEvents(ctx context.Context, since int64, limit int) ([]Event, error) {
 	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT id, type, object_id, data, created_at FROM events
-		WHERE id > ?`+cond+` ORDER BY id LIMIT ?`), append(append([]any{since}, args...), limit)...)
+		WHERE id > ? ORDER BY id LIMIT ?`), since, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing events: %w", err)
 	}
@@ -116,41 +137,38 @@ func (d *DB) ListEvents(ctx context.Context, since string, limit int) ([]Event, 
 
 // Changes are what changed in a mailbox after an event.
 type Changes struct {
-	Created     []Summary // came into the mailbox, delivered or restored, in their current state
-	Updated     []Summary // there before and changed, in their current state
-	Deleted     []string  // IDs of messages deleted, even those created since
-	LastEventID string    // to list changes after next
-	HasMore     bool      // whether there are more events after LastEventID already
+	Created []Summary // came into the mailbox, delivered or restored, in their current state
+	Updated []Summary // there before and changed, in their current state
+	Deleted []string  // IDs of messages deleted, even those created since
+	LastID  int64     // of the last event read: to list changes after next
+	HasMore bool      // whether there are more events after LastID already
 }
 
 // ErrChangesPruned reports a list of changes since an event pruned since,
 // which it can no longer tell.
 var ErrChangesPruned = errors.New("changes since then were pruned; list the mailbox again")
 
-// ListChanges returns what changed in a mailbox after the event since, or
-// from the first: the messages that came into it and those changed, as
+// ListChanges returns what changed in a mailbox after the event since: the messages that came into it and those changed, as
 // they are now, and those deleted, each listed once. It reads up to limit of the
 // organization's events, those of other mailboxes included, and resumes
 // after the last. Since must not be pruned.
-func (d *DB) ListChanges(ctx context.Context, mailboxID, since string, limit int) (*Changes, error) {
+func (d *DB) ListChanges(ctx context.Context, mailboxID string, since int64, limit int) (*Changes, error) {
 	// Events are pruned oldest first: since is no longer told once an event
 	// after it was.
-	if since != "" {
-		var pruned string
-		err := d.sql.QueryRowContext(ctx, `SELECT value FROM state WHERE name = 'pruned'`).Scan(&pruned)
-		if err != nil && err != sql.ErrNoRows {
-			return nil, fmt.Errorf("listing changes: %w", err)
-		}
-		if since < pruned {
-			return nil, fmt.Errorf("%w: since %s", ErrChangesPruned, since)
-		}
+	var pruned int64
+	err := d.sql.QueryRowContext(ctx, `SELECT value FROM state WHERE name = 'pruned'`).Scan(&pruned)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("listing changes: %w", err)
+	}
+	if since < pruned {
+		return nil, fmt.Errorf("%w: since %d", ErrChangesPruned, since)
 	}
 
 	events, err := d.ListEvents(ctx, since, limit+1)
 	if err != nil {
 		return nil, err
 	}
-	c := &Changes{Created: []Summary{}, Updated: []Summary{}, Deleted: []string{}, LastEventID: since}
+	c := &Changes{Created: []Summary{}, Updated: []Summary{}, Deleted: []string{}, LastID: since}
 	if len(events) > limit {
 		events, c.HasMore = events[:limit], true
 	}
@@ -162,7 +180,7 @@ func (d *DB) ListChanges(ctx context.Context, mailboxID, since string, limit int
 	deletedFrom := map[string]string{}
 	var order []string
 	for n, e := range events {
-		c.LastEventID = e.ID
+		c.LastID = e.ID
 		if !strings.HasPrefix(e.Type, "message.") {
 			continue
 		}
@@ -174,7 +192,7 @@ func (d *DB) ListChanges(ctx context.Context, mailboxID, since string, limit int
 		if e.Type == EventMessageDeleted && e.Data != nil {
 			var data deletedData
 			if err := json.Unmarshal(e.Data, &data); err != nil {
-				return nil, fmt.Errorf("decoding event %s: %w", e.ID, err)
+				return nil, fmt.Errorf("decoding event %d: %w", e.ID, err)
 			}
 			deletedFrom[e.ObjectID] = data.MailboxID
 		}
@@ -264,7 +282,7 @@ func (d *DB) restorable() string {
 // source until then; otherwise the caller removes it now. Deleting a
 // missing message is not an error.
 func (d *DB) DeleteMessage(ctx context.Context, id string, restorable bool) error {
-	tx, err := d.sql.BeginTx(ctx, nil)
+	tx, err := d.begin(ctx)
 	if err != nil {
 		return fmt.Errorf("deleting message: %w", err)
 	}
@@ -276,7 +294,7 @@ func (d *DB) DeleteMessage(ctx context.Context, id string, restorable bool) erro
 	if err != nil {
 		return err
 	}
-	labels, err := d.labelsOf(ctx, tx, id)
+	labels, err := d.labelsOf(ctx, tx.Tx, id)
 	if err != nil {
 		return err
 	}
@@ -295,10 +313,8 @@ func (d *DB) DeleteMessage(ctx context.Context, id string, restorable bool) erro
 			Folder: m.Folder, Labels: labels, IdempotencyKey: m.IdempotencyKey, ReceivedAt: m.ReceivedAt, Flags: m.Flags,
 		}
 	}
-	if err := d.logEvent(ctx, tx, EventMessageDeleted, id, data); err != nil {
-		return err
-	}
-	return tx.Commit()
+	d.logEvent(tx, EventMessageDeleted, id, data)
+	return d.commit(ctx, tx)
 }
 
 const deletedColumns = `object_id, created_at, data`
@@ -373,7 +389,7 @@ func (d *DB) unrestorable(ctx context.Context, q interface {
 // longer restores it, so Expunge leaves its raw source alone. If a message
 // stored since has its idempotency key, m does without.
 func (d *DB) RestoreMessage(ctx context.Context, m Message, labels []string) (*Message, error) {
-	tx, err := d.sql.BeginTx(ctx, nil)
+	tx, err := d.begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("restoring message: %w", err)
 	}
@@ -397,7 +413,7 @@ func (d *DB) RestoreMessage(ctx context.Context, m Message, labels []string) (*M
 	if err := d.insertMessage(ctx, tx, m, labels, EventMessageRestored); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.commit(ctx, tx); err != nil {
 		return nil, fmt.Errorf("restoring message: %w", err)
 	}
 	return d.GetMessage(ctx, m.ID)
@@ -434,30 +450,24 @@ func (d *DB) Expunge(ctx context.Context, m *DeletedMessage) error {
 
 // PruneEvents removes the events logged before, oldest first, and returns
 // how many it removed. None is removed from the first that still restores
-// a message not yet expunged on. The newest it removes is kept as pruned,
-// where lists of changes can start.
+// a message not yet expunged on. The ID of the newest it removes is kept
+// as pruned: lists of changes since before it fail.
 func (d *DB) PruneEvents(ctx context.Context, before time.Time) (int64, error) {
-	tx, err := d.sql.BeginTx(ctx, nil)
+	tx, err := d.begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("pruning events: %w", err)
 	}
 	defer tx.Rollback()
-	bound := ulidAt(before)
-	var oldestRestorable sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT MIN(id) FROM events WHERE `+d.restorable()).Scan(&oldestRestorable); err != nil {
-		return 0, fmt.Errorf("pruning events: %w", err)
-	}
-	if oldestRestorable.Valid && oldestRestorable.String < bound {
-		bound = oldestRestorable.String
-	}
-	var newest sql.NullString
-	if err := tx.QueryRowContext(ctx, d.q(`SELECT MAX(id) FROM events WHERE id < ?`), bound).Scan(&newest); err != nil {
+	var newest sql.NullInt64
+	if err := tx.QueryRowContext(ctx, d.q(`SELECT MAX(id) FROM events WHERE created_at < ?
+		AND id < COALESCE((SELECT MIN(id) FROM events WHERE `+d.restorable()+`), id + 1)`), before.UTC()).
+		Scan(&newest); err != nil {
 		return 0, fmt.Errorf("pruning events: %w", err)
 	}
 	if !newest.Valid {
 		return 0, nil
 	}
-	res, err := tx.ExecContext(ctx, d.q(`DELETE FROM events WHERE id <= ?`), newest.String)
+	res, err := tx.ExecContext(ctx, d.q(`DELETE FROM events WHERE id <= ?`), newest.Int64)
 	if err != nil {
 		return 0, fmt.Errorf("pruning events: %w", err)
 	}
@@ -466,7 +476,7 @@ func (d *DB) PruneEvents(ctx context.Context, before time.Time) (int64, error) {
 		return 0, fmt.Errorf("pruning events: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, d.q(`INSERT INTO state (name, value) VALUES ('pruned', ?)
-		ON CONFLICT (name) DO UPDATE SET value = excluded.value`), newest.String); err != nil {
+		ON CONFLICT (name) DO UPDATE SET value = excluded.value`), newest.Int64); err != nil {
 		return 0, fmt.Errorf("pruning events: %w", err)
 	}
 	return n, tx.Commit()

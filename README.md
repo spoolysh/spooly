@@ -3,8 +3,8 @@
 Mail backend. Incoming mail is stored per mailbox, raw and parsed, organized
 with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
 
-> Early prototype: receiving mail, the API, the dashboard, POP3, and IMAP
-> work; sending mail is next.
+> Early prototype: receiving mail, the API, and the dashboard work, and
+> POP3 and IMAP through the gateway; sending mail is next.
 
 - **Mailboxes**: receive mail for any of their addresses, looked up by ID or
   address; plus addresses (`hello+billing@`) reach `hello@`, labeled
@@ -17,8 +17,8 @@ with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
   bodies, and attachments are read from it, only the part asked for
 - **Any inbound**: a Cloudflare Email Routing worker first; anything that can
   POST the raw message works
-- **POP3 and IMAP**: mail clients read a mailbox, with an API key as the
-  password; over IMAP, labels are folders too
+- **POP3 and IMAP**: mail clients read a mailbox through the
+  [gateway](#mail-clients), with an API key as the password
 - **Dashboard**: read mail, move it and label it, and manage mailboxes,
   labels, and API keys, signed in with Google
 
@@ -30,7 +30,7 @@ export GOOGLE_CLIENT_ID="your-client-id"
 export GOOGLE_CLIENT_SECRET="your-client-secret"
 
 just serve
-# or: go run ./cmd/spooly serve --migrate --mail
+# or: go run ./cmd/spooly serve --migrate
 ```
 
 Visit `http://localhost:8080` to sign in, create a mailbox, and generate an
@@ -165,11 +165,11 @@ gone for good. With `EXPUNGE_AFTER=0`, that's at once.
 
 A client that keeps its own copy of a mailbox, such as an IMAP gateway or
 a service working the mail, lists it once and then follows its changes.
-Every change to a message, deleting it included, is logged as an event
-under a [ULID](https://github.com/ulid/spec), so events sort in time, and
-the last one seen is where a client resumes. Events are the organization's,
-one stream for every mailbox: webhooks will send them all, and a mailbox's
-changes are its own of them.
+Every change to a message, deleting it included, is logged as an event,
+numbered in the order changes commit, and the cursor a client passes back
+says where it resumes; it's opaque, so pass it back as it came. Events
+are the organization's, one stream for every mailbox: webhooks will send
+them all, and a mailbox's changes are its own of them.
 
 Syncing is over Connect or gRPC only, not mapped to REST:
 `MessageService/ListMessagesBySeq` and `MessageService/ListChanges`.
@@ -200,9 +200,9 @@ Lists and changes show messages as summaries: ID, mailbox, folder, labels,
 flags, sender, subject, snippet, date, size, number of attachments, and
 `received_at`. Get a message for its recipients, envelope, and parts.
 
-Events show a couple of seconds after they're logged, once any change
-still committing that sorts before them has: a client resuming after the
-last one it saw misses none.
+A change shows as soon as it's committed. Events are numbered as they
+commit, so none commits behind one a client has seen: a client resuming
+from its cursor misses none.
 
 Every change is kept as an event, named as webhooks will send it:
 `message.created`, `message.updated` (with what changed: the folder moved
@@ -225,95 +225,12 @@ curl -X POST "https://spooly.example.com/spooly.v1.MessageService/BatchUpdateMes
   -d '{"ids": ["01j9z3…", "..."], "seen": true}'
 ```
 
-## POP3
+## Mail clients
 
-Mail clients log in with the mailbox's address as the username and an API
-key as the password, over plain POP3 with STLS, or POP3S. The maildrop is the
-newest 250 messages of the mailbox's inbox, and the unique ID (UIDL) of a
-message is its ID. Retrieving a message marks it read for everyone, as with
-WildDuck; set `POP3_MARK_READ=false` to have POP3 leave read status alone.
-
-What a client's delete does is set by `POP3_DELETE`, applied when it quits:
-
-| `POP3_DELETE` | Deleted messages |
-|---|---|
-| `keep` (default) | Stay in the inbox: `DELE` is accepted and ignored |
-| `archive` | Move to the archive |
-| `trash` | Move to the trash |
-
-`keep` matches a WildDuck patched to ignore `DELE`, so clients set to delete
-after downloading can't remove mail that others read through the API.
-
-Several people's clients can use the same mailbox at once, as with WildDuck:
-unlike RFC 1939, a session doesn't lock the maildrop. Each client downloads
-every message once, tracking them by UIDL. With `archive` or `trash`, the
-first client to delete a message removes it from everyone else's maildrop. Any
-API key can log in to any mailbox, as over the API. Without a TLS
-certificate, logins are plaintext; use that only on a trusted network.
-
-## IMAP
-
-Mail clients log in as for POP3: the mailbox's address and an API key.
-Spooly's folders come first, then a folder per label, as Proton Mail Bridge
-shows them. A message is in its folder and in each of its labels' folders.
-There's no All Mail folder, which would have clients download every message
-twice; the API and the dashboard have All Mail as a view.
-
-| Folder | Holds | Special use |
-|---|---|---|
-| `INBOX` | `inbox` | |
-| `Archive` | `archive` | `\Archive` |
-| `Sent` | `sent` | `\Sent` |
-| `Drafts` | `drafts` | `\Drafts` |
-| `Junk` | `junk` | `\Junk` |
-| `Trash` | `trash` | `\Trash` |
-| `billing`, ... | Each of your labels, under its name | |
-
-Clients find the special folders by their special-use attributes (RFC 6154),
-whatever the names. IMAP's flags are the message's flags, so reading,
-flagging, or replying in a mail client shows in the dashboard and for
-everyone else, and the other way around; the dashboard shows `answered` as ↩
-and `forwarded` as ↪ on the message. Flags aren't folders: mail clients
-gather flagged mail themselves, and the dashboard has a Starred view.
-
-- **Junk and trash** show only in their own folders, as in Gmail. A trashed
-  message keeps its labels and its flags, so it's back in `billing` once
-  restored, with a new UID there. The dashboard works the same way.
-- **Copying** to one of Spooly's folders moves the message there, since it's
-  in only one; to a label's folder, it adds the label. **Moving** also takes
-  it out of where it was: a label's folder loses the label, and from
-  Spooly's folders, unless it's going to another, it goes to the archive.
-- **Deleting** (`\Deleted`) works as in Gmail. It takes effect at once,
-  without waiting for an expunge. From the inbox, the message is archived;
-  from a label's folder, it loses the label; from Archive, Sent, and Junk,
-  it goes to the trash. In Trash, it's deleted for good, raw source
-  included.
-- **Drafts** a client saves go to the Drafts folder, usually with `\Draft`;
-  discarding one deletes it for good.
-- **Creating** a folder creates a label, which every mailbox then has.
-  Folders can't be deleted or renamed from a mail client, since labels are
-  shared by all mailboxes; use the dashboard.
-- **Saving** a message (`APPEND`), such as a copy of sent mail, stores it in
-  that folder; saved to a label's folder, it's archived, with the label.
-- **New mail and changes** reach clients that have a folder open within a few
-  seconds (IDLE).
-
-A message's UID in a folder is its seq there, which a message coming in
-later always has higher, as IMAP requires.
-
-### Where the mail protocols run
-
-| Command | Runs | Where |
-|---|---|---|
-| `spooly serve` | API and dashboard | Anywhere, such as Cloud Run |
-| `spooly serve --mail` | API, dashboard, and mail protocols | A single server, or local development (`just serve`) |
-| `spooly mail` | Mail protocols only: POP3 and IMAP | A host that takes raw TCP, such as a small VM; no Google or session settings |
-
-Cloud Run takes only HTTP, so pair `spooly serve` there with `spooly mail` on a
-VM.
-
-Both need the same PostgreSQL database and S3 or GCS bucket, so mail
-delivered through the API shows up in POP3 and IMAP at once.
+Mail clients read mailboxes over POP3 and IMAP through the
+[gateway](../gateway), a separate, stateless server that calls this API
+with each client's API key. It runs wherever raw TCP gets through, such as
+a small VM next to a Cloud Run deployment, or inside a desktop app.
 
 ## API
 
@@ -337,7 +254,7 @@ delivered through the API shows up in POP3 and IMAP at once.
 | `POST` | `/v1/labels` | Create a label (admins only) |
 | `DELETE` | `/v1/labels/{name}` | Delete a label (admins only) |
 
-Mailboxes, messages, and events have [ULID](https://github.com/ulid/spec)
+Mailboxes and messages have [ULID](https://github.com/ulid/spec)
 IDs, lowercase, such as `01j9z3kq7v0m4t2x8r5b6n1c9d`: 26 characters that
 sort by when they were made. Mailboxes are listed newest
 created first, and messages newest received first: by
@@ -394,14 +311,6 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `LOCAL_STORAGE_DIR` | Directory for `local` storage | `./storage` |
 | `S3_BUCKET` | Bucket for `s3`: Amazon S3, Cloudflare R2, MinIO; credentials from the usual `AWS_*` variables | — |
 | `GCS_BUCKET` | Bucket for `gcs`; credentials from Application Default Credentials | — |
-| `POP3_ADDR` | POP3 listen address for `serve --mail` and `mail`, with STLS when a certificate is set; empty disables POP3 | `:1110` |
-| `POP3S_ADDR` | POP3 over TLS listen address, such as `:995` | — |
-| `MAIL_TLS_CERT`, `MAIL_TLS_KEY` | PEM certificate and key files for the mail protocols (STARTTLS, POP3S, IMAPS); logins then need TLS | — |
-| `POP3_DELETE` | What a client's delete does: `keep`, `archive`, or `trash` | `keep` |
-| `POP3_MARK_READ` | Whether retrieving or deleting a message over POP3 marks it read | `true` |
-| `POP3_MAX_MESSAGES` | How many of the newest inbox messages POP3 lists | `250` |
-| `IMAP_ADDR` | IMAP listen address for `serve --mail` and `mail`, with STARTTLS when a certificate is set; empty disables IMAP | `:1143` |
-| `IMAPS_ADDR` | IMAP over TLS listen address, such as `:993` | — |
 | `EVENTS_RETENTION` | How long changes are kept for lists of changes; at least `EXPUNGE_AFTER` | `720h` (30 days) |
 | `EXPUNGE_AFTER` | How long a message deleted for good can still be restored by an admin, its raw source kept; `0` removes it at once | `168h` (7 days) |
 | `ADMIN_EMAILS` | Comma-separated sign-in emails of admins, who manage mailboxes, labels, and users, and reach every mailbox | — (no admins) |
@@ -411,9 +320,7 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `ALLOWED_DOMAINS` | Comma-separated list of email domains that can sign in | — (all allowed) |
 
 Migrations are managed by [goose](https://github.com/pressly/goose): run
-`spooly migrate`, or start with `spooly serve --migrate`. See
-[Where the mail protocols run](#where-the-mail-protocols-run) for
-`serve --mail` and `mail`.
+`spooly migrate`, or start with `spooly serve --migrate`.
 
 ## Access
 
@@ -455,12 +362,11 @@ just build      # build the spooly binary
 
 | Package | |
 |---|---|
-| [cmd/spooly](cmd/spooly) | Entry point: `serve`, `mail`, and `migrate` |
+| [cmd/spooly](cmd/spooly) | Entry point: `serve` and `migrate` |
 | [internal/service](internal/service) | The API: Mailbox, Label, and Message services, mounted for Connect, gRPC, and REST |
 | [internal/mailparse](internal/mailparse) | Parses raw messages into header fields, bodies, a snippet, and attachments |
 | [internal/db](internal/db) | SQLite and PostgreSQL storage, with migrations |
-| [internal/pop3](internal/pop3) | The POP3 server |
-| [internal/imap](internal/imap) | The IMAP server, on [go-imap](https://github.com/emersion/go-imap) |
 | [internal/storage](internal/storage) | Raw message storage: local disk, S3-compatible, GCS, or memory |
 | [internal/web](internal/web) | The dashboard |
 | [internal/auth](internal/auth) | Google sign-in and session cookies |
+| [spoolytest](spoolytest) | Runs the API in-process for other modules' tests, such as the gateway's |

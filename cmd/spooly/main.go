@@ -3,13 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,8 +19,6 @@ import (
 
 	"github.com/spoolysh/spooly/internal/auth"
 	"github.com/spoolysh/spooly/internal/db"
-	"github.com/spoolysh/spooly/internal/imap"
-	"github.com/spoolysh/spooly/internal/pop3"
 	"github.com/spoolysh/spooly/internal/service"
 	"github.com/spoolysh/spooly/internal/storage"
 	"github.com/spoolysh/spooly/internal/storage/gcs"
@@ -76,117 +71,6 @@ func newStorage() (storage.Storage, error) {
 	}
 }
 
-// mailTLS loads MAIL_TLS_CERT and MAIL_TLS_KEY, the certificate every mail
-// protocol uses. It returns nil if they aren't set.
-func mailTLS() (*tls.Config, error) {
-	cert, key := os.Getenv("MAIL_TLS_CERT"), os.Getenv("MAIL_TLS_KEY")
-	if cert == "" && key == "" {
-		return nil, nil
-	}
-	pair, err := tls.LoadX509KeyPair(cert, key)
-	if err != nil {
-		return nil, fmt.Errorf("loading MAIL_TLS_CERT and MAIL_TLS_KEY: %w", err)
-	}
-	return &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}, nil
-}
-
-// startMail starts the mail protocols, for serve --mail and mail, and exits
-// if none is enabled. Each listens on its plain address (POP3_ADDR, default
-// :1110; IMAP_ADDR, default :1143; empty disables it), and with TLS also on
-// its TLS address (POP3S_ADDR, IMAPS_ADDR), if set. With a certificate, the
-// plain ports offer STARTTLS and logins need TLS; without one, logins are
-// plaintext.
-func startMail(database *db.DB, svc *service.Service) {
-	tlsConfig, err := mailTLS()
-	if err != nil {
-		log.Fatalf("failed to start mail protocols: %v", err)
-	}
-	pop3Started, err := startPOP3(database, svc, tlsConfig)
-	if err != nil {
-		log.Fatalf("failed to start POP3: %v", err)
-	}
-	imapStarted, err := listenMail("IMAP", "IMAP_ADDR", ":1143", "IMAPS_ADDR", tlsConfig,
-		imap.New(database, svc, imap.Options{TLS: tlsConfig}).Serve)
-	if err != nil {
-		log.Fatalf("failed to start IMAP: %v", err)
-	}
-	if !pop3Started && !imapStarted {
-		log.Fatal("no mail protocol is enabled: set POP3_ADDR, POP3S_ADDR, IMAP_ADDR, or IMAPS_ADDR")
-	}
-}
-
-func startPOP3(database *db.DB, svc *service.Service, tlsConfig *tls.Config) (bool, error) {
-	opts := pop3.Options{TLS: tlsConfig, Delete: os.Getenv("POP3_DELETE")}
-	if v := os.Getenv("POP3_MARK_READ"); v != "" {
-		markRead, err := strconv.ParseBool(v)
-		if err != nil {
-			return false, fmt.Errorf("POP3_MARK_READ: %w", err)
-		}
-		opts.KeepUnread = !markRead
-	}
-	if v := os.Getenv("POP3_MAX_MESSAGES"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return false, fmt.Errorf("POP3_MAX_MESSAGES: %w", err)
-		}
-		opts.MaxMessages = n
-	}
-	server, err := pop3.New(database, svc, opts)
-	if err != nil {
-		return false, err
-	}
-	return listenMail("POP3", "POP3_ADDR", ":1110", "POP3S_ADDR", tlsConfig, server.Serve)
-}
-
-// listenMail serves a mail protocol on the address in plainVar (fallback if
-// unset; empty disables it) and with TLS on the one in tlsVar, if set, and
-// reports whether it listens at all.
-func listenMail(name, plainVar, fallback, tlsVar string, tlsConfig *tls.Config, serve func(net.Listener) error) (bool, error) {
-	addr, ok := os.LookupEnv(plainVar)
-	if !ok {
-		addr = fallback
-	}
-	tlsAddr := os.Getenv(tlsVar)
-	if addr == "" && tlsAddr == "" {
-		return false, nil
-	}
-	if tlsAddr != "" && tlsConfig == nil {
-		return false, fmt.Errorf("%s needs MAIL_TLS_CERT and MAIL_TLS_KEY", tlsVar)
-	}
-	listen := func(addr string, secure bool) error {
-		l, err := net.Listen("tcp", addr)
-		if err != nil {
-			return err
-		}
-		if secure {
-			l = tls.NewListener(l, tlsConfig)
-		}
-		go func() {
-			if err := serve(l); err != nil {
-				log.Fatalf("%s server error: %v", name, err)
-			}
-		}()
-		return nil
-	}
-	if addr != "" {
-		if err := listen(addr, false); err != nil {
-			return false, err
-		}
-		if tlsConfig == nil {
-			log.Printf("%s listening on %s without TLS: passwords are sent in plaintext", name, addr)
-		} else {
-			log.Printf("%s listening on %s (STARTTLS)", name, addr)
-		}
-	}
-	if tlsAddr != "" {
-		if err := listen(tlsAddr, true); err != nil {
-			return false, err
-		}
-		log.Printf("%s over TLS listening on %s", name, tlsAddr)
-	}
-	return true, nil
-}
-
 func driverFromDSN(dsn string) string {
 	switch {
 	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
@@ -208,10 +92,10 @@ func openDB() (*db.DB, error) {
 var usage = "Usage: spooly " + Version + ` <command>
 
 Commands:
-  serve [--migrate] [--mail]   Start the API and dashboard (default);
-                               --mail also starts the mail protocols
-  mail                         Start only the mail protocols: POP3, IMAP
-  migrate                      Run database migrations and exit
+  serve [--migrate]   Start the API and dashboard (default)
+  migrate             Run database migrations and exit
+
+Mail clients (POP3, IMAP) connect through the gateway, which calls the API.
 `
 
 func main() {
@@ -222,24 +106,16 @@ func main() {
 		cmd = os.Args[1]
 	}
 
-	migrate, mail := false, false
+	migrate := false
 	for _, arg := range os.Args[1:] {
-		switch arg {
-		case "--migrate":
+		if arg == "--migrate" {
 			migrate = true
-		case "--mail":
-			mail = true
 		}
 	}
 
 	switch cmd {
 	case "serve":
-		cmdServe(migrate, mail)
-	case "mail":
-		if migrate {
-			log.Fatal("spooly mail doesn't migrate: run spooly migrate, or spooly serve --migrate")
-		}
-		cmdMail()
+		cmdServe(migrate)
 	case "migrate":
 		cmdMigrate()
 	case "version", "-v", "--version":
@@ -313,27 +189,6 @@ func openBackend(migrate bool) (*db.DB, storage.Storage) {
 	return database, store
 }
 
-// cmdMail serves only the mail-client protocols, for hosts that take raw TCP
-// when the API runs where only HTTP gets through, such as Cloud Run. Both
-// must share a PostgreSQL database and S3 or GCS storage.
-func cmdMail() {
-	if driverFromDSN(databaseURL()) == "sqlite" {
-		log.Println("warning: SQLite is shared only with a spooly serve on this host; use PostgreSQL when it runs elsewhere")
-	}
-	switch backend := env("STORAGE_BACKEND", "local"); backend {
-	case "local", "memory":
-		log.Printf("warning: %s storage is shared only with a spooly serve on this host; use S3 or GCS when it runs elsewhere", backend)
-	}
-
-	database, store := openBackend(false)
-	defer database.Close(context.Background())
-
-	startMail(database, newService(database, store))
-	select {}
-}
-
-// cmdServe serves the API and dashboard, and with mail, the mail protocols
-// too, for a single server or local development.
 // prune expunges deleted messages and prunes old changes, now and then
 // hourly.
 func prune(svc *service.Service) {
@@ -345,7 +200,8 @@ func prune(svc *service.Service) {
 	}
 }
 
-func cmdServe(migrate, mail bool) {
+// cmdServe serves the API and dashboard.
+func cmdServe(migrate bool) {
 	port := env("PORT", "8080")
 
 	database, store := openBackend(migrate)
@@ -370,10 +226,6 @@ func cmdServe(migrate, mail bool) {
 
 	svc := newService(database, store)
 	go prune(svc)
-
-	if mail {
-		startMail(database, svc)
-	}
 
 	webUI := web.NewHandler(database, sessions, svc, hostname, Version)
 
