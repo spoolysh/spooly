@@ -47,6 +47,14 @@ type DB struct {
 }
 
 func New(ctx context.Context, driver, dsn string) (*DB, error) {
+	if strings.Contains(driver, "sqlite") {
+		// SQLite checks foreign keys only when asked, on each connection.
+		sep := "?"
+		if strings.Contains(dsn, "?") {
+			sep = "&"
+		}
+		dsn += sep + "_pragma=foreign_keys(1)"
+	}
 	sqlDB, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
