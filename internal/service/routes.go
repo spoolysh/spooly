@@ -18,8 +18,8 @@ import (
 )
 
 // Mount registers the API on mux: Connect, gRPC, and gRPC-Web under
-// /spooly.v1.*Service/ and /spooly.v1alpha1.*Service/, and REST under /v1/.
-// Every route authenticates with API keys.
+// /spooly.v1.*Service/ and /spooly.v1alpha1.*Service/, REST under /v1/, and
+// POST /tick, for a scheduler. Every route authenticates with API keys.
 func (s *Service) Mount(mux *http.ServeMux) error {
 	return s.mount(mux, s.requireAPIKey)
 }
@@ -73,6 +73,7 @@ func (s *Service) mount(mux *http.ServeMux, authenticate func(http.Handler) http
 		return fmt.Errorf("mounting REST routes: %w", err)
 	}
 	mux.Handle("/v1/", authenticate(rest))
+	mux.Handle("POST /tick", authenticate(http.HandlerFunc(s.tick)))
 	return nil
 }
 
@@ -93,8 +94,12 @@ func (m wrappingMux) Handle(pattern string, h http.Handler) {
 func apiError(w http.ResponseWriter, message string, status int) {
 	code := connect.CodeUnknown
 	switch status {
+	case http.StatusBadRequest:
+		code = connect.CodeInvalidArgument
 	case http.StatusUnauthorized:
 		code = connect.CodeUnauthenticated
+	case http.StatusForbidden:
+		code = connect.CodePermissionDenied
 	case http.StatusInternalServerError:
 		code = connect.CodeInternal
 	}

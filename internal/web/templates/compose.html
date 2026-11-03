@@ -47,7 +47,7 @@
     const send = document.getElementById('send');
     send.disabled = true;
     const resp = await fetch('/ui/messages/send', { method: 'POST', body: new FormData(e.target) });
-    if (resp.ok) { location.href = '/' + (await resp.json()).id; return; }
+    if (resp.ok) { location.href = (await resp.json()).url; return; }
     const error = document.getElementById('send-error');
     error.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
     error.classList.remove('hidden');

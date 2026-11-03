@@ -16,7 +16,7 @@ import (
 func TestPrepare(t *testing.T) {
 	now := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
 	raw := "From: a@spooly.sh\r\nTo: b@example.com\r\nBcc: =?utf-8?q?Jos=C3=A9?= <jose@example.com>, c@example.com\r\nSubject: Hi\r\n\r\nBody\r\n"
-	out, err := Prepare([]byte(raw), "spooly.sh", now)
+	out, err := Prepare([]byte(raw), "01m6gvsrf4xg721yzy9snbyp40", "spooly.sh", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,17 +27,18 @@ func TestPrepare(t *testing.T) {
 	if strings.Join(out.Bcc, ",") != "jose@example.com,c@example.com" {
 		t.Errorf("Bcc = %v", out.Bcc)
 	}
-	if !strings.Contains(got, "@spooly.sh>\r\n") || !strings.Contains(got, "Date: Tue, 03 Nov 2026 10:00:00 +0000\r\n") {
+	if !strings.Contains(got, "@spooly.sh>\r\n") || !strings.Contains(got, "Date: Tue, 03 Nov 2026 10:00:00 +0000\r\n") || !strings.Contains(got, "X-Spooly-Message-Id: 01m6gvsrf4xg721yzy9snbyp40\r\n") {
 		t.Errorf("no Message-Id or Date:\n%s", got)
 	}
 	if !strings.Contains(got, "From: a@spooly.sh\r\nTo: b@example.com\r\n") || !strings.HasSuffix(got, "\r\n\r\nBody\r\n") {
 		t.Errorf("changed the rest:\n%s", got)
 	}
 
-	// A message that has them keeps its own.
-	raw = "From: a@spooly.sh\r\nMessage-ID: <mine@spooly.sh>\r\nDate: Mon, 02 Nov 2026 09:00:00 +0000\r\n\r\nBody\r\n"
-	out, err = Prepare([]byte(raw), "spooly.sh", now)
-	if err != nil || string(out.Raw) != raw || out.Bcc != nil {
+	// A message that has them keeps its own; a Spooly ID it has is replaced.
+	raw = "From: a@spooly.sh\r\nMessage-ID: <mine@spooly.sh>\r\nDate: Mon, 02 Nov 2026 09:00:00 +0000\r\nX-Spooly-Message-Id: forged\r\n\r\nBody\r\n"
+	out, err = Prepare([]byte(raw), "01m6gvsrf4xg721yzy9snbyp40", "spooly.sh", now)
+	want := "X-Spooly-Message-Id: 01m6gvsrf4xg721yzy9snbyp40\r\nFrom: a@spooly.sh\r\nMessage-ID: <mine@spooly.sh>\r\nDate: Mon, 02 Nov 2026 09:00:00 +0000\r\n\r\nBody\r\n"
+	if err != nil || string(out.Raw) != want || out.Bcc != nil {
 		t.Errorf("Prepare(%q) = %q, %v, %v", raw, out.Raw, out.Bcc, err)
 	}
 }
@@ -84,8 +85,8 @@ func TestSendDue(t *testing.T) {
 
 	f := &fake{down: true}
 	spool := NewSpool(database, store, f)
-	if err := spool.SendDue(ctx); err != nil {
-		t.Fatal(err)
+	if n, err := spool.SendDue(ctx); err != nil || n != 2 {
+		t.Fatalf("tried %d, %v", n, err)
 	}
 	list, _ := database.ListDeliveries(ctx, db.DeliveryFilter{})
 	for _, d := range list {
@@ -95,16 +96,16 @@ func TestSendDue(t *testing.T) {
 	}
 	// Deferred to later, they're not due yet.
 	f.down = false
-	if err := spool.SendDue(ctx); err != nil || f.sent != 0 {
-		t.Errorf("sent %d before due, %v", f.sent, err)
+	if n, err := spool.SendDue(ctx); err != nil || n != 0 || f.sent != 0 {
+		t.Errorf("tried %d, sent %d before due, %v", n, f.sent, err)
 	}
 	for _, d := range list {
 		if _, err := database.RetryDelivery(ctx, d.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := spool.SendDue(ctx); err != nil || f.sent != 1 {
-		t.Errorf("sent %d once due, %v", f.sent, err)
+	if n, err := spool.SendDue(ctx); err != nil || n != 2 || f.sent != 1 {
+		t.Errorf("tried %d, sent %d once due, %v", n, f.sent, err)
 	}
 	list, _ = database.ListDeliveries(ctx, db.DeliveryFilter{})
 	for _, d := range list {

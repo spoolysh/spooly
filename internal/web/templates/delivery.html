@@ -19,7 +19,7 @@
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-6">
   <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 px-6 py-4 text-sm">
     <dt class="text-gray-500">Message</dt>
-    <dd class="min-w-0">{{if .Subject}}<a href="/{{$d.MessageID}}" class="text-brand-600 hover:text-brand-800 hover:underline">{{.Subject}}</a>{{else}}<span class="text-gray-400">(deleted)</span>{{end}}</dd>
+    <dd class="min-w-0">{{if .Kept}}<a href="/{{$d.MessageID}}" class="text-brand-600 hover:text-brand-800 hover:underline">{{.Title}}</a>{{else}}<span class="text-gray-700">{{.Title}}</span> <span class="text-xs text-gray-400">(not kept: deleted, or sent without a copy)</span>{{end}}</dd>
     <dt class="text-gray-500">From</dt>
     <dd class="min-w-0 break-all text-gray-700">{{.Mailbox}}</dd>
     <dt class="text-gray-500">Transport</dt>

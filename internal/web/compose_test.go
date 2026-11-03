@@ -14,6 +14,7 @@ import (
 	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
 	"github.com/spoolysh/spooly/internal/db"
 	"github.com/spoolysh/spooly/internal/delivery"
+	"github.com/spoolysh/spooly/internal/service"
 )
 
 // relay takes every recipient but nobody@, which it refuses for good, and
@@ -60,8 +61,9 @@ func TestCompose(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("send: %d %s", rec.Code, rec.Body)
 	}
-	var sent struct{ ID string }
+	var sent struct{ URL, ID string }
 	json.Unmarshal(rec.Body.Bytes(), &sent)
+	sent.ID = strings.TrimPrefix(sent.URL, "/") // kept in Sent: the message's page
 	if len(rl.raw) != 1 {
 		t.Fatalf("relay got %d messages", len(rl.raw))
 	}
@@ -224,4 +226,29 @@ func link(t *testing.T, page, text string) string {
 	start := strings.LastIndex(page[:i], `href="`) + len(`href="`)
 	end := strings.Index(page[start:], `"`)
 	return html.UnescapeString(page[start : start+end])
+}
+
+// Without a copy kept, sending goes to the delivery's page, and lists show
+// the message as not kept.
+func TestComposeWithoutSentCopy(t *testing.T) {
+	u := newTestUIOptions(t, service.Options{Transport: &relay{}, NoSentCopy: true})
+	resp, err := u.svc.CreateMailbox(u.asAdmin(), &spoolyv1.CreateMailboxRequest{Addresses: []string{"hello@spooly.sh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"mailbox": {resp.Mailbox.Id}, "to": {"ann@example.com"}, "subject": {"Receipt"}, "key": {"k1"}}
+	rec := u.do("POST", "/ui/messages/send", "application/x-www-form-urlencoded", form.Encode(), true)
+	var sent struct{ URL string }
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &sent) != nil || !strings.HasPrefix(sent.URL, "/deliveries/") {
+		t.Fatalf("send: %d %s", rec.Code, rec.Body)
+	}
+	if page := u.get(sent.URL, 200); !strings.Contains(page, "Receipt") || !strings.Contains(page, "not kept") || !strings.Contains(page, ">Sent<") {
+		t.Errorf("delivery page: %s", page)
+	}
+	if list := u.get("/deliveries", 200); !strings.Contains(list, "Receipt") || !strings.Contains(list, "(not kept)") {
+		t.Error("deliveries page doesn't show the subject as not kept")
+	}
+	if inbox := u.get("/?folder=sent", 200); strings.Contains(inbox, "Receipt") {
+		t.Error("Sent shows a message sent without a copy")
+	}
 }

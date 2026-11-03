@@ -123,11 +123,17 @@ CREATE INDEX IF NOT EXISTS idx_message_labels_label_seq ON message_labels(label,
 -- until handed over, deferred while retrying, sent once the transport took
 -- it, then what the transport tells of it later: delayed, delivered,
 -- bounced, or complained. Failed when Spooly gave up. Deleting the message
--- deletes its deliveries, cancelling those still to go.
+-- deletes its deliveries, cancelling those still to go. A message sent
+-- without a copy in Sent has no row in messages: its raw source is kept
+-- under message_id only until its deliveries are done, and they keep what
+-- they need of it.
 CREATE TABLE IF NOT EXISTS deliveries (
     id TEXT PRIMARY KEY,
-    message_id TEXT NOT NULL REFERENCES messages(id),
+    message_id TEXT NOT NULL,
     mailbox_id TEXT NOT NULL REFERENCES mailboxes(id),
+    -- The envelope sender, and the subject, for lists.
+    mail_from TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
     recipient TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('queued', 'deferred', 'sent', 'delayed', 'delivered', 'bounced', 'complained', 'failed')),
     transport TEXT NOT NULL,
@@ -141,7 +147,10 @@ CREATE TABLE IF NOT EXISTS deliveries (
     detail TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
-    UNIQUE (message_id, recipient)
+    -- The send's idempotency key, if any: a repeat finds its deliveries.
+    idempotency_key TEXT,
+    UNIQUE (message_id, recipient),
+    UNIQUE (mailbox_id, idempotency_key, recipient)
 );
 
 CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(next_attempt_at) WHERE status IN ('queued', 'deferred');

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"log"
 	"slices"
@@ -24,6 +25,8 @@ func deliveryProto(d *db.Delivery) *spoolyv1alpha1.Delivery {
 		Id:                 d.ID,
 		MessageId:          d.MessageID,
 		MailboxId:          d.MailboxID,
+		MailFrom:           d.MailFrom,
+		Subject:            d.Subject,
 		Recipient:          d.Recipient,
 		Status:             d.Status,
 		Transport:          d.Transport,
@@ -56,14 +59,19 @@ func (s *Service) SendMessage(ctx context.Context, req *spoolyv1alpha1.SendMessa
 	if err != nil {
 		return nil, err
 	}
-	return &spoolyv1alpha1.SendMessageResponse{Message: messageProto(m), Deliveries: deliveryProtos(deliveries)}, nil
+	resp := &spoolyv1alpha1.SendMessageResponse{Deliveries: deliveryProtos(deliveries)}
+	if m != nil {
+		resp.Message = messageProto(m)
+	}
+	return resp, nil
 }
 
 // Send sends raw from the mailbox its From is an address of, if ctx's user
-// can see it: it stores it in the sent folder, read, queues a delivery to
-// each of rcptTo, or if none, of its To, Cc, and Bcc, and tries them. A
-// repeated idempotency key returns the stored message and its deliveries,
-// sending nothing again.
+// can see it: it stores it in the sent folder, read, unless NoSentCopy,
+// queues a delivery to each of rcptTo, or if none, of its To, Cc, and Bcc,
+// and tries them. Without a copy kept, the message is nil. A repeated
+// idempotency key returns the stored message and its deliveries, sending
+// nothing again.
 func (s *Service) Send(ctx context.Context, raw []byte, rcptTo []string, key string) (*db.Message, []*db.Delivery, error) {
 	if s.spool == nil {
 		return nil, nil, connect.Errorf(connect.CodeFailedPrecondition, "sending is off: set MAIL_TRANSPORT")
@@ -82,7 +90,13 @@ func (s *Service) Send(ctx context.Context, raw []byte, rcptTo []string, key str
 		return nil, nil, err
 	}
 	_, domain, _ := strings.Cut(from, "@")
-	out, err := delivery.Prepare(raw, domain, time.Now())
+	id := db.NewID()
+	// A copy only comes back to be known for one that was kept.
+	stamp := id
+	if s.opts.NoSentCopy {
+		stamp = ""
+	}
+	out, err := delivery.Prepare(raw, stamp, domain, time.Now())
 	if err != nil {
 		return nil, nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
@@ -103,8 +117,15 @@ func (s *Service) Send(ctx context.Context, raw []byte, rcptTo []string, key str
 		return nil, nil, connect.Errorf(connect.CodeInvalidArgument, "%d recipients: at most %d", len(recipients), MaxRecipients)
 	}
 
+	if s.opts.NoSentCopy {
+		deliveries, err := s.sendUnkept(ctx, db.Outgoing{
+			MessageID: id, MailboxID: a.ID, MailFrom: from, Subject: parsed.Subject,
+			IdempotencyKey: key, Transport: s.spool.Transport(), Recipients: recipients,
+		}, out.Raw)
+		return nil, deliveries, err
+	}
 	m, err := s.Store(ctx, Incoming{
-		MailboxIDOrAddress: a.ID, MailFrom: from, IdempotencyKey: key, Raw: out.Raw,
+		ID: id, MailboxIDOrAddress: a.ID, MailFrom: from, IdempotencyKey: key, Raw: out.Raw,
 		Folder: db.FolderSent, Flags: db.Flags{Seen: true}, Recipients: recipients,
 	})
 	if err != nil {
@@ -119,6 +140,31 @@ func (s *Service) Send(ctx context.Context, raw []byte, rcptTo []string, key str
 		return nil, nil, dbError(err)
 	}
 	return m, deliveries, nil
+}
+
+// sendUnkept sends raw, kept only in storage until its deliveries are done,
+// and returns them.
+func (s *Service) sendUnkept(ctx context.Context, o db.Outgoing, raw []byte) ([]*db.Delivery, error) {
+	if _, err := s.store.Put(ctx, o.MessageID, "message/rfc822", bytes.NewReader(raw)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, "storing raw message").WithCause(err)
+	}
+	deliveries, created, err := s.db.QueueDeliveries(ctx, o)
+	if err != nil || !created {
+		s.deleteRaw(ctx, o.MessageID)
+	}
+	if err != nil {
+		return nil, dbError(err)
+	}
+	if !created {
+		return deliveries, nil // a repeat: sent already, or on its way
+	}
+	if err := s.spool.Send(ctx, o.MessageID); err != nil {
+		log.Printf("sending message %s: %v", o.MessageID, err)
+	}
+	if deliveries, err = s.db.ListDeliveries(ctx, db.DeliveryFilter{MessageIDs: []string{o.MessageID}}); err != nil {
+		return nil, dbError(err)
+	}
+	return deliveries, nil
 }
 
 // uniqueAddresses lowercases addresses and drops repeats and empties.
@@ -186,15 +232,6 @@ func (s *Service) Retry(ctx context.Context, id string) (*db.Delivery, error) {
 		return nil, dbError(err)
 	}
 	return d, nil
-}
-
-// SendDue tries the deliveries that are due, such as those deferred until
-// now. It does nothing without a transport.
-func (s *Service) SendDue(ctx context.Context) error {
-	if s.spool == nil {
-		return nil
-	}
-	return s.spool.SendDue(ctx)
 }
 
 // Sends reports whether the service has a transport to send with.

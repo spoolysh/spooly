@@ -39,8 +39,10 @@ var ErrNotRetryable = errors.New("only a deferred or failed delivery can be retr
 // Delivery is a sent message's way to one recipient.
 type Delivery struct {
 	ID                 string
-	MessageID          string
+	MessageID          string // which may be gone, or never kept
 	MailboxID          string
+	MailFrom           string // the envelope sender
+	Subject            string
 	Recipient          string
 	Status             string
 	Transport          string
@@ -57,13 +59,13 @@ func (d *Delivery) Pending() bool {
 	return d.Status == DeliveryQueued || d.Status == DeliveryDeferred
 }
 
-const deliveryColumns = `id, message_id, mailbox_id, recipient, status, transport, transport_message_id,
+const deliveryColumns = `id, message_id, mailbox_id, mail_from, subject, recipient, status, transport, transport_message_id,
 	attempts, next_attempt_at, detail, created_at, updated_at`
 
 func scanDelivery(row interface{ Scan(...any) error }) (*Delivery, error) {
 	var d Delivery
 	var next sql.NullTime
-	if err := row.Scan(&d.ID, &d.MessageID, &d.MailboxID, &d.Recipient, &d.Status, &d.Transport, &d.TransportMessageID,
+	if err := row.Scan(&d.ID, &d.MessageID, &d.MailboxID, &d.MailFrom, &d.Subject, &d.Recipient, &d.Status, &d.Transport, &d.TransportMessageID,
 		&d.Attempts, &next, &d.Detail, &d.CreatedAt, &d.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -89,23 +91,91 @@ func scanDeliveries(rows *sql.Rows) ([]*Delivery, error) {
 	return list, nil
 }
 
+// Outgoing is a message to deliver: its ID, whose raw source storage has,
+// its mailbox, sender, and subject, the send's idempotency key, if any,
+// and the transport and recipients.
+type Outgoing struct {
+	MessageID, MailboxID, MailFrom, Subject string
+	IdempotencyKey                          string
+	Transport                               string
+	Recipients                              []string
+}
+
 // SendMessage stores m, as CreateMessage does, with a queued delivery to
 // each recipient through transport, due now. A repeated idempotency key
 // returns the stored message, whose deliveries are already there.
 func (d *DB) SendMessage(ctx context.Context, m Message, labels []string, transport string, recipients []string) (stored *Message, created bool, err error) {
 	return d.createMessage(ctx, m, labels, func(tx *txn) error {
-		now := time.Now().UTC()
-		for _, rcpt := range recipients {
-			id := NewID()
-			_, err := tx.ExecContext(ctx, d.q(`INSERT INTO deliveries (id, message_id, mailbox_id, recipient, status, transport, next_attempt_at, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`), id, m.ID, m.MailboxID, rcpt, DeliveryQueued, transport, now, now, now)
-			if err != nil {
-				return fmt.Errorf("queueing delivery: %w", err)
-			}
-			d.logEvent(tx, EventDeliveryCreated, id, deliveryData{MessageID: m.ID, MailboxID: m.MailboxID, Status: DeliveryQueued})
-		}
-		return nil
+		return d.queue(ctx, tx, Outgoing{
+			MessageID: m.ID, MailboxID: m.MailboxID, MailFrom: m.MailFrom, Subject: m.Subject,
+			IdempotencyKey: m.IdempotencyKey, Transport: transport, Recipients: recipients,
+		})
 	})
+}
+
+// QueueDeliveries queues o's deliveries, due now, for a message kept
+// nowhere but in storage until they're done. A repeated idempotency key
+// returns the deliveries it queued, with created false.
+func (d *DB) QueueDeliveries(ctx context.Context, o Outgoing) (deliveries []*Delivery, created bool, err error) {
+	repeat := func() ([]*Delivery, error) {
+		if o.IdempotencyKey == "" {
+			return nil, nil
+		}
+		return d.ListDeliveries(ctx, DeliveryFilter{MailboxID: o.MailboxID, IdempotencyKey: o.IdempotencyKey})
+	}
+	if list, err := repeat(); err != nil || len(list) > 0 {
+		return list, false, err
+	}
+	tx, err := d.begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("queueing deliveries: %w", err)
+	}
+	defer tx.Rollback()
+	if err := d.queue(ctx, tx, o); err != nil {
+		tx.Rollback()
+		// Lost a race with a retry using the same idempotency key.
+		if list, rerr := repeat(); rerr == nil && len(list) > 0 {
+			return list, false, nil
+		}
+		return nil, false, err
+	}
+	if err := d.commit(ctx, tx); err != nil {
+		return nil, false, fmt.Errorf("queueing deliveries: %w", err)
+	}
+	deliveries, err = d.ListDeliveries(ctx, DeliveryFilter{MessageIDs: []string{o.MessageID}})
+	return deliveries, true, err
+}
+
+// queue inserts a queued delivery to each of o's recipients, due now.
+func (d *DB) queue(ctx context.Context, tx *txn, o Outgoing) error {
+	var key sql.NullString
+	if o.IdempotencyKey != "" {
+		key = sql.NullString{String: o.IdempotencyKey, Valid: true}
+	}
+	now := time.Now().UTC()
+	for _, rcpt := range o.Recipients {
+		id := NewID()
+		_, err := tx.ExecContext(ctx, d.q(`INSERT INTO deliveries (id, message_id, mailbox_id, mail_from, subject, recipient,
+				status, transport, next_attempt_at, idempotency_key, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			id, o.MessageID, o.MailboxID, o.MailFrom, o.Subject, rcpt, DeliveryQueued, o.Transport, now, key, now, now)
+		if err != nil {
+			return fmt.Errorf("queueing delivery: %w", err)
+		}
+		d.logEvent(tx, EventDeliveryCreated, id, deliveryData{MessageID: o.MessageID, MailboxID: o.MailboxID, Status: DeliveryQueued})
+	}
+	return nil
+}
+
+// Pending reports whether any delivery of a message is still to go.
+func (d *DB) Pending(ctx context.Context, messageID string) (bool, error) {
+	var n int
+	err := d.sql.QueryRowContext(ctx, d.q(`SELECT COUNT(*) FROM deliveries
+		WHERE message_id = ? AND status IN ('queued', 'deferred')`), messageID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("checking deliveries: %w", err)
+	}
+	return n > 0, nil
 }
 
 // deliveryData is a delivery event's data: whose delivery it is, what it
@@ -137,10 +207,12 @@ type DeliveryFilter struct {
 	MailboxID  string
 	MailboxIDs []string // nil means all; empty, none
 	Status     string
-	After      string // the ID of the last delivery of the previous page
-	Before     string // the ID of the first delivery of the next page, for Newest
-	Newest     bool   // newest first
-	Limit      int
+	// IdempotencyKey selects those a send with it queued.
+	IdempotencyKey string
+	After          string // the ID of the last delivery of the previous page
+	Before         string // the ID of the first delivery of the next page, for Newest
+	Newest         bool   // newest first
+	Limit          int
 }
 
 // ListDeliveries returns the deliveries f selects, oldest first unless
@@ -171,6 +243,9 @@ func (d *DB) ListDeliveries(ctx context.Context, f DeliveryFilter) ([]*Delivery,
 	}
 	if f.Status != "" {
 		where, args = append(where, `status = ?`), append(args, f.Status)
+	}
+	if f.IdempotencyKey != "" {
+		where, args = append(where, `idempotency_key = ?`), append(args, f.IdempotencyKey)
 	}
 	if f.After != "" {
 		where, args = append(where, `id > ?`), append(args, f.After)

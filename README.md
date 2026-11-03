@@ -138,6 +138,29 @@ try and the transport's reply, and retries by hand; and `RetryDelivery`
 tries a deferred or failed one again now. The dashboard shows the same: on
 the message, on each delivery's page, and to admins under Deliveries.
 Deleting a message deletes its deliveries, cancelling those still to go.
+
+Spooly retries nothing on its own: deferred deliveries go when `POST /tick`
+is called, with an admin's key. It runs the jobs that are due: `deliveries`
+each time, and `prune` (expunging deleted messages, pruning old events) at
+most hourly, and answers what each did; `?job=deliveries` runs just one.
+Have a scheduler call it every minute, such as Cloud Scheduler on Cloud Run:
+
+```bash
+gcloud scheduler jobs create http spooly-tick --schedule="* * * * *" \
+  --uri="https://spooly.example.com/tick" --http-method=POST \
+  --headers="Authorization=Bearer $KEY"
+```
+
+What Spooly sends carries `X-Spooly-Message-Id`, its ID for the message. A
+copy that comes back to the same mailbox, such as a mail client saving it to
+Sent, or Gmail's Sent copy synced in, is that message, not a new one.
+
+With `SAVE_TO_SENT=false`, as for an app sending notifications, no copy is
+kept: the response has no message, only the deliveries, which keep its
+sender and subject. Its raw source stays in storage only until they're
+done, and it carries no `X-Spooly-Message-Id`, so a copy that comes back is
+a message of its own. A repeated `Idempotency-Key` still finds the
+deliveries, and sends nothing again.
 The events are `delivery.created` and `delivery.updated`, in the same
 stream as messages': kept for `EVENTS_RETENTION`, after which a delivery
 keeps only its last status and reply.
@@ -379,6 +402,7 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `MAIL_TRANSPORT` | How mail is sent: `smtp`, `cloudflare`, or empty to turn sending off | — (off) |
 | `SMTP_HOST`, `SMTP_PORT` | The relay for `smtp`; port 465 is TLS from the start, any other must offer STARTTLS | —, `587` |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | The relay's login, if it takes one | — |
+| `SAVE_TO_SENT` | Keep a copy of sent mail in the mailbox's Sent folder; `false` keeps only each recipient's delivery | `true` |
 | `CLOUDFLARE_API_TOKEN` | An API token with Email Sending: Edit, for `cloudflare` | — |
 | `ADMIN_EMAILS` | Comma-separated sign-in emails of admins, who manage mailboxes, labels, and users, and reach every mailbox | — (no admins) |
 | `SESSION_SECRET` | HMAC key for signing session cookies | required |

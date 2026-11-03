@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect/v2"
 
@@ -65,8 +66,14 @@ const outgoing = "From: Hello <hello@spooly.sh>\r\nTo: Ann <ann@example.com>\r\n
 
 func newSender(t *testing.T) (*Service, context.Context, *fakeTransport) {
 	t.Helper()
+	return newSenderWith(t, Options{})
+}
+
+func newSenderWith(t *testing.T, opts Options) (*Service, context.Context, *fakeTransport) {
+	t.Helper()
 	ft := &fakeTransport{refuse: map[string]*delivery.Error{}}
-	srv, svc, ctx := newTestServerWith(t, Options{Transport: ft})
+	opts.Transport = ft
+	srv, svc, ctx := newTestServerWith(t, opts)
 	createMailbox(t, srv, "hello@spooly.sh")
 	return svc, ctx, ft
 }
@@ -316,5 +323,157 @@ func TestListDeliveries(t *testing.T) {
 	}
 	if got := list(&spoolyv1alpha1.ListDeliveriesRequest{MessageIds: []string{first.Message.Id}}); len(got) != 0 {
 		t.Errorf("after deleting the message: %d", len(got))
+	}
+}
+
+// A copy of a sent message that comes back to its mailbox, as Gmail's Sent
+// copy or a mail client's, is that message; elsewhere, it's a new one.
+func TestSentCopy(t *testing.T) {
+	svc, ctx, ft := newSender(t)
+	sent := send(t, svc, ctx, outgoing).Message
+	sentCopy := ft.sent()[0].raw
+	if !strings.Contains(sentCopy, "X-Spooly-Message-Id: "+sent.Id+"\r\n") {
+		t.Fatalf("sent message lacks its ID:\n%s", sentCopy)
+	}
+
+	back, err := svc.Store(ctx, Incoming{MailboxIDOrAddress: "hello@spooly.sh", Raw: []byte(sentCopy), Folder: db.FolderSent})
+	if err != nil || back.ID != sent.Id {
+		t.Errorf("the sentCopy is %v, %v; want the sent message %s", back, err, sent.Id)
+	}
+	list, err := svc.db.ListMessages(ctx, db.MessageFilter{Limit: 10})
+	if err != nil || len(list) != 1 {
+		t.Errorf("%d messages after the sentCopy came back, %v", len(list), err)
+	}
+
+	if _, err := svc.db.CreateMailbox(ctx, db.Mailbox{ID: db.NewID(), Addresses: []string{"other@spooly.sh"}}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := svc.Store(ctx, Incoming{MailboxIDOrAddress: "other@spooly.sh", Raw: []byte(sentCopy)})
+	if err != nil || other.ID == sent.Id {
+		t.Errorf("in another mailbox, the sentCopy is %v, %v", other, err)
+	}
+}
+
+// RunJobs sends what's due each time, and prunes at most hourly.
+func TestRunJobs(t *testing.T) {
+	svc, ctx, ft := newSender(t)
+	ft.down = true
+	resp := send(t, svc, ctx, outgoing)
+	ft.down = false
+	runs := func(only ...string) string {
+		t.Helper()
+		list, err := svc.RunJobs(ctx, only...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, run := range list {
+			out = append(out, fmt.Sprintf("%s %t %s", run.Job, run.Ran, run.Detail))
+		}
+		return strings.Join(out, "; ")
+	}
+
+	// Deferred a minute ahead, they're not due yet; prune is, the first time.
+	if got := runs(); got != "deliveries true tried 0 deliveries; prune true expunged deleted messages and pruned old events" {
+		t.Errorf("first run: %s", got)
+	}
+	past := time.Now().Add(-time.Second)
+	for _, d := range resp.Deliveries {
+		if _, err := svc.db.RecordDelivery(ctx, d.Id, db.DeliveryAttempt{Status: db.DeliveryDeferred, NextAttemptAt: &past}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := runs(); got != "deliveries true tried 3 deliveries; prune false ran within the last 1h0m0s" || len(ft.sent()) != 1 {
+		t.Errorf("second run: %s; %d sends", got, len(ft.sent()))
+	}
+	if got := runs(JobPrune); got != "prune false ran within the last 1h0m0s" {
+		t.Errorf("prune only: %s", got)
+	}
+}
+
+// A scheduler calls POST /tick.
+func TestTick(t *testing.T) {
+	srv, _, _ := newTestServerWith(t, Options{})
+	var out struct {
+		Runs []JobRun `json:"runs"`
+	}
+	call(t, srv, "POST", "/tick?job=deliveries", "", "", 200, &out)
+	if len(out.Runs) != 1 || out.Runs[0].Job != "deliveries" || out.Runs[0].Ran || !strings.Contains(out.Runs[0].Detail, "MAIL_TRANSPORT") {
+		t.Errorf("POST /tick?job=deliveries = %+v", out.Runs)
+	}
+	call(t, srv, "POST", "/tick", "", "", 200, &out)
+	if len(out.Runs) != 2 {
+		t.Errorf("POST /tick = %+v", out.Runs)
+	}
+	call(t, srv, "POST", "/tick?job=nope", "", "", 400, nil)
+	call(t, srv, "GET", "/tick", "", "", 405, nil)
+}
+
+// With no copy kept in Sent, nothing lands in the mailbox: the raw source
+// is kept only until its deliveries are done, and they keep its sender and
+// subject.
+func TestSendWithoutSentCopy(t *testing.T) {
+	svc, ctx, ft := newSenderWith(t, Options{NoSentCopy: true})
+	ft.refuse["bob@example.com"] = &delivery.Error{Temporary: true, Detail: "450 4.2.1 try later"}
+	resp := send(t, svc, ctx, outgoing)
+	if resp.Message != nil {
+		t.Errorf("a message came back: %v", resp.Message.Id)
+	}
+	if list, err := svc.db.ListMessages(ctx, db.MessageFilter{Limit: 10}); err != nil || len(list) != 0 {
+		t.Errorf("%d messages in the mailbox, %v", len(list), err)
+	}
+	want := map[string]string{"ann@example.com": "sent", "bob@example.com": "deferred", "secret@example.com": "sent"}
+	if got := statuses(resp.Deliveries); !maps(got, want) {
+		t.Fatalf("deliveries %v, want %v", got, want)
+	}
+	id := resp.Deliveries[0].MessageId
+	for _, d := range resp.Deliveries {
+		if d.MailFrom != "hello@spooly.sh" || d.Subject != "Hi" || d.MessageId != id {
+			t.Errorf("delivery %+v", d)
+		}
+	}
+	if strings.Contains(ft.sent()[0].raw, "X-Spooly-Message-Id") {
+		t.Error("an unkept message carries its ID")
+	}
+
+	// Kept while bob's delivery waits, and gone once it's done.
+	stored := func() bool {
+		t.Helper()
+		r, err := svc.store.Get(ctx, id)
+		if err == nil {
+			r.Close()
+		}
+		return err == nil
+	}
+	if !stored() {
+		t.Fatal("raw source gone while a delivery waits")
+	}
+	var bob string
+	for _, d := range resp.Deliveries {
+		if d.Recipient == "bob@example.com" {
+			bob = d.Id
+		}
+	}
+	ft.refuse["bob@example.com"] = &delivery.Error{Detail: "550 5.1.1 user unknown"}
+	if r, err := svc.RetryDelivery(ctx, &spoolyv1alpha1.RetryDeliveryRequest{Id: bob}); err != nil || r.Delivery.Status != "failed" {
+		t.Fatalf("retry: %+v, %v", r, err)
+	}
+	if stored() {
+		t.Error("raw source kept after the last delivery was done")
+	}
+	// Retried after that, there's nothing to send.
+	if r, err := svc.RetryDelivery(ctx, &spoolyv1alpha1.RetryDeliveryRequest{Id: bob}); err != nil || r.Delivery.Status != "failed" || r.Delivery.Detail != "the message is no longer kept" {
+		t.Errorf("retry after release: %+v, %v", r, err)
+	}
+
+	// A repeat of a send sends nothing again.
+	sends := len(ft.sent())
+	_, first, err := svc.Send(ctx, []byte(outgoing), []string{"carol@example.com"}, "key-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, again, err := svc.Send(ctx, []byte(outgoing), []string{"carol@example.com"}, "key-1")
+	if err != nil || m != nil || len(again) != 1 || again[0].ID != first[0].ID || len(ft.sent()) != sends+1 {
+		t.Errorf("repeat: %v, %v, %v; %d sends", m, again, err, len(ft.sent())-sends)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
 	spoolyv1alpha1 "github.com/spoolysh/spooly/gen/spooly/v1alpha1"
 	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/delivery"
 	"github.com/spoolysh/spooly/internal/mailparse"
 )
 
@@ -96,6 +97,8 @@ type Incoming struct {
 	Flags db.Flags
 	// Recipients, if any, get the message through the transport: Send's.
 	Recipients []string
+	// ID is the message's, if chosen already; empty means a new one.
+	ID string
 }
 
 // Store parses and stores an incoming message in the mailbox it was sent
@@ -144,9 +147,22 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 		receivedAt = time.Now()
 	}
 
+	// A copy of a message Spooly sent from this mailbox, such as one a mail
+	// client saves, or Gmail's in its Sent folder, is that message.
+	if in.Recipients == nil {
+		if sent := sentID(parsed); sent != "" {
+			if m, err := s.db.GetMessage(ctx, sent); err == nil && m.MailboxID == mailbox.ID {
+				return m, nil
+			}
+		}
+	}
+
 	// Bytes first, then the row, so a stored row always has its source; if
 	// the insert fails or finds a retry's message, the new bytes are removed.
-	id := db.NewID()
+	id := in.ID
+	if id == "" {
+		id = db.NewID()
+	}
 	if _, err := s.store.Put(ctx, id, "message/rfc822", bytes.NewReader(in.Raw)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, "storing raw message").WithCause(err)
 	}
@@ -213,6 +229,24 @@ func (s *Service) CreateMessage(ctx context.Context, stream spoolyv1connect.Mess
 		return nil, err
 	}
 	return &spoolyv1.CreateMessageResponse{Message: messageProto(m)}, nil
+}
+
+// sentID returns the ID of the message Spooly sent that parsed is a copy
+// of, from its MessageIDHeader, or empty.
+func sentID(parsed *mailparse.Parsed) string {
+	for _, h := range parsed.Headers {
+		if strings.EqualFold(h.Name, delivery.MessageIDHeader) {
+			if id := strings.TrimSpace(h.Value); isMessageID(id) {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// isMessageID reports whether s looks like a message ID: a lowercase ULID.
+func isMessageID(s string) bool {
+	return len(s) == 26 && strings.Trim(s, "0123456789abcdefghjkmnpqrstvwxyz") == ""
 }
 
 // plusTag returns the tag of a plus address, "billing" for

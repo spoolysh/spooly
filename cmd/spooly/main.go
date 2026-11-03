@@ -160,8 +160,13 @@ func newService(database *db.DB, store storage.Storage, transport delivery.Trans
 	if eventsRetention != 0 && expungeAfter > eventsRetention {
 		log.Fatalf("EVENTS_RETENTION (%s) must be at least EXPUNGE_AFTER (%s), or 0 to keep events forever", eventsRetention, expungeAfter)
 	}
+	saveToSent, err := strconv.ParseBool(env("SAVE_TO_SENT", "true"))
+	if err != nil {
+		log.Fatalf("SAVE_TO_SENT: %q isn't true or false", os.Getenv("SAVE_TO_SENT"))
+	}
 	return service.New(database, store, service.Options{
-		Admins: admins, ExpungeAfter: expungeAfter, EventsRetention: eventsRetention, Transport: transport,
+		Admins: admins, ExpungeAfter: expungeAfter, EventsRetention: eventsRetention,
+		Transport: transport, NoSentCopy: !saveToSent,
 	})
 }
 
@@ -239,17 +244,6 @@ func prune(svc *service.Service) {
 	}
 }
 
-// deliver sends deliveries as they come due, such as those deferred, every
-// half a minute.
-func deliver(svc *service.Service) {
-	for {
-		if err := svc.SendDue(context.Background()); err != nil {
-			log.Printf("sending: %v", err)
-		}
-		time.Sleep(30 * time.Second)
-	}
-}
-
 // cmdServe serves the API and dashboard.
 func cmdServe(migrate bool) {
 	port := env("PORT", "8080")
@@ -276,7 +270,6 @@ func cmdServe(migrate bool) {
 
 	svc := newService(database, store, newTransport(hostname))
 	go prune(svc)
-	go deliver(svc)
 
 	webUI := web.NewHandler(database, sessions, svc, hostname, Version)
 

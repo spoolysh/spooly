@@ -40,6 +40,12 @@ func newTestUI(t *testing.T) *testUI {
 // newTestUIWith is newTestUI sending mail through transport.
 func newTestUIWith(t *testing.T, transport delivery.Transport) *testUI {
 	t.Helper()
+	return newTestUIOptions(t, service.Options{Transport: transport})
+}
+
+// newTestUIOptions is newTestUI with opts, which it adds the admin to.
+func newTestUIOptions(t *testing.T, opts service.Options) *testUI {
+	t.Helper()
 
 	database, err := db.New(t.Context(), "sqlite", "file:"+t.TempDir()+"/test.db")
 	if err != nil {
@@ -58,7 +64,8 @@ func newTestUIWith(t *testing.T, transport delivery.Transport) *testUI {
 	rec := httptest.NewRecorder()
 	sessions.SetSession(rec, user.ID)
 
-	svc := service.New(database, memory.New(), service.Options{Admins: []string{"vh@example.com"}, Transport: transport})
+	opts.Admins = append(opts.Admins, "vh@example.com")
+	svc := service.New(database, memory.New(), opts)
 	mux := http.NewServeMux()
 	NewHandler(database, sessions, svc, "http://example.test", "dev").RegisterRoutes(mux)
 	// Mount the API too, as cmd/spooly does, so routes that clash with it

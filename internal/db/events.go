@@ -486,3 +486,17 @@ func (d *DB) PruneEvents(ctx context.Context, before time.Time) (int64, error) {
 	}
 	return n, tx.Commit()
 }
+
+// ClaimJob claims job's turn at now if it last ran at least every before:
+// it records now as its last run and reports true; otherwise false. Two
+// callers at once can't both claim it.
+func (d *DB) ClaimJob(ctx context.Context, job string, now time.Time, every time.Duration) (bool, error) {
+	res, err := d.sql.ExecContext(ctx, d.q(`INSERT INTO state (name, value) VALUES (?, ?)
+		ON CONFLICT (name) DO UPDATE SET value = excluded.value WHERE state.value <= ?`),
+		"job."+job, now.Unix(), now.Add(-every).Unix())
+	if err != nil {
+		return false, fmt.Errorf("claiming job %s: %w", job, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}

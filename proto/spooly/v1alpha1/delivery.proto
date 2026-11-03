@@ -33,14 +33,19 @@ message Delivery {
   string id = 1 [(google.api.field_behavior) = REQUIRED];
   string message_id = 2 [(google.api.field_behavior) = REQUIRED];
   string mailbox_id = 3 [(google.api.field_behavior) = REQUIRED];
-  string recipient = 4 [(google.api.field_behavior) = REQUIRED];
+  // The envelope sender (MAIL FROM) and subject of the message, which a
+  // delivery keeps: the message may be gone, or never kept, as with
+  // SAVE_TO_SENT=false.
+  string mail_from = 4 [(google.api.field_behavior) = REQUIRED];
+  string subject = 5 [(google.api.field_behavior) = REQUIRED];
+  string recipient = 6 [(google.api.field_behavior) = REQUIRED];
   // queued: waiting to be handed to the transport. deferred: the transport
   // failed for now; tried again at next_attempt_at. sent: the transport
   // took it. Then, as far as the transport tells: delayed, still trying;
   // delivered, the recipient's server took it; bounced; complained, the
   // recipient reported it as spam. failed: Spooly gave up, as the transport
   // refused it for good, or for too long.
-  string status = 5 [
+  string status = 7 [
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       in: [
@@ -57,19 +62,19 @@ message Delivery {
   ];
   // The transport, as MAIL_TRANSPORT names it, such as smtp or cloudflare;
   // more may come.
-  string transport = 6 [(google.api.field_behavior) = REQUIRED];
+  string transport = 8 [(google.api.field_behavior) = REQUIRED];
   // The transport's ID for the message, to look it up there. Empty if it
   // gave none.
-  string transport_message_id = 7 [(google.api.field_behavior) = REQUIRED];
+  string transport_message_id = 9 [(google.api.field_behavior) = REQUIRED];
   // How many times it was handed to the transport.
-  int32 attempts = 8 [(google.api.field_behavior) = REQUIRED];
+  int32 attempts = 10 [(google.api.field_behavior) = REQUIRED];
   // While queued or deferred: when it's tried next.
-  optional google.protobuf.Timestamp next_attempt_at = 9;
+  optional google.protobuf.Timestamp next_attempt_at = 11;
   // The transport's last reply, or why it failed, such as "550 5.1.1 user
   // unknown".
-  string detail = 10 [(google.api.field_behavior) = REQUIRED];
-  google.protobuf.Timestamp created_at = 11 [(google.api.field_behavior) = REQUIRED];
-  google.protobuf.Timestamp updated_at = 12 [(google.api.field_behavior) = REQUIRED];
+  string detail = 12 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.Timestamp created_at = 13 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.Timestamp updated_at = 14 [(google.api.field_behavior) = REQUIRED];
 }
 
 message ListDeliveriesRequest {

@@ -89,15 +89,17 @@ func (s *Spool) Send(ctx context.Context, messageID string) error {
 }
 
 // SendDue tries every delivery that's due, such as one deferred until now,
-// a batch at a time.
-func (s *Spool) SendDue(ctx context.Context) error {
+// a batch at a time, and returns how many it tried.
+func (s *Spool) SendDue(ctx context.Context) (int, error) {
+	tried := 0
 	for {
 		claimed, err := s.db.ClaimDeliveries(ctx, "", time.Now(), lease, 100)
 		if err != nil || len(claimed) == 0 {
-			return err
+			return tried, err
 		}
+		tried += len(claimed)
 		if err := s.send(ctx, claimed); err != nil {
-			return err
+			return tried, err
 		}
 	}
 }
@@ -121,14 +123,18 @@ func (s *Spool) send(ctx context.Context, claimed []*db.Delivery) error {
 }
 
 func (s *Spool) sendMessage(ctx context.Context, messageID string, deliveries []*db.Delivery) error {
-	m, err := s.db.GetMessage(ctx, messageID)
-	if errors.Is(err, db.ErrMessageNotFound) {
-		return nil // deleted meanwhile, its deliveries with it
-	}
-	if err != nil {
-		return err
-	}
 	raw, err := s.read(ctx, messageID)
+	if errors.Is(err, storage.ErrNotFound) {
+		// A message kept in Sent and deleted meanwhile took its deliveries
+		// with it; one kept nowhere was released when its last delivery was
+		// done, and can't be sent again.
+		for _, d := range deliveries {
+			if _, err := s.db.RecordDelivery(ctx, d.ID, db.DeliveryAttempt{Status: db.DeliveryFailed, Detail: "the message is no longer kept"}); err != nil && !errors.Is(err, db.ErrDeliveryNotFound) {
+				return err
+			}
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -136,7 +142,7 @@ func (s *Spool) sendMessage(ctx context.Context, messageID string, deliveries []
 	for i, d := range deliveries {
 		to[i] = d.Recipient
 	}
-	result, err := s.transport.Send(ctx, m.MailFrom, to, raw)
+	result, err := s.transport.Send(ctx, deliveries[0].MailFrom, to, raw)
 	for _, d := range deliveries {
 		var refused *Error
 		switch {
@@ -165,7 +171,20 @@ func (s *Spool) sendMessage(ctx context.Context, messageID string, deliveries []
 			log.Printf("delivery %s of message %s to %s: %s: %s", d.ID, messageID, d.Recipient, a.Status, a.Detail)
 		}
 	}
-	return nil
+	return s.release(ctx, messageID)
+}
+
+// release removes the raw source of a message sent without a copy in Sent
+// once none of its deliveries is still to go: only they needed it.
+func (s *Spool) release(ctx context.Context, messageID string) error {
+	if _, err := s.db.GetMessage(ctx, messageID); !errors.Is(err, db.ErrMessageNotFound) {
+		return err // kept in Sent, or couldn't tell
+	}
+	pending, err := s.db.Pending(ctx, messageID)
+	if err != nil || pending {
+		return err
+	}
+	return s.store.Delete(ctx, messageID)
 }
 
 // retry says what a refusal makes of a delivery: deferred if temporary and
@@ -198,10 +217,17 @@ type Outgoing struct {
 	Bcc []string
 }
 
-// Prepare readies a message to send from an address of domain: it takes
-// out the Bcc header, and adds a Message-ID and a Date if missing. The rest
-// is left as it is.
-func Prepare(raw []byte, domain string, now time.Time) (*Outgoing, error) {
+// MessageIDHeader names the message a copy of what Spooly sent is: with it,
+// a copy that comes back, such as Gmail's in its Sent folder, is known for
+// the message it is. Message-ID can't be relied on: some transports replace
+// it.
+const MessageIDHeader = "X-Spooly-Message-Id"
+
+// Prepare readies a message to send from an address of domain: it takes out
+// the Bcc header, sets MessageIDHeader to id, or takes it out if id is
+// empty, and adds a Message-ID and a Date if missing. The rest is left as
+// it is.
+func Prepare(raw []byte, id, domain string, now time.Time) (*Outgoing, error) {
 	br := bufio.NewReader(bytes.NewReader(raw))
 	h, err := textproto.ReadHeader(br)
 	if err != nil {
@@ -221,6 +247,10 @@ func Prepare(raw []byte, domain string, now time.Time) (*Outgoing, error) {
 		}
 	}
 	h.Del("Bcc")
+	h.Del(MessageIDHeader)
+	if id != "" {
+		h.Add(MessageIDHeader, id)
+	}
 	if !h.Has("Message-Id") {
 		h.Add("Message-Id", "<"+db.NewID()+"@"+domain+">")
 	}

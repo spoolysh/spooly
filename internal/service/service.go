@@ -56,6 +56,9 @@ type Options struct {
 	EventsRetention time.Duration
 	// Transport sends mail; nil turns sending off.
 	Transport delivery.Transport
+	// NoSentCopy sends mail without keeping a copy in the mailbox's Sent
+	// folder, only its deliveries: SAVE_TO_SENT=false.
+	NoSentCopy bool
 }
 
 // EventsRetention is how long events are kept; 0 means forever.

@@ -165,8 +165,9 @@ message SendMessageRequest {
 }
 
 message SendMessageResponse {
-  // The message, as stored in the sent folder.
-  spooly.v1.Message message = 1 [(buf.validate.field).required = true];
+  // The message, as stored in the sent folder. Absent if no copy is kept
+  // there, with SAVE_TO_SENT=false: then only its deliveries are.
+  spooly.v1.Message message = 1;
   // A delivery to each recipient, after the first try.
   repeated Delivery deliveries = 2;
 }

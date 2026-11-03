@@ -74,12 +74,20 @@ func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	raw := buildMessage(&mail.Address{Name: a.Name, Address: a.Address()}, recipients, r.FormValue("subject"), r.FormValue("body"))
-	m, _, err := h.svc.Send(r.Context(), raw, nil, r.FormValue("key"))
+	m, deliveries, err := h.svc.Send(r.Context(), raw, nil, r.FormValue("key"))
 	if err != nil {
 		writeError(w, "sendMessage", err)
 		return
 	}
-	writeJSON(w, map[string]string{"id": m.ID})
+	// The message, if kept in Sent; otherwise how it's getting there.
+	next := "/deliveries"
+	switch {
+	case m != nil:
+		next = "/" + m.ID
+	case len(deliveries) == 1:
+		next = "/deliveries/" + deliveries[0].ID
+	}
+	writeJSON(w, map[string]string{"url": next})
 }
 
 // buildMessage writes a plain-text message: to, cc, and bcc are its
@@ -186,7 +194,8 @@ const deliveriesPerPage = 50
 type deliveryRow struct {
 	*db.Delivery
 	Mailbox string // its address
-	Subject string // its message's, "" if the message is gone
+	Title   string // its subject, or (no subject)
+	Kept    bool   // whether its message is in the mailbox, to link to
 	Updated string
 }
 
@@ -319,19 +328,16 @@ func (h *Handler) DeliveriesPage(w http.ResponseWriter, r *http.Request) {
 			data.Statuses = append(data.Statuses, statusLink{Status: s, Count: counts[s], Active: s == status})
 		}
 	}
-	subjects := map[string]string{}
+	kept := map[string]bool{}
 	for _, d := range list {
-		if _, ok := subjects[d.MessageID]; ok {
-			continue
-		}
-		subjects[d.MessageID] = ""
-		if m, err := h.db.GetMessage(r.Context(), d.MessageID); err == nil {
-			subjects[d.MessageID] = subjectOrNone(m.Subject)
+		if _, ok := kept[d.MessageID]; !ok {
+			_, err := h.db.GetMessage(r.Context(), d.MessageID)
+			kept[d.MessageID] = err == nil
 		}
 	}
 	for _, d := range list {
 		data.Deliveries = append(data.Deliveries, deliveryRow{
-			Delivery: d, Mailbox: addresses[d.MailboxID], Subject: subjects[d.MessageID], Updated: formatTime(d.UpdatedAt),
+			Delivery: d, Mailbox: addresses[d.MailboxID], Title: subjectOrNone(d.Subject), Kept: kept[d.MessageID], Updated: formatTime(d.UpdatedAt),
 		})
 	}
 	h.render(w, "deliveries", data)
@@ -351,7 +357,8 @@ type deliveryData struct {
 	// Retention is how long events are kept, in days.
 	Retention int
 	Mailbox   string // its address
-	Subject   string // its message's, "" if the message is gone
+	Title     string // its subject, or (no subject)
+	Kept      bool   // whether its message is in the mailbox, to link to
 }
 
 // DeliveryPage shows a delivery, with what happened to it, to
@@ -389,8 +396,9 @@ func (h *Handler) DeliveryPage(w http.ResponseWriter, r *http.Request) {
 	if a, err := h.db.GetMailbox(r.Context(), d.MailboxID); err == nil {
 		data.Mailbox = a.Address()
 	}
-	if m, err := h.db.GetMessage(r.Context(), d.MessageID); err == nil {
-		data.Subject = subjectOrNone(m.Subject)
+	data.Title = subjectOrNone(d.Subject)
+	if _, err := h.db.GetMessage(r.Context(), d.MessageID); err == nil {
+		data.Kept = true
 	}
 	h.render(w, "delivery", data)
 }
