@@ -109,16 +109,16 @@ type Summary struct {
 	MailboxID string
 	// Seq is its place in the folder or label listed in arrival order, the
 	// order messages came there; 0 in other lists.
-	Seq         uint32
-	Folder      string
-	Labels      []string // by name
-	From        Address
-	Subject     string
-	Snippet     string
-	Date        *time.Time
-	Size        int64
-	Attachments int
-	ReceivedAt  time.Time
+	Seq             uint32
+	Folder          string
+	Labels          []string // by name
+	From            Address
+	Subject         string
+	Snippet         string
+	Date            *time.Time
+	Size            int64
+	AttachmentCount int
+	ReceivedAt      time.Time
 	Flags
 }
 
@@ -134,7 +134,7 @@ func (d *DB) scanSummaries(ctx context.Context, rows *sql.Rows) ([]Summary, erro
 		var m Summary
 		var date sql.NullTime
 		if err := rows.Scan(&m.ID, &m.MailboxID, &m.Folder, &m.From.Name, &m.From.Address, &m.Subject, &date, &m.Snippet,
-			&m.Size, &m.Attachments, &m.ReceivedAt, &m.Seen, &m.Answered, &m.Flagged, &m.Draft, &m.Forwarded, &m.Seq); err != nil {
+			&m.Size, &m.AttachmentCount, &m.ReceivedAt, &m.Seen, &m.Answered, &m.Flagged, &m.Draft, &m.Forwarded, &m.Seq); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scanning message: %w", err)
 		}

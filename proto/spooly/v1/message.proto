@@ -374,8 +374,9 @@ message Message {
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).int64.gte = 0
   ];
-  // How many attachments it has: its parts but the bodies.
-  int32 attachments = 19 [(google.api.field_behavior) = REQUIRED];
+  // How many attachments it has: its parts but the bodies and the images
+  // the HTML body embeds, as mail clients count them.
+  int32 attachment_count = 19 [(google.api.field_behavior) = REQUIRED];
   // Every part, in the order of the raw source. A part's index here is its
   // index for GetMessagePart. The text body is the first text/plain part
   // whose disposition isn't "attachment" and that has no name; the HTML
@@ -558,8 +559,9 @@ message MessageSummary {
   string snippet = 13 [(google.api.field_behavior) = REQUIRED];
   // Raw size in bytes.
   int64 size = 14 [(google.api.field_behavior) = REQUIRED];
-  // How many attachments it has: its parts but the bodies.
-  int32 attachments = 15 [(google.api.field_behavior) = REQUIRED];
+  // How many attachments it has: its parts but the bodies and the images
+  // the HTML body embeds, as mail clients count them.
+  int32 attachment_count = 15 [(google.api.field_behavior) = REQUIRED];
   google.protobuf.Timestamp received_at = 16 [(google.api.field_behavior) = REQUIRED];
 }
 

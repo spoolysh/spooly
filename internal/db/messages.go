@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -88,6 +89,20 @@ func (ps Parts) Attachments() []Part {
 		list = append(list, ps[i])
 	}
 	return list
+}
+
+// AttachmentCount counts the attachments a list shows a paperclip for: the
+// parts that aren't a body, nor what looks like an image the HTML body
+// embeds (one with a Content-ID that isn't an attachment). The message page
+// checks the HTML itself.
+func (ps Parts) AttachmentCount() int {
+	n := 0
+	for _, p := range ps.Attachments() {
+		if !(p.CID != "" && strings.HasPrefix(p.Type, "image/") && p.Disposition != "attachment") {
+			n++
+		}
+	}
+	return n
 }
 
 // Flags are a message's state, wherever it is, as IMAP's \Seen, \Answered,
@@ -250,7 +265,7 @@ func (d *DB) insertMessage(ctx context.Context, tx *txn, m Message, labels []str
 		m.ID, m.MailboxID, m.MailFrom, m.RcptTo, m.From.Name, m.From.Address, marshalJSON(m.To), marshalJSON(m.Cc),
 		m.Subject, date, m.Snippet, m.Size, marshalJSON(m.Parts), m.Folder,
 		m.Seen, m.Answered, m.Flagged, m.Draft, m.Forwarded, key, m.ReceivedAt.UTC(),
-		m.MessageID, m.InReplyTo, seq, len(m.Parts.AttachmentIndexes()))
+		m.MessageID, m.InReplyTo, seq, m.Parts.AttachmentCount())
 	if err != nil {
 		return fmt.Errorf("inserting message: %w", err)
 	}

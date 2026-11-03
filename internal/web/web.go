@@ -376,7 +376,7 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 			Subject:     m.Subject,
 			Snippet:     m.Snippet,
 			RcptTo:      m.RcptTo,
-			Attachments: countAttachments(m.Parts),
+			Attachments: m.Parts.AttachmentCount(),
 			ReceivedAt:  formatTime(m.ReceivedAt),
 			ReceivedISO: m.ReceivedAt.Local().Format(time.DateTime),
 			Unread:      !m.Seen,
@@ -514,20 +514,6 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 		data.HasRemote = hasRemoteContent(html)
 	}
 	h.render(w, "message", data)
-}
-
-// countAttachments counts the parts a list shows a paperclip for: not a
-// body, nor what looks like an image the HTML body embeds (one with a
-// Content-ID that isn't an attachment). The message page checks the HTML
-// itself.
-func countAttachments(parts db.Parts) int {
-	n := 0
-	for _, p := range parts.Attachments() {
-		if !(p.CID != "" && strings.HasPrefix(p.Type, "image/") && p.Disposition != "attachment") {
-			n++
-		}
-	}
-	return n
 }
 
 // cidURL matches a cid: URL (RFC 2392), as in <img src="cid:logo@x"> or

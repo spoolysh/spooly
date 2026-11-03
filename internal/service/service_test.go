@@ -567,13 +567,23 @@ func TestGetMessagePart(t *testing.T) {
 	if got := strings.Join(kinds, ","); got != "::,attachment:café.txt:,inline::logo@x,attachment:invoice.pdf:" {
 		t.Errorf("parts = %s", got)
 	}
-	// A list shows how many attachments it has: its parts but the body.
+	// The message and its summary count its attachments: its parts but the
+	// body and the image it embeds.
+	var got struct {
+		AttachmentCount int `json:"attachment_count"`
+	}
+	call(t, srv, "GET", "/v1/messages/"+m.ID, "", "", 200, &got)
+	if got.AttachmentCount != 2 {
+		t.Errorf("message attachment_count = %d, want 2", got.AttachmentCount)
+	}
 	var listed struct {
-		Messages []struct{ Attachments int }
+		Messages []struct {
+			AttachmentCount int `json:"attachment_count"`
+		}
 	}
 	call(t, srv, "GET", "/v1/mailboxes/hello@spooly.sh/messages", "", "", 200, &listed)
-	if len(listed.Messages) != 1 || listed.Messages[0].Attachments != 3 {
-		t.Errorf("listed = %+v, want 3 attachments", listed.Messages)
+	if len(listed.Messages) != 1 || listed.Messages[0].AttachmentCount != 2 {
+		t.Errorf("listed = %+v, want 2 attachments", listed.Messages)
 	}
 
 	for _, tc := range []struct {
