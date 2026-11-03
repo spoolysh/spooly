@@ -58,7 +58,7 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, svc *service.Ser
 		"deliveryClass": deliveryClass,
 		"timeOf":        func(t *time.Time) string { return t.Local().Format(time.DateTime) },
 	}
-	for _, p := range []string{"messages", "message", "compose", "mailboxes", "mailbox", "labels", "users", "apikeys"} {
+	for _, p := range []string{"messages", "message", "compose", "deliveries", "delivery", "mailboxes", "mailbox", "labels", "users", "apikeys"} {
 		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(
 			templateFS,
 			"templates/layout.html",
@@ -79,6 +79,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// the API's /v1/ and /spooly.v1.*Service/ subtrees.
 	page("GET /{id}", h.MessagePage)
 	page("GET /compose", h.ComposePage)
+	page("GET /deliveries", h.DeliveriesPage)
+	page("GET /deliveries/{id}", h.DeliveryPage)
 	page("GET /mailboxes", h.MailboxesPage)
 	page("GET /mailboxes/{address}", h.MailboxPage)
 	page("GET /labels", h.LabelsPage)

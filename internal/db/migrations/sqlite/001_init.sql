@@ -156,7 +156,8 @@ CREATE INDEX IF NOT EXISTS idx_deliveries_mailbox ON deliveries(mailbox_id, id);
 -- update changed, say. A message.deleted event's data is the mailbox the
 -- message was in, and until the message is expunged, under restore, what
 -- restoring it needs besides its raw source, which stays in storage until
--- then.
+-- then. A delivery event's data is what the delivery became, and why: the
+-- transport's reply, say; a delivery's events are its history.
 CREATE TABLE IF NOT EXISTS events (
     id BIGINT PRIMARY KEY,
     type TEXT NOT NULL,
@@ -164,6 +165,9 @@ CREATE TABLE IF NOT EXISTS events (
     data TEXT,
     created_at TIMESTAMP NOT NULL
 );
+
+-- An object's events, such as a delivery's, which tell its history.
+CREATE INDEX IF NOT EXISTS idx_events_object ON events(object_id, id);
 
 CREATE INDEX IF NOT EXISTS idx_events_restorable ON events(object_id)
     WHERE type = 'message.deleted' AND json_extract(data, '$.restore') IS NOT NULL;

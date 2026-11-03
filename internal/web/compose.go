@@ -7,7 +7,11 @@ import (
 	"mime/quotedprintable"
 	"net/http"
 	"net/mail"
+	"net/url"
+	"slices"
 	"strings"
+
+	"connectrpc.com/connect/v2"
 
 	"github.com/spoolysh/spooly/internal/db"
 )
@@ -174,4 +178,219 @@ func (h *Handler) deliveriesOf(r *http.Request, ids []string) (map[string][]*db.
 		out[d.MessageID] = append(out[d.MessageID], d)
 	}
 	return out, nil
+}
+
+// deliveriesPerPage is how many deliveries the deliveries page shows.
+const deliveriesPerPage = 50
+
+type deliveryRow struct {
+	*db.Delivery
+	Mailbox string // its address
+	Subject string // its message's, "" if the message is gone
+	Updated string
+}
+
+type statusLink struct {
+	Status string // "" for all
+	Count  int
+	Active bool
+}
+
+type deliveriesData struct {
+	layoutData
+	Deliveries []deliveryRow
+	Statuses   []statusLink
+	Mailboxes  []db.Mailbox
+	Mailbox    string // the filtered mailbox's address; "" for all
+	Status     string
+	Newer      string // the URL of the newer page, if any
+	Older      string // the URL of the older page, if any
+	Sends      bool
+}
+
+// DeliveriesPage lists deliveries, newest first, for admins to see how
+// sending goes: ?status= and ?mailbox= filter them, and pages are cursors:
+// ?before=ID for older ones, ?after=ID for newer.
+func (h *Handler) DeliveriesPage(w http.ResponseWriter, r *http.Request) {
+	user := h.requireUser(w, r)
+	if user == nil {
+		return
+	}
+	if !h.svc.IsAdmin(user.Email) {
+		http.NotFound(w, r)
+		return
+	}
+	q := r.URL.Query()
+	mailboxes, err := h.visibleMailboxes(r, user)
+	if err != nil {
+		h.internalError(w, "listing mailboxes", err)
+		return
+	}
+	addresses := make(map[string]string, len(mailboxes))
+	var mailboxID string
+	address := strings.ToLower(q.Get("mailbox"))
+	for _, a := range mailboxes {
+		addresses[a.ID] = a.Address()
+		if address != "" && a.Address() == address {
+			mailboxID = a.ID
+		}
+	}
+	if address != "" && mailboxID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	status := q.Get("status")
+	// One more than a page tells whether there's another page that way.
+	f := db.DeliveryFilter{MailboxID: mailboxID, Status: status, Newest: true, Limit: deliveriesPerPage + 1}
+	after, before := q.Get("after"), q.Get("before")
+	if isID(after) {
+		f.After, f.Newest = after, false
+	} else if isID(before) {
+		f.Before = before
+	}
+	list, err := h.db.ListDeliveries(r.Context(), f)
+	if err != nil {
+		h.internalError(w, "listing deliveries", err)
+		return
+	}
+	more := len(list) > deliveriesPerPage
+	if more {
+		list = list[:deliveriesPerPage]
+	}
+	if !f.Newest {
+		slices.Reverse(list)
+	}
+	counts, err := h.db.CountDeliveries(r.Context(), mailboxID)
+	if err != nil {
+		h.internalError(w, "counting deliveries", err)
+		return
+	}
+
+	data := deliveriesData{
+		layoutData: layoutData{ActiveTab: "deliveries", Title: "Deliveries", User: user, Admin: true},
+		Mailboxes:  mailboxes, Mailbox: address, Status: status, Sends: h.svc.Sends(),
+	}
+	page := func(status, before, after string) string {
+		v := url.Values{}
+		if status != "" {
+			v.Set("status", status)
+		}
+		if address != "" {
+			v.Set("mailbox", address)
+		}
+		if before != "" {
+			v.Set("before", before)
+		}
+		if after != "" {
+			v.Set("after", after)
+		}
+		if len(v) == 0 {
+			return "/deliveries"
+		}
+		return "/deliveries?" + strings.ReplaceAll(v.Encode(), "%40", "@")
+	}
+	if len(list) > 0 {
+		newer, older := page(status, "", list[0].ID), page(status, list[len(list)-1].ID, "")
+		switch {
+		case isID(after): // paged forward from older ones
+			data.Older = older
+			if more {
+				data.Newer = newer
+			}
+		case isID(before): // paged back from newer ones
+			data.Newer = newer
+			if more {
+				data.Older = older
+			}
+		case more:
+			data.Older = older
+		}
+	}
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	// Queued, deferred, and failed are always there, what's still to go and
+	// what didn't; the rest once they have any.
+	data.Statuses = append(data.Statuses, statusLink{Count: total, Active: status == ""})
+	for _, s := range deliveryStatuses {
+		always := s == db.DeliveryQueued || s == db.DeliveryDeferred || s == db.DeliveryFailed
+		if always || counts[s] > 0 || s == status {
+			data.Statuses = append(data.Statuses, statusLink{Status: s, Count: counts[s], Active: s == status})
+		}
+	}
+	subjects := map[string]string{}
+	for _, d := range list {
+		if _, ok := subjects[d.MessageID]; ok {
+			continue
+		}
+		subjects[d.MessageID] = ""
+		if m, err := h.db.GetMessage(r.Context(), d.MessageID); err == nil {
+			subjects[d.MessageID] = subjectOrNone(m.Subject)
+		}
+	}
+	for _, d := range list {
+		data.Deliveries = append(data.Deliveries, deliveryRow{
+			Delivery: d, Mailbox: addresses[d.MailboxID], Subject: subjects[d.MessageID], Updated: formatTime(d.UpdatedAt),
+		})
+	}
+	h.render(w, "deliveries", data)
+}
+
+// deliveryStatuses are the statuses in the order a delivery goes through
+// them.
+var deliveryStatuses = []string{
+	db.DeliveryQueued, db.DeliveryDeferred, db.DeliverySent, db.DeliveryDelayed,
+	db.DeliveryDelivered, db.DeliveryBounced, db.DeliveryComplained, db.DeliveryFailed,
+}
+
+type deliveryData struct {
+	layoutData
+	Delivery *db.Delivery
+	Events   []db.DeliveryEvent
+	// Retention is how long events are kept, in days.
+	Retention int
+	Mailbox   string // its address
+	Subject   string // its message's, "" if the message is gone
+}
+
+// DeliveryPage shows a delivery, with what happened to it, to
+// whoever can see its mailbox.
+func (h *Handler) DeliveryPage(w http.ResponseWriter, r *http.Request) {
+	user := h.requireUser(w, r)
+	if user == nil {
+		return
+	}
+	id := r.PathValue("id")
+	if !isID(id) {
+		http.NotFound(w, r)
+		return
+	}
+	d, events, err := h.svc.Delivery(r.Context(), id)
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.internalError(w, "getting delivery", err)
+		return
+	}
+	admin := h.svc.IsAdmin(user.Email)
+	tab := "messages" // where others see deliveries: on their messages
+	if admin {
+		tab = "deliveries"
+	}
+	data := deliveryData{
+		layoutData: layoutData{ActiveTab: tab, Title: "Delivery to " + d.Recipient, User: user, Admin: admin},
+		Delivery:   d,
+		Events:     events,
+		Retention:  int(h.svc.EventsRetention().Hours() / 24),
+	}
+	if a, err := h.db.GetMailbox(r.Context(), d.MailboxID); err == nil {
+		data.Mailbox = a.Address()
+	}
+	if m, err := h.db.GetMessage(r.Context(), d.MessageID); err == nil {
+		data.Subject = subjectOrNone(m.Subject)
+	}
+	h.render(w, "delivery", data)
 }

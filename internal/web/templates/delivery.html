@@ -1,0 +1,70 @@
+{{define "content"}}
+{{$d := .Delivery}}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+  {{if .Admin}}<a href="/deliveries" class="text-sm text-brand-600 hover:text-brand-800 hover:underline font-medium">&larr; Deliveries</a>{{else}}<span></span>{{end}}
+  {{if or (eq $d.Status "deferred") (eq $d.Status "failed")}}
+  <button type="button" id="retry" onclick="retryDelivery()" class="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50">Retry</button>
+  {{end}}
+</div>
+
+<div class="mb-6">
+  <h2 class="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight break-all">{{$d.Recipient}}</h2>
+  <div class="mt-2 flex flex-wrap items-center gap-2 text-sm">
+    <span class="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium {{deliveryClass $d.Status}}">{{labelTitle $d.Status}}</span>
+    {{if and $d.Pending $d.NextAttemptAt}}<span class="text-gray-500">next try {{timeOf $d.NextAttemptAt}}</span>{{end}}
+  </div>
+</div>
+<div id="action-status" role="status" class="hidden mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"></div>
+
+<div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-6">
+  <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 px-6 py-4 text-sm">
+    <dt class="text-gray-500">Message</dt>
+    <dd class="min-w-0">{{if .Subject}}<a href="/{{$d.MessageID}}" class="text-brand-600 hover:text-brand-800 hover:underline">{{.Subject}}</a>{{else}}<span class="text-gray-400">(deleted)</span>{{end}}</dd>
+    <dt class="text-gray-500">From</dt>
+    <dd class="min-w-0 break-all text-gray-700">{{.Mailbox}}</dd>
+    <dt class="text-gray-500">Transport</dt>
+    <dd class="text-gray-700">{{$d.Transport}}{{if $d.TransportMessageID}} <span class="font-mono text-xs text-gray-500">{{$d.TransportMessageID}}</span>{{end}}</dd>
+    <dt class="text-gray-500">Tries</dt>
+    <dd class="tabular-nums text-gray-700">{{$d.Attempts}}</dd>
+    <dt class="text-gray-500">Queued</dt>
+    <dd class="tabular-nums text-gray-700">{{$d.CreatedAt.Local.Format "2006-01-02 15:04:05"}}</dd>
+    <dt class="text-gray-500">ID</dt>
+    <dd class="font-mono text-xs text-gray-700">{{$d.ID}}</dd>
+  </dl>
+</div>
+
+<section aria-labelledby="events-title" class="bg-white rounded-xl border border-gray-200 shadow-sm px-6 py-4">
+  <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+    <h3 id="events-title" class="text-xs font-medium uppercase tracking-wider text-gray-500">What happened</h3>
+    {{if .Retention}}<span class="text-xs text-gray-400">kept for {{.Retention}} days</span>{{end}}
+  </div>
+  <ol class="divide-y divide-gray-100 text-sm">
+    {{range .Events}}
+    <li class="grid grid-cols-[max-content_max-content_1fr] items-baseline gap-x-4 py-2">
+      <time class="tabular-nums text-gray-500" datetime="{{.At.Local.Format "2006-01-02T15:04:05Z07:00"}}">{{.At.Local.Format "2006-01-02 15:04:05"}}</time>
+      <span class="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium {{deliveryClass .Status}}">{{labelTitle .Status}}</span>
+      <span class="min-w-0 break-words">
+        {{if .Detail}}<span class="font-mono text-xs text-gray-700">{{.Detail}}</span>{{end}}
+        {{if .Attempt}}<span class="text-xs text-gray-400">try {{.Attempt}}</span>{{end}}
+      </span>
+    </li>
+    {{end}}
+  </ol>
+</section>
+
+<script>
+  async function retryDelivery() {
+    const button = document.getElementById('retry');
+    button.disabled = true;
+    const resp = await fetch('/ui/deliveries/{{$d.ID}}/retry', { method: 'POST' });
+    if (resp.ok) {
+      location.reload();
+      return;
+    }
+    const status = document.getElementById('action-status');
+    status.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    status.classList.remove('hidden');
+    button.disabled = false;
+  }
+</script>
+{{end}}

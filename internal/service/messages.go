@@ -824,7 +824,8 @@ func (s *Service) deleteRaw(ctx context.Context, id string) {
 }
 
 // Prune expunges messages deleted ExpungeAfter before now, removing their
-// raw sources, then removes changes older than EventsRetention.
+// raw sources, then removes events older than EventsRetention, unless it's
+// 0: then they're kept forever.
 func (s *Service) Prune(ctx context.Context, now time.Time) error {
 	expired, err := s.db.Expirable(ctx, now.Add(-s.opts.ExpungeAfter))
 	if err != nil {
@@ -836,9 +837,11 @@ func (s *Service) Prune(ctx context.Context, now time.Time) error {
 			return err
 		}
 	}
-	n, err := s.db.PruneEvents(ctx, now.Add(-s.opts.EventsRetention))
-	if err != nil {
-		return err
+	var n int64
+	if s.opts.EventsRetention > 0 {
+		if n, err = s.db.PruneEvents(ctx, now.Add(-s.opts.EventsRetention)); err != nil {
+			return err
+		}
 	}
 	if len(expired) > 0 || n > 0 {
 		log.Printf("expunged %d deleted messages, pruned %d events", len(expired), n)

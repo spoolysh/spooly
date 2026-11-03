@@ -373,6 +373,32 @@ func TestDeleteExpungesAtOnce(t *testing.T) {
 	}
 }
 
+// Without a retention, events are kept forever; deleted messages are still
+// expunged.
+func TestEventsKeptForever(t *testing.T) {
+	srv, svc, admin := newTestServerWith(t, Options{ExpungeAfter: time.Hour})
+	createMailbox(t, srv, "a@spooly.sh")
+	m := deliver(t, srv, "a@spooly.sh", "", 1)
+	call(t, srv, "DELETE", "/v1/messages/"+m.ID, "", "", 200, nil)
+	before, err := svc.db.ListEvents(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Prune(t.Context(), time.Now().AddDate(10, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := svc.db.ListEvents(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) || len(after) == 0 {
+		t.Errorf("%d events before pruning, %d after", len(before), len(after))
+	}
+	if _, err := svc.Restore(admin, m.ID); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Errorf("restoring an expunged message: %v", err)
+	}
+}
+
 // Every change is an event, named as webhooks would send it, under a ULID in
 // the order of the changes; an update records what it changed, and one
 // that changes nothing is no event.

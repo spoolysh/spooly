@@ -133,22 +133,36 @@ Each delivery is `queued` until handed over, then `sent` once the transport
 took it, `deferred` while it's retried (after 1 minute, then 5, 15, 30, an
 hour, 2, then every 4 hours), or `failed` if the transport refused it for
 good or for 24 hours. `ListDeliveries` lists them by message, mailbox, or
-status, and `RetryDelivery` tries a deferred or failed one again now.
+status, `GetDelivery` gets one with its events, what happened to it: each
+try and the transport's reply, and retries by hand; and `RetryDelivery`
+tries a deferred or failed one again now. The dashboard shows the same: on
+the message, on each delivery's page, and to admins under Deliveries.
 Deleting a message deletes its deliveries, cancelling those still to go.
-Changes are logged as `delivery.created` and `delivery.updated` events.
+The events are `delivery.created` and `delivery.updated`, in the same
+stream as messages': kept for `EVENTS_RETENTION`, after which a delivery
+keeps only its last status and reply.
 
 The transport is `MAIL_TRANSPORT`:
 
 - `smtp`: any SMTP relay, such as Google Workspace's SMTP relay service
   (`smtp-relay.gmail.com`), which sends from any address of your domains.
   Port 465 speaks TLS from the start; any other must offer STARTTLS, so mail
-  never goes in the clear.
+  never goes in the clear, unless the relay is this machine.
 - `cloudflare`: Cloudflare Email Service, over its SMTP submission with an
   API token. The domain must be onboarded to Email Sending, which needs the
   Workers Paid plan.
 
 Either way, publish SPF and DKIM for the relay, and DMARC, or mail goes to
 spam.
+
+To try sending locally, catch it with [Mailpit](https://mailpit.axllent.org),
+which shows what arrives at http://localhost:8025, and refuses recipients
+outside `--smtp-allowed-recipients`, so failed deliveries can be seen too:
+
+```bash
+mailpit --smtp-allowed-recipients '@example\.(com|org)$'
+MAIL_TRANSPORT=smtp SMTP_HOST=localhost SMTP_PORT=1025 just serve
+```
 
 ## Folders, labels, and flags
 
@@ -256,8 +270,8 @@ Every change is kept as an event, named as webhooks will send it:
 `message.created`, `message.updated` (with what changed: the folder moved
 from and to, labels added and removed, flags), `message.deleted`, and
 `message.restored`. An update that changes nothing, such as adding a label
-the message has, is no change. Events are kept for `EVENTS_RETENTION` (30
-days by default), then pruned. A cursor from before the newest event
+the message has, is no change. Events are kept for `EVENTS_RETENTION` (45
+days by default; `0` keeps them forever), then pruned. A cursor from before the newest event
 pruned fails with `FAILED_PRECONDITION`: start over, from step 1.
 
 A message's seq in a folder or label is higher than that of any message
@@ -360,7 +374,7 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `LOCAL_STORAGE_DIR` | Directory for `local` storage | `./storage` |
 | `S3_BUCKET` | Bucket for `s3`: Amazon S3, Cloudflare R2, MinIO; credentials from the usual `AWS_*` variables | — |
 | `GCS_BUCKET` | Bucket for `gcs`; credentials from Application Default Credentials | — |
-| `EVENTS_RETENTION` | How long changes are kept for lists of changes; at least `EXPUNGE_AFTER` | `720h` (30 days) |
+| `EVENTS_RETENTION` | How long events are kept: for lists of changes, and as deliveries' history; at least `EXPUNGE_AFTER`, or `0` to keep them forever | `1080h` (45 days) |
 | `EXPUNGE_AFTER` | How long a message deleted for good can still be restored by an admin, its raw source kept; `0` removes it at once | `168h` (7 days) |
 | `MAIL_TRANSPORT` | How mail is sent: `smtp`, `cloudflare`, or empty to turn sending off | — (off) |
 | `SMTP_HOST`, `SMTP_PORT` | The relay for `smtp`; port 465 is TLS from the start, any other must offer STARTTLS | —, `587` |

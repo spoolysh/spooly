@@ -49,7 +49,7 @@
   <ul class="divide-y divide-gray-100 text-sm">
     {{range .}}
     <li class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
-      <span class="min-w-0 break-all text-gray-800">{{.Recipient}}</span>
+      <a href="/deliveries/{{.ID}}" class="min-w-0 break-all text-gray-800 hover:text-brand-700 hover:underline">{{.Recipient}}</a>
       <span class="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium {{deliveryClass .Status}}">{{labelTitle .Status}}</span>
       {{if .Detail}}<span class="min-w-0 break-words font-mono text-xs text-gray-500">{{.Detail}}</span>{{end}}
       {{if and .Pending .NextAttemptAt}}<span class="text-xs text-gray-400">next try {{timeOf .NextAttemptAt}}</span>{{end}}

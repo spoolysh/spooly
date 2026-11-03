@@ -172,14 +172,8 @@ func (s *Service) Retry(ctx context.Context, id string) (*db.Delivery, error) {
 	if s.spool == nil {
 		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sending is off: set MAIL_TRANSPORT")
 	}
-	d, err := s.db.GetDelivery(ctx, id)
+	d, err := s.getDelivery(ctx, id)
 	if err != nil {
-		return nil, dbError(err)
-	}
-	if err := s.Require(ctx, d.MailboxID); err != nil {
-		if connect.CodeOf(err) == connect.CodeNotFound {
-			return nil, connect.Errorf(connect.CodeNotFound, "%s: %s", db.ErrDeliveryNotFound, id)
-		}
 		return nil, err
 	}
 	if _, err := s.db.RetryDelivery(ctx, id); err != nil {
@@ -205,3 +199,47 @@ func (s *Service) SendDue(ctx context.Context) error {
 
 // Sends reports whether the service has a transport to send with.
 func (s *Service) Sends() bool { return s.spool != nil }
+
+func (s *Service) GetDelivery(ctx context.Context, req *spoolyv1alpha1.GetDeliveryRequest) (*spoolyv1alpha1.GetDeliveryResponse, error) {
+	d, events, err := s.Delivery(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	resp := &spoolyv1alpha1.GetDeliveryResponse{Delivery: deliveryProto(d), Events: make([]*spoolyv1alpha1.DeliveryEvent, len(events))}
+	for i, e := range events {
+		resp.Events[i] = &spoolyv1alpha1.DeliveryEvent{
+			At: timestamppb.New(e.At), Status: e.Status, Attempt: int32(e.Attempt), Detail: e.Detail, TransportMessageId: e.TransportMessageID,
+		}
+	}
+	return resp, nil
+}
+
+// Delivery returns a delivery and its events, if ctx's user can see its
+// mailbox.
+func (s *Service) Delivery(ctx context.Context, id string) (*db.Delivery, []db.DeliveryEvent, error) {
+	d, err := s.getDelivery(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	events, err := s.db.DeliveryEvents(ctx, id)
+	if err != nil {
+		return nil, nil, dbError(err)
+	}
+	return d, events, nil
+}
+
+// getDelivery returns a delivery if ctx's user can see its mailbox;
+// otherwise it's not found.
+func (s *Service) getDelivery(ctx context.Context, id string) (*db.Delivery, error) {
+	d, err := s.db.GetDelivery(ctx, id)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	if err := s.Require(ctx, d.MailboxID); err != nil {
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return nil, connect.Errorf(connect.CodeNotFound, "%s: %s", db.ErrDeliveryNotFound, id)
+		}
+		return nil, err
+	}
+	return d, nil
+}

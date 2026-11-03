@@ -17,6 +17,12 @@ service DeliveryService {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
 
+  // Get a delivery, with its events: what happened to it, as far back as
+  // events are kept (EVENTS_RETENTION).
+  rpc GetDelivery(GetDeliveryRequest) returns (GetDeliveryResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
   // Try a deferred or failed delivery again now. Others fail with
   // FAILED_PRECONDITION.
   rpc RetryDelivery(RetryDeliveryRequest) returns (RetryDeliveryResponse);
@@ -34,8 +40,23 @@ message Delivery {
   // delivered, the recipient's server took it; bounced; complained, the
   // recipient reported it as spam. failed: Spooly gave up, as the transport
   // refused it for good, or for too long.
-  string status = 5 [(google.api.field_behavior) = REQUIRED];
-  // The transport, as MAIL_TRANSPORT names it: smtp or cloudflare.
+  string status = 5 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      in: [
+        "queued",
+        "deferred",
+        "sent",
+        "delayed",
+        "delivered",
+        "bounced",
+        "complained",
+        "failed"
+      ]
+    }
+  ];
+  // The transport, as MAIL_TRANSPORT names it, such as smtp or cloudflare;
+  // more may come.
   string transport = 6 [(google.api.field_behavior) = REQUIRED];
   // The transport's ID for the message, to look it up there. Empty if it
   // gave none.
@@ -90,6 +111,49 @@ message ListDeliveriesRequest {
 
 message ListDeliveriesResponse {
   repeated Delivery deliveries = 1;
+}
+
+// An event of a delivery: what it became, and why. Logged as
+// delivery.created or delivery.updated.
+message DeliveryEvent {
+  google.protobuf.Timestamp at = 1 [(google.api.field_behavior) = REQUIRED];
+  // What the delivery became, as Delivery.status.
+  string status = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      in: [
+        "queued",
+        "deferred",
+        "sent",
+        "delayed",
+        "delivered",
+        "bounced",
+        "complained",
+        "failed"
+      ]
+    }
+  ];
+  // Which attempt it was, counting from 1; 0 for an event that wasn't one,
+  // such as queueing, or a retry by hand.
+  int32 attempt = 3 [(google.api.field_behavior) = REQUIRED];
+  // The transport's reply, or what happened, such as "retried by hand".
+  string detail = 4 [(google.api.field_behavior) = REQUIRED];
+  // The transport's ID for the message, if this event gave one.
+  string transport_message_id = 5 [(google.api.field_behavior) = REQUIRED];
+}
+
+message GetDeliveryRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-9a-hjkmnp-tv-z]{26}$"}
+  }];
+}
+
+message GetDeliveryResponse {
+  Delivery delivery = 1 [(buf.validate.field).required = true];
+  // What happened to it, oldest first. Events older than EVENTS_RETENTION
+  // are pruned: the delivery itself keeps its last status and detail.
+  repeated DeliveryEvent events = 2;
 }
 
 message RetryDeliveryRequest {

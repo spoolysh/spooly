@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -185,6 +186,20 @@ func TestSendMessageRefused(t *testing.T) {
 	if s := ft.sent(); len(s) != 2 || !slices.Equal(s[1].to, []string{"bob@example.com"}) {
 		t.Errorf("sent %+v", s)
 	}
+	// Its events tell what happened, the retry by hand included.
+	got, err := svc.GetDelivery(ctx, &spoolyv1alpha1.GetDeliveryRequest{Id: deferred.Id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	for _, e := range got.Events {
+		steps = append(steps, fmt.Sprintf("%s %d %s", e.Status, e.Attempt, e.Detail))
+	}
+	wantSteps := "queued 0 ; deferred 1 450 4.2.1 try later; queued 0 retried by hand; sent 2 2.0.0 Ok"
+	if strings.Join(steps, "; ") != wantSteps || got.Events[3].TransportMessageId != "fake-1" {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(steps, "; "), wantSteps)
+	}
+
 	// Only deferred and failed ones are retried.
 	if _, err := svc.RetryDelivery(ctx, &spoolyv1alpha1.RetryDeliveryRequest{Id: deferred.Id}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Errorf("retrying a sent delivery: %v", err)

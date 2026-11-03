@@ -156,9 +156,9 @@ func newService(database *db.DB, store storage.Storage, transport delivery.Trans
 	if len(admins) == 0 {
 		log.Printf("ADMIN_EMAILS is empty: no one can create mailboxes")
 	}
-	expungeAfter, eventsRetention := duration("EXPUNGE_AFTER", "168h"), duration("EVENTS_RETENTION", "720h")
-	if eventsRetention == 0 || expungeAfter > eventsRetention {
-		log.Fatalf("EVENTS_RETENTION (%s) must be positive and at least EXPUNGE_AFTER (%s)", eventsRetention, expungeAfter)
+	expungeAfter, eventsRetention := duration("EXPUNGE_AFTER", "168h"), duration("EVENTS_RETENTION", "1080h")
+	if eventsRetention != 0 && expungeAfter > eventsRetention {
+		log.Fatalf("EVENTS_RETENTION (%s) must be at least EXPUNGE_AFTER (%s), or 0 to keep events forever", eventsRetention, expungeAfter)
 	}
 	return service.New(database, store, service.Options{
 		Admins: admins, ExpungeAfter: expungeAfter, EventsRetention: eventsRetention, Transport: transport,
@@ -181,8 +181,12 @@ func newTransport(hostname string) delivery.Transport {
 		if err != nil {
 			log.Fatalf("SMTP_PORT: %v", err)
 		}
+		host := envRequired("SMTP_HOST")
+		if smtp.IsLocal(host) {
+			log.Printf("SMTP_HOST %s is this machine: mail may go to it in the clear", host)
+		}
 		return smtp.New(smtp.Options{
-			Host: envRequired("SMTP_HOST"), Port: port, ImplicitTLS: port == 465,
+			Host: host, Port: port, ImplicitTLS: port == 465, Plaintext: smtp.IsLocal(host),
 			Username: os.Getenv("SMTP_USERNAME"), Password: os.Getenv("SMTP_PASSWORD"), Hello: hello,
 		})
 	case "cloudflare":

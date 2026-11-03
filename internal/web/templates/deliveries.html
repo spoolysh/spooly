@@ -1,0 +1,98 @@
+{{define "content"}}
+<div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight">Deliveries</h2>
+  <div class="flex flex-wrap items-center gap-3">
+    <label for="mailbox-filter" class="sr-only">Mailbox</label>
+    <select id="mailbox-filter" onchange="location.href = this.value" class="select">
+      <option value="/deliveries{{if .Status}}?status={{.Status}}{{end}}">All mailboxes</option>
+      {{range .Mailboxes}}<option value="/deliveries?{{if $.Status}}status={{$.Status}}&amp;{{end}}mailbox={{.Address}}"{{if eq .Address $.Mailbox}} selected{{end}}>{{.Address}}</option>{{end}}
+    </select>
+  </div>
+</div>
+
+{{if not .Sends}}
+<div role="status" class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+  Sending is off: set <code class="font-mono">MAIL_TRANSPORT</code> to send mail.
+</div>
+{{end}}
+
+<nav aria-label="Statuses" class="mb-4 flex flex-wrap gap-1">
+  {{range .Statuses}}
+  <a href="/deliveries?{{if .Status}}status={{.Status}}{{end}}{{if $.Mailbox}}{{if .Status}}&amp;{{end}}mailbox={{$.Mailbox}}{{end}}"
+    class="inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 {{if .Active}}bg-brand-50 text-brand-700 font-semibold{{else}}text-gray-700 hover:bg-gray-100{{end}}"
+    {{if .Active}}aria-current="page"{{end}}>
+    {{if .Status}}{{labelTitle .Status}}{{else}}All{{end}}
+    <span class="text-xs tabular-nums {{if .Active}}text-brand-700{{else}}text-gray-500{{end}}">{{.Count}}</span>
+  </a>
+  {{end}}
+</nav>
+<div id="action-status" role="status" class="hidden mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"></div>
+
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+  {{if .Deliveries}}
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-sm">
+      <thead class="bg-gray-50 text-gray-500 uppercase tracking-wider text-xs font-medium border-b border-gray-200">
+        <tr>
+          <th class="px-4 py-3">Updated</th>
+          <th class="px-4 py-3">Recipient</th>
+          <th class="px-4 py-3">Message</th>
+          <th class="px-4 py-3">Status</th>
+          <th class="px-4 py-3">Detail</th>
+          <th class="px-4 py-3"><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {{range .Deliveries}}
+        <tr class="align-top">
+          <td class="px-4 py-3 whitespace-nowrap tabular-nums text-gray-500" title="{{.UpdatedAt.Local.Format "2006-01-02 15:04:05"}}">{{.Updated}}</td>
+          <td class="px-4 py-3 break-all"><a href="/deliveries/{{.ID}}" class="text-gray-800 hover:text-brand-700 hover:underline">{{.Recipient}}</a></td>
+          <td class="px-4 py-3 min-w-[12rem]">
+            {{if .Subject}}<a href="/{{.MessageID}}" class="text-brand-600 hover:text-brand-800 hover:underline">{{.Subject}}</a>{{else}}<span class="text-gray-400">(deleted)</span>{{end}}
+            <div class="text-xs text-gray-500">from {{.Mailbox}}</div>
+          </td>
+          <td class="px-4 py-3 whitespace-nowrap">
+            <span class="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium {{deliveryClass .Status}}">{{labelTitle .Status}}</span>
+            <div class="mt-1 text-xs text-gray-500">{{.Transport}}, {{.Attempts}} {{if eq .Attempts 1}}try{{else}}tries{{end}}</div>
+            {{if and .Pending .NextAttemptAt}}<div class="text-xs text-gray-400">next {{timeOf .NextAttemptAt}}</div>{{end}}
+          </td>
+          <td class="px-4 py-3 max-w-xs break-words font-mono text-xs text-gray-600">{{.Detail}}</td>
+          <td class="px-4 py-3 text-right">
+            {{if or (eq .Status "deferred") (eq .Status "failed")}}
+            <button type="button" onclick="retryDelivery(this, '{{.ID}}')" class="rounded-md border border-gray-300 bg-white px-2 py-0.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50">Retry</button>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{if or .Newer .Older}}
+  <div class="flex justify-between border-t border-gray-200 px-4 py-3 text-sm">
+    {{if .Newer}}<a href="{{.Newer}}" class="font-medium text-brand-600 hover:text-brand-800 hover:underline">&larr; Newer</a>{{else}}<span></span>{{end}}
+    {{if .Older}}<a href="{{.Older}}" class="font-medium text-brand-600 hover:text-brand-800 hover:underline">Older &rarr;</a>{{end}}
+  </div>
+  {{end}}
+  {{else}}
+  <div class="px-6 py-12 text-center text-gray-500">
+    <p>{{if .Status}}No {{.Status}} deliveries.{{else}}Nothing sent yet.{{end}}</p>
+  </div>
+  {{end}}
+</div>
+
+<script>
+  // retryDelivery tries a deferred or failed delivery again now.
+  async function retryDelivery(button, id) {
+    button.disabled = true;
+    const resp = await fetch('/ui/deliveries/' + id + '/retry', { method: 'POST' });
+    if (resp.ok) {
+      location.reload();
+      return;
+    }
+    const status = document.getElementById('action-status');
+    status.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    status.classList.remove('hidden');
+    button.disabled = false;
+  }
+</script>
+{{end}}

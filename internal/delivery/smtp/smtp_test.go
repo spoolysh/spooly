@@ -224,15 +224,30 @@ func TestSetupErrorsAreTemporary(t *testing.T) {
 		t.Errorf("without STARTTLS: %v", err)
 	}
 
+	// On this machine, it may go in the clear.
+	tr := transport(t, r, pool, "")
+	tr.opts.Username, tr.opts.Plaintext = "", true
+	if _, err := tr.Send(context.Background(), "a@spooly.sh", []string{"b@example.com"}, []byte(message)); err != nil {
+		t.Errorf("in the clear on this machine: %v", err)
+	}
+
 	r, pool = newRelay(t, true, false)
 	_, err = transport(t, r, pool, "wrong").Send(context.Background(), "a@spooly.sh", []string{"b@example.com"}, []byte(message))
 	if !errors.As(err, &e) || !e.Temporary || !strings.Contains(e.Detail, "535") {
 		t.Errorf("wrong password: %v", err)
 	}
 
-	tr := New(Options{Host: "127.0.0.1", Port: 1, ImplicitTLS: true, Timeout: time.Second})
+	tr = New(Options{Host: "127.0.0.1", Port: 1, ImplicitTLS: true, Timeout: time.Second})
 	if _, err := tr.Send(context.Background(), "a@spooly.sh", []string{"b@example.com"}, []byte(message)); !errors.As(err, &e) || !e.Temporary {
 		t.Errorf("unreachable: %v", err)
+	}
+}
+
+func TestIsLocal(t *testing.T) {
+	for host, want := range map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true, "smtp-relay.gmail.com": false, "10.0.0.5": false} {
+		if IsLocal(host) != want {
+			t.Errorf("IsLocal(%q) = %t", host, !want)
+		}
 	}
 }
 

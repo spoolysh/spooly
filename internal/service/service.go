@@ -50,12 +50,16 @@ type Options struct {
 	// ExpungeAfter is how long a message deleted for good can still be
 	// restored, its raw source kept; 0 removes it at once.
 	ExpungeAfter time.Duration
-	// EventsRetention is how long changes are kept for lists of changes; it
-	// must be at least ExpungeAfter.
+	// EventsRetention is how long events are kept, for lists of changes and
+	// as deliveries' history; at least ExpungeAfter, or 0 to keep them
+	// forever.
 	EventsRetention time.Duration
 	// Transport sends mail; nil turns sending off.
 	Transport delivery.Transport
 }
+
+// EventsRetention is how long events are kept; 0 means forever.
+func (s *Service) EventsRetention() time.Duration { return s.opts.EventsRetention }
 
 func New(database *db.DB, store storage.Storage, opts Options) *Service {
 	s := &Service{db: database, store: store, opts: opts}

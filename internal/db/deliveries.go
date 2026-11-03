@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -107,12 +108,15 @@ func (d *DB) SendMessage(ctx context.Context, m Message, labels []string, transp
 	})
 }
 
-// deliveryData is a delivery event's data: whose delivery it is, and its
-// status after.
+// deliveryData is a delivery event's data: whose delivery it is, what it
+// became, and why.
 type deliveryData struct {
-	MessageID string `json:"message_id"`
-	MailboxID string `json:"mailbox_id"`
-	Status    string `json:"status"`
+	MessageID          string `json:"message_id"`
+	MailboxID          string `json:"mailbox_id"`
+	Status             string `json:"status"`
+	Attempt            int    `json:"attempt,omitempty"` // which, from 1, if it was one
+	Detail             string `json:"detail,omitempty"`
+	TransportMessageID string `json:"transport_message_id,omitempty"`
 }
 
 // GetDelivery returns a delivery.
@@ -134,10 +138,13 @@ type DeliveryFilter struct {
 	MailboxIDs []string // nil means all; empty, none
 	Status     string
 	After      string // the ID of the last delivery of the previous page
+	Before     string // the ID of the first delivery of the next page, for Newest
+	Newest     bool   // newest first
 	Limit      int
 }
 
-// ListDeliveries returns the deliveries f selects, oldest first.
+// ListDeliveries returns the deliveries f selects, oldest first unless
+// f.Newest.
 func (d *DB) ListDeliveries(ctx context.Context, f DeliveryFilter) ([]*Delivery, error) {
 	var where []string
 	var args []any
@@ -168,11 +175,17 @@ func (d *DB) ListDeliveries(ctx context.Context, f DeliveryFilter) ([]*Delivery,
 	if f.After != "" {
 		where, args = append(where, `id > ?`), append(args, f.After)
 	}
+	if f.Before != "" {
+		where, args = append(where, `id < ?`), append(args, f.Before)
+	}
 	query := `SELECT ` + deliveryColumns + ` FROM deliveries`
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, ` AND `)
 	}
 	query += ` ORDER BY id`
+	if f.Newest {
+		query += ` DESC`
+	}
 	if f.Limit > 0 {
 		query += fmt.Sprintf(` LIMIT %d`, f.Limit)
 	}
@@ -181,6 +194,30 @@ func (d *DB) ListDeliveries(ctx context.Context, f DeliveryFilter) ([]*Delivery,
 		return nil, fmt.Errorf("listing deliveries: %w", err)
 	}
 	return scanDeliveries(rows)
+}
+
+// CountDeliveries counts deliveries by status, a mailbox's if mailboxID
+// isn't empty.
+func (d *DB) CountDeliveries(ctx context.Context, mailboxID string) (map[string]int, error) {
+	query, args := `SELECT status, COUNT(*) FROM deliveries`, []any{}
+	if mailboxID != "" {
+		query, args = query+` WHERE mailbox_id = ?`, append(args, mailboxID)
+	}
+	rows, err := d.sql.QueryContext(ctx, d.q(query+` GROUP BY status`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("counting deliveries: %w", err)
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, fmt.Errorf("counting deliveries: %w", err)
+		}
+		counts[status] = n
+	}
+	return counts, rows.Err()
 }
 
 // ClaimDeliveries claims up to limit deliveries due by now, of the message
@@ -220,6 +257,9 @@ type DeliveryAttempt struct {
 	TransportMessageID string     // kept if empty
 	NextAttemptAt      *time.Time // for deferred
 	Attempted          bool       // counts as an attempt
+	// Note is what its event says, if not Detail: "retried by
+	// hand", say.
+	Note string
 }
 
 // RecordDelivery records an attempt on the delivery id, and logs it as updated.
@@ -248,11 +288,54 @@ func (d *DB) RecordDelivery(ctx context.Context, id string, a DeliveryAttempt) (
 	if err != nil {
 		return nil, fmt.Errorf("recording delivery: %w", err)
 	}
-	d.logEvent(tx, EventDeliveryUpdated, id, deliveryData{MessageID: dl.MessageID, MailboxID: dl.MailboxID, Status: dl.Status})
+	data := deliveryData{MessageID: dl.MessageID, MailboxID: dl.MailboxID, Status: dl.Status, Detail: a.Detail, TransportMessageID: a.TransportMessageID}
+	if a.Note != "" {
+		data.Detail = a.Note
+	}
+	if a.Attempted {
+		data.Attempt = dl.Attempts
+	}
+	d.logEvent(tx, EventDeliveryUpdated, id, data)
 	if err := d.commit(ctx, tx); err != nil {
 		return nil, fmt.Errorf("recording delivery: %w", err)
 	}
 	return dl, nil
+}
+
+// DeliveryEvent is an event of a delivery: what it became, and why.
+type DeliveryEvent struct {
+	At                 time.Time
+	Status             string
+	Attempt            int // which attempt, from 1; 0 if it wasn't one
+	Detail             string
+	TransportMessageID string
+}
+
+// DeliveryEvents returns a delivery's events, oldest first: what happened to
+// it, as far back as events are kept.
+func (d *DB) DeliveryEvents(ctx context.Context, deliveryID string) ([]DeliveryEvent, error) {
+	rows, err := d.sql.QueryContext(ctx, d.q(`SELECT id, created_at, data FROM events
+		WHERE object_id = ? AND type IN (?, ?) ORDER BY id`), deliveryID, EventDeliveryCreated, EventDeliveryUpdated)
+	if err != nil {
+		return nil, fmt.Errorf("reading delivery events: %w", err)
+	}
+	defer rows.Close()
+	events := []DeliveryEvent{}
+	for rows.Next() {
+		var id int64
+		var data string
+		var e DeliveryEvent
+		if err := rows.Scan(&id, &e.At, &data); err != nil {
+			return nil, fmt.Errorf("reading delivery events: %w", err)
+		}
+		var dd deliveryData
+		if err := json.Unmarshal([]byte(data), &dd); err != nil {
+			return nil, fmt.Errorf("decoding event %d: %w", id, err)
+		}
+		e.Status, e.Attempt, e.Detail, e.TransportMessageID = dd.Status, dd.Attempt, dd.Detail, dd.TransportMessageID
+		events = append(events, e)
+	}
+	return events, rows.Err()
 }
 
 // RetryDelivery queues a deferred or failed delivery again, due now.
@@ -265,5 +348,5 @@ func (d *DB) RetryDelivery(ctx context.Context, id string) (*Delivery, error) {
 		return nil, fmt.Errorf("%w: it's %s", ErrNotRetryable, dl.Status)
 	}
 	now := time.Now()
-	return d.RecordDelivery(ctx, id, DeliveryAttempt{Status: DeliveryQueued, Detail: dl.Detail, NextAttemptAt: &now})
+	return d.RecordDelivery(ctx, id, DeliveryAttempt{Status: DeliveryQueued, Detail: dl.Detail, NextAttemptAt: &now, Note: "retried by hand"})
 }

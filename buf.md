@@ -54,6 +54,7 @@ recipients.
 | RPC | |
 |---|---|
 | `ListDeliveries` | Deliveries by message, mailbox, or status |
+| `GetDelivery` | A delivery, with what happened to it step by step |
 | `RetryDelivery` | Try a deferred or failed delivery again now |
 
 `spooly.v1alpha1.ChangeService` — follow what changes in a mailbox.

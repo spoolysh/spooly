@@ -5,6 +5,14 @@ default:
 serve:
     go run ./cmd/spooly serve --migrate
 
+# Send to it with MAIL_TRANSPORT=smtp, SMTP_HOST=localhost, SMTP_PORT=1025.
+# Recipients outside example.com and example.org are refused, to see failed
+# deliveries.
+
+# Catch sent mail locally, shown at http://localhost:8025
+mailpit:
+    mailpit --smtp-allowed-recipients '@example\.(com|org)$'
+
 # Build the binary
 build:
     go build -o spooly ./cmd/spooly

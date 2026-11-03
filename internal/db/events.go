@@ -299,7 +299,11 @@ func (d *DB) DeleteMessage(ctx context.Context, id string, restorable bool) erro
 	if err != nil {
 		return err
 	}
-	for _, query := range []string{`DELETE FROM message_labels WHERE message_id = ?`, `DELETE FROM deliveries WHERE message_id = ?`, `DELETE FROM messages WHERE id = ?`} {
+	for _, query := range []string{
+		`DELETE FROM message_labels WHERE message_id = ?`,
+		`DELETE FROM deliveries WHERE message_id = ?`,
+		`DELETE FROM messages WHERE id = ?`,
+	} {
 		if _, err := tx.ExecContext(ctx, d.q(query), id); err != nil {
 			return fmt.Errorf("deleting message: %w", err)
 		}

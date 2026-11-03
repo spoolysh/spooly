@@ -17,6 +17,16 @@ import (
 	"github.com/spoolysh/spooly/internal/delivery"
 )
 
+// IsLocal reports whether host is this machine, where mail may go in the
+// clear: it never leaves it.
+func IsLocal(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Options configure a relay.
 type Options struct {
 	// Name names the transport in deliveries; "smtp" if empty.
@@ -24,8 +34,12 @@ type Options struct {
 	Host string
 	Port int
 	// ImplicitTLS speaks TLS from the start, as on port 465; otherwise the
-	// relay must offer STARTTLS. Mail never goes in the clear.
+	// relay must offer STARTTLS. Mail never goes in the clear, unless
+	// Plaintext.
 	ImplicitTLS bool
+	// Plaintext lets mail go in the clear to a relay that offers no
+	// STARTTLS: only for one on this machine, such as Mailpit.
+	Plaintext bool
 	// Username and Password log in with AUTH PLAIN, if Username is set.
 	Username, Password string
 	// Hello is the name to greet the relay with; "localhost" if empty.
@@ -115,13 +129,16 @@ func (t *Transport) dial(ctx context.Context) (*smtp.Client, error) {
 		}
 	}
 	if !t.opts.ImplicitTLS {
-		if ok, _ := c.Extension("STARTTLS"); !ok {
+		ok, _ := c.Extension("STARTTLS")
+		switch {
+		case ok:
+			if err := c.StartTLS(t.opts.TLS); err != nil {
+				c.Close()
+				return nil, err
+			}
+		case !t.opts.Plaintext:
 			c.Close()
 			return nil, fmt.Errorf("%s offers no STARTTLS: mail would go in the clear", addr)
-		}
-		if err := c.StartTLS(t.opts.TLS); err != nil {
-			c.Close()
-			return nil, err
 		}
 	}
 	if t.opts.Username != "" {
