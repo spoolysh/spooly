@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,9 @@ import (
 
 	"github.com/spoolysh/spooly/internal/auth"
 	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/delivery"
+	"github.com/spoolysh/spooly/internal/delivery/cloudflare"
+	"github.com/spoolysh/spooly/internal/delivery/smtp"
 	"github.com/spoolysh/spooly/internal/service"
 	"github.com/spoolysh/spooly/internal/storage"
 	"github.com/spoolysh/spooly/internal/storage/gcs"
@@ -143,7 +148,7 @@ func cmdMigrate() {
 
 // newService builds the service, with the admins from ADMIN_EMAILS: a
 // comma-separated list of the emails they sign in with.
-func newService(database *db.DB, store storage.Storage) *service.Service {
+func newService(database *db.DB, store storage.Storage, transport delivery.Transport) *service.Service {
 	var admins []string
 	if v := os.Getenv("ADMIN_EMAILS"); v != "" {
 		admins = strings.Split(v, ",")
@@ -155,7 +160,37 @@ func newService(database *db.DB, store storage.Storage) *service.Service {
 	if eventsRetention == 0 || expungeAfter > eventsRetention {
 		log.Fatalf("EVENTS_RETENTION (%s) must be positive and at least EXPUNGE_AFTER (%s)", eventsRetention, expungeAfter)
 	}
-	return service.New(database, store, service.Options{Admins: admins, ExpungeAfter: expungeAfter, EventsRetention: eventsRetention})
+	return service.New(database, store, service.Options{
+		Admins: admins, ExpungeAfter: expungeAfter, EventsRetention: eventsRetention, Transport: transport,
+	})
+}
+
+// newTransport returns the mail transport MAIL_TRANSPORT names, or nil to
+// turn sending off. hostname's host is the name it greets relays with.
+func newTransport(hostname string) delivery.Transport {
+	hello := "localhost"
+	if u, err := url.Parse(hostname); err == nil && u.Hostname() != "" {
+		hello = u.Hostname()
+	}
+	switch name := os.Getenv("MAIL_TRANSPORT"); name {
+	case "":
+		log.Printf("MAIL_TRANSPORT is empty: sending is off")
+		return nil
+	case "smtp":
+		port, err := strconv.Atoi(env("SMTP_PORT", "587"))
+		if err != nil {
+			log.Fatalf("SMTP_PORT: %v", err)
+		}
+		return smtp.New(smtp.Options{
+			Host: envRequired("SMTP_HOST"), Port: port, ImplicitTLS: port == 465,
+			Username: os.Getenv("SMTP_USERNAME"), Password: os.Getenv("SMTP_PASSWORD"), Hello: hello,
+		})
+	case "cloudflare":
+		return cloudflare.New(envRequired("CLOUDFLARE_API_TOKEN"), hello)
+	default:
+		log.Fatalf("unknown MAIL_TRANSPORT %q: use smtp or cloudflare", name)
+		return nil
+	}
 }
 
 // duration reads an environment variable as a duration, such as 720h.
@@ -200,6 +235,17 @@ func prune(svc *service.Service) {
 	}
 }
 
+// deliver sends deliveries as they come due, such as those deferred, every
+// half a minute.
+func deliver(svc *service.Service) {
+	for {
+		if err := svc.SendDue(context.Background()); err != nil {
+			log.Printf("sending: %v", err)
+		}
+		time.Sleep(30 * time.Second)
+	}
+}
+
 // cmdServe serves the API and dashboard.
 func cmdServe(migrate bool) {
 	port := env("PORT", "8080")
@@ -224,8 +270,9 @@ func cmdServe(migrate bool) {
 		allowedDomains,
 	)
 
-	svc := newService(database, store)
+	svc := newService(database, store, newTransport(hostname))
 	go prune(svc)
+	go deliver(svc)
 
 	webUI := web.NewHandler(database, sessions, svc, hostname, Version)
 

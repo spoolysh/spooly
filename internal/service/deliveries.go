@@ -1,0 +1,207 @@
+package service
+
+import (
+	"context"
+	"log"
+	"slices"
+	"strings"
+	"time"
+
+	"connectrpc.com/connect/v2"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	spoolyv1alpha1 "github.com/spoolysh/spooly/gen/spooly/v1alpha1"
+	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/delivery"
+	"github.com/spoolysh/spooly/internal/mailparse"
+)
+
+// MaxRecipients is the most recipients a sent message can have.
+const MaxRecipients = 100
+
+func deliveryProto(d *db.Delivery) *spoolyv1alpha1.Delivery {
+	p := &spoolyv1alpha1.Delivery{
+		Id:                 d.ID,
+		MessageId:          d.MessageID,
+		MailboxId:          d.MailboxID,
+		Recipient:          d.Recipient,
+		Status:             d.Status,
+		Transport:          d.Transport,
+		TransportMessageId: d.TransportMessageID,
+		Attempts:           int32(d.Attempts),
+		Detail:             d.Detail,
+		CreatedAt:          timestamppb.New(d.CreatedAt),
+		UpdatedAt:          timestamppb.New(d.UpdatedAt),
+	}
+	if d.NextAttemptAt != nil && d.Pending() {
+		p.NextAttemptAt = timestamppb.New(*d.NextAttemptAt)
+	}
+	return p
+}
+
+func deliveryProtos(list []*db.Delivery) []*spoolyv1alpha1.Delivery {
+	out := make([]*spoolyv1alpha1.Delivery, len(list))
+	for i, d := range list {
+		out[i] = deliveryProto(d)
+	}
+	return out
+}
+
+func (s *Service) SendMessage(ctx context.Context, req *spoolyv1alpha1.SendMessageRequest) (*spoolyv1alpha1.SendMessageResponse, error) {
+	key, err := idempotencyKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	m, deliveries, err := s.Send(ctx, req.Raw, req.RcptTo, key)
+	if err != nil {
+		return nil, err
+	}
+	return &spoolyv1alpha1.SendMessageResponse{Message: messageProto(m), Deliveries: deliveryProtos(deliveries)}, nil
+}
+
+// Send sends raw from the mailbox its From is an address of, if ctx's user
+// can see it: it stores it in the sent folder, read, queues a delivery to
+// each of rcptTo, or if none, of its To, Cc, and Bcc, and tries them. A
+// repeated idempotency key returns the stored message and its deliveries,
+// sending nothing again.
+func (s *Service) Send(ctx context.Context, raw []byte, rcptTo []string, key string) (*db.Message, []*db.Delivery, error) {
+	if s.spool == nil {
+		return nil, nil, connect.Errorf(connect.CodeFailedPrecondition, "sending is off: set MAIL_TRANSPORT")
+	}
+	parsed, err := mailparse.Parse(raw)
+	if err != nil {
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+	}
+	from := strings.ToLower(parsed.From.Address)
+	if from == "" {
+		return nil, nil, connect.Errorf(connect.CodeInvalidArgument, "From: the message has no sender")
+	}
+	// A plus address is its mailbox's, as for mail coming in.
+	a, err := s.requireMailbox(ctx, from)
+	if err != nil {
+		return nil, nil, err
+	}
+	_, domain, _ := strings.Cut(from, "@")
+	out, err := delivery.Prepare(raw, domain, time.Now())
+	if err != nil {
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+	}
+	recipients := rcptTo
+	if len(recipients) == 0 {
+		for _, list := range [][]db.Address{parsed.To, parsed.Cc} {
+			for _, addr := range list {
+				recipients = append(recipients, addr.Address)
+			}
+		}
+		recipients = append(recipients, out.Bcc...)
+	}
+	recipients = uniqueAddresses(recipients)
+	if len(recipients) == 0 {
+		return nil, nil, connect.Errorf(connect.CodeInvalidArgument, "no recipients: set To, Cc, or Bcc, or rcpt_to")
+	}
+	if len(recipients) > MaxRecipients {
+		return nil, nil, connect.Errorf(connect.CodeInvalidArgument, "%d recipients: at most %d", len(recipients), MaxRecipients)
+	}
+
+	m, err := s.Store(ctx, Incoming{
+		MailboxIDOrAddress: a.ID, MailFrom: from, IdempotencyKey: key, Raw: out.Raw,
+		Folder: db.FolderSent, Flags: db.Flags{Seen: true}, Recipients: recipients,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	// Not sent now, deliveries stay due, for the spool's next round.
+	if err := s.spool.Send(ctx, m.ID); err != nil {
+		log.Printf("sending message %s: %v", m.ID, err)
+	}
+	deliveries, err := s.db.ListDeliveries(ctx, db.DeliveryFilter{MessageIDs: []string{m.ID}})
+	if err != nil {
+		return nil, nil, dbError(err)
+	}
+	return m, deliveries, nil
+}
+
+// uniqueAddresses lowercases addresses and drops repeats and empties.
+func uniqueAddresses(addresses []string) []string {
+	out := []string{}
+	for _, a := range addresses {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a != "" && !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func (s *Service) ListDeliveries(ctx context.Context, req *spoolyv1alpha1.ListDeliveriesRequest) (*spoolyv1alpha1.ListDeliveriesResponse, error) {
+	f := db.DeliveryFilter{Status: req.GetStatus(), After: req.GetAfter(), Limit: listLimit(req.Limit)}
+	if len(req.MessageIds) > 0 {
+		f.MessageIDs = req.MessageIds
+	}
+	if req.MailboxIdOrAddress != nil {
+		a, err := s.requireMailbox(ctx, *req.MailboxIdOrAddress)
+		if err != nil {
+			return nil, err
+		}
+		f.MailboxID = a.ID
+	} else {
+		ids, err := s.VisibleMailboxes(ctx)
+		if err != nil {
+			return nil, err
+		}
+		f.MailboxIDs = ids
+	}
+	list, err := s.db.ListDeliveries(ctx, f)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	return &spoolyv1alpha1.ListDeliveriesResponse{Deliveries: deliveryProtos(list)}, nil
+}
+
+func (s *Service) RetryDelivery(ctx context.Context, req *spoolyv1alpha1.RetryDeliveryRequest) (*spoolyv1alpha1.RetryDeliveryResponse, error) {
+	d, err := s.Retry(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	return &spoolyv1alpha1.RetryDeliveryResponse{Delivery: deliveryProto(d)}, nil
+}
+
+// Retry tries a deferred or failed delivery again now, if ctx's user can
+// see its mailbox, and returns it after.
+func (s *Service) Retry(ctx context.Context, id string) (*db.Delivery, error) {
+	if s.spool == nil {
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sending is off: set MAIL_TRANSPORT")
+	}
+	d, err := s.db.GetDelivery(ctx, id)
+	if err != nil {
+		return nil, dbError(err)
+	}
+	if err := s.Require(ctx, d.MailboxID); err != nil {
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return nil, connect.Errorf(connect.CodeNotFound, "%s: %s", db.ErrDeliveryNotFound, id)
+		}
+		return nil, err
+	}
+	if _, err := s.db.RetryDelivery(ctx, id); err != nil {
+		return nil, dbError(err)
+	}
+	if err := s.spool.Send(ctx, d.MessageID); err != nil {
+		log.Printf("retrying delivery %s: %v", id, err)
+	}
+	if d, err = s.db.GetDelivery(ctx, id); err != nil {
+		return nil, dbError(err)
+	}
+	return d, nil
+}
+
+// SendDue tries the deliveries that are due, such as those deferred until
+// now. It does nothing without a transport.
+func (s *Service) SendDue(ctx context.Context) error {
+	if s.spool == nil {
+		return nil
+	}
+	return s.spool.SendDue(ctx)
+}
+
+// Sends reports whether the service has a transport to send with.
+func (s *Service) Sends() bool { return s.spool != nil }

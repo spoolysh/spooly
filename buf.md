@@ -40,12 +40,21 @@ Over Connect or gRPC only, and still taking shape: they may change before
 moving to `spooly.v1`.
 
 `spooly.v1alpha1.MessageService` — list a folder or label by seq, for sync
-clients such as an IMAP bridge, and update messages in batches.
+clients such as an IMAP bridge, update messages in batches, and send mail.
 
 | RPC | |
 |---|---|
 | `ListMessagesBySeq` | A folder or label in arrival order, with each message's seq |
 | `BatchUpdateMessages` | One update to up to 1000 messages |
+| `SendMessage` | Send a raw message from the mailbox of its From, with a delivery to each recipient |
+
+`spooly.v1alpha1.DeliveryService` — how sent messages are getting to their
+recipients.
+
+| RPC | |
+|---|---|
+| `ListDeliveries` | Deliveries by message, mailbox, or status |
+| `RetryDelivery` | Try a deferred or failed delivery again now |
 
 `spooly.v1alpha1.ChangeService` — follow what changes in a mailbox.
 

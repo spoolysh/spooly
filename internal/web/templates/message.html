@@ -43,6 +43,25 @@
 </div>
 <div id="action-status" role="status" class="hidden mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"></div>
 
+{{with .Deliveries}}
+<section aria-labelledby="delivery-title" class="bg-white rounded-xl border border-gray-200 shadow-sm mb-6 px-6 py-4">
+  <h3 id="delivery-title" class="text-xs font-medium uppercase tracking-wider text-gray-500 mb-2">Delivery</h3>
+  <ul class="divide-y divide-gray-100 text-sm">
+    {{range .}}
+    <li class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+      <span class="min-w-0 break-all text-gray-800">{{.Recipient}}</span>
+      <span class="inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium {{deliveryClass .Status}}">{{labelTitle .Status}}</span>
+      {{if .Detail}}<span class="min-w-0 break-words font-mono text-xs text-gray-500">{{.Detail}}</span>{{end}}
+      {{if and .Pending .NextAttemptAt}}<span class="text-xs text-gray-400">next try {{timeOf .NextAttemptAt}}</span>{{end}}
+      {{if or (eq .Status "deferred") (eq .Status "failed")}}
+      <button type="button" onclick="retryDelivery('{{.ID}}')" class="btn ml-auto !px-2 !py-0.5 !text-xs">Retry</button>
+      {{end}}
+    </li>
+    {{end}}
+  </ul>
+</section>
+{{end}}
+
 <div class="bg-white rounded-xl border border-gray-200 shadow-sm mb-6">
   <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 px-6 py-4 text-sm">
     <dt class="text-gray-500">From</dt>
@@ -137,6 +156,20 @@
 </style>
 
 <script>
+  // retryDelivery tries a deferred or failed delivery again now.
+  async function retryDelivery(id) {
+    document.querySelectorAll('.btn').forEach((b) => b.disabled = true);
+    const resp = await fetch('/ui/deliveries/' + id + '/retry', { method: 'POST' });
+    if (resp.ok) {
+      location.reload();
+      return;
+    }
+    const status = document.getElementById('action-status');
+    status.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    status.classList.remove('hidden');
+    document.querySelectorAll('.btn').forEach((b) => b.disabled = false);
+  }
+
   function changeLabels(add, remove) {
     update({ add_labels: add, remove_labels: remove });
   }

@@ -1,0 +1,57 @@
+{{define "content"}}
+<div class="mb-6">
+  <h2 class="text-2xl font-bold text-gray-900 tracking-tight">New message</h2>
+</div>
+
+{{if not .Sends}}
+<div role="status" class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+  Sending is off: set <code class="font-mono">MAIL_TRANSPORT</code> to send mail.
+</div>
+{{end}}
+
+<form id="compose" class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-4 max-w-3xl">
+  <input type="hidden" name="key" id="key">
+  <div class="grid grid-cols-[max-content_1fr] items-center gap-x-4 gap-y-3 text-sm">
+    <label for="mailbox" class="text-gray-500">From</label>
+    <select id="mailbox" name="mailbox" required class="select w-full">
+      {{range .Mailboxes}}<option value="{{.ID}}"{{if eq .Address $.Mailbox}} selected{{end}}>{{if .Name}}{{.Name}} &lt;{{.Address}}&gt;{{else}}{{.Address}}{{end}}</option>{{end}}
+    </select>
+    <label for="to" class="text-gray-500">To</label>
+    <input type="text" id="to" name="to" autocomplete="off" placeholder="ann@example.com, Bob &lt;bob@example.com&gt;" class="field">
+    <label for="cc" class="text-gray-500">Cc</label>
+    <input type="text" id="cc" name="cc" autocomplete="off" class="field">
+    <label for="bcc" class="text-gray-500">Bcc</label>
+    <input type="text" id="bcc" name="bcc" autocomplete="off" class="field">
+    <label for="subject" class="text-gray-500">Subject</label>
+    <input type="text" id="subject" name="subject" maxlength="998" class="field">
+  </div>
+  <label for="body" class="sr-only">Message</label>
+  <textarea id="body" name="body" rows="14" class="field font-sans"></textarea>
+  <div class="flex items-center gap-3">
+    <button type="submit" id="send" {{if or (not .Sends) (not .Mailboxes)}}disabled{{end}}
+      class="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-brand-500 disabled:opacity-50">Send</button>
+    <p id="send-error" role="alert" class="hidden text-sm text-red-700"></p>
+  </div>
+</form>
+
+<style type="text/tailwindcss">
+  .field { @apply w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500; }
+</style>
+
+<script>
+  // One key per message written here: sending it again after an error or a
+  // second click doesn't send it twice.
+  document.getElementById('key').value = crypto.randomUUID();
+  document.getElementById('compose').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const send = document.getElementById('send');
+    send.disabled = true;
+    const resp = await fetch('/ui/messages/send', { method: 'POST', body: new FormData(e.target) });
+    if (resp.ok) { location.href = '/' + (await resp.json()).id; return; }
+    const error = document.getElementById('send-error');
+    error.textContent = (await resp.text()).trim() || 'Request failed with status ' + resp.status;
+    error.classList.remove('hidden');
+    send.disabled = false;
+  });
+</script>
+{{end}}

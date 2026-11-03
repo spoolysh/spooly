@@ -94,6 +94,8 @@ type Incoming struct {
 	// Flags are none for new mail; a mirrored or saved message may have
 	// some, such as Seen.
 	Flags db.Flags
+	// Recipients, if any, get the message through the transport: Send's.
+	Recipients []string
 }
 
 // Store parses and stores an incoming message in the mailbox it was sent
@@ -151,7 +153,13 @@ func (s *Service) Store(ctx context.Context, in Incoming) (*db.Message, error) {
 	m := parsedMessage(id, mailbox.ID, parsed, len(in.Raw))
 	m.MailFrom, m.RcptTo = strings.TrimSpace(in.MailFrom), rcptTo
 	m.Folder, m.Flags, m.IdempotencyKey, m.ReceivedAt = folder, in.Flags, in.IdempotencyKey, receivedAt
-	stored, created, err := s.db.CreateMessage(ctx, m, labels)
+	var stored *db.Message
+	var created bool
+	if in.Recipients != nil {
+		stored, created, err = s.db.SendMessage(ctx, m, labels, s.spool.Transport(), in.Recipients)
+	} else {
+		stored, created, err = s.db.CreateMessage(ctx, m, labels)
+	}
 	if err != nil || !created {
 		if derr := s.store.Delete(ctx, id); derr != nil {
 			log.Printf("removing raw message %s: %v", id, derr)

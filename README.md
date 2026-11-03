@@ -3,8 +3,9 @@
 Mail backend. Incoming mail is stored per mailbox, raw and parsed, organized
 with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
 
-> Early prototype: receiving mail, the API, and the dashboard work, and
-> POP3 and IMAP through the bridge; sending mail is next.
+> Early prototype: receiving mail, the API, and the dashboard work, POP3
+> and IMAP through the bridge, and sending through an SMTP relay or
+> Cloudflare, in alpha.
 
 - **Mailboxes**: receive mail for any of their addresses, looked up by ID or
   address; plus addresses (`hello+billing@`) reach `hello@`, labeled
@@ -17,6 +18,8 @@ with labels, and read through one API: REST, gRPC, gRPC-Web, and Connect.
   bodies, and attachments are read from it, only the part asked for
 - **Any inbound**: a Cloudflare Email Routing worker first; anything that can
   POST the raw message works
+- **Sending**: through an SMTP relay or Cloudflare, with each recipient's
+  delivery tracked and retried
 - **POP3 and IMAP**: mail clients read a mailbox through the
   [bridge](#mail-clients), with an API key as the password
 - **Dashboard**: read mail, move it and label it, and manage mailboxes,
@@ -102,6 +105,50 @@ export default {
   },
 };
 ```
+
+## Sending mail
+
+Sending is in alpha, over Connect or gRPC only: `MessageService/SendMessage`
+under `spooly.v1alpha1`, and `DeliveryService` for how it went. The
+dashboard writes plain-text messages with **New message**.
+
+```bash
+curl -X POST "https://spooly.example.com/spooly.v1alpha1.MessageService/SendMessage" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 7c41…" \
+  -d '{"raw": "'"$(base64 < message.eml | tr -d '\n')"'"}'
+```
+
+The message is raw RFC 5322. Its From says which mailbox sends it: an
+address of a mailbox you can see, or a plus address of one. Its Bcc header
+is taken out, and a
+Message-ID and a Date are added if missing; recipients are its To, Cc, and
+Bcc, unless `rcpt_to` lists them. It's stored in the mailbox's sent folder,
+read, as it went out, and handed to the mail transport at once. The
+response has the message and a delivery to each recipient; a refusal
+doesn't fail the call. With the same `Idempotency-Key`, a retry returns them
+and sends nothing again.
+
+Each delivery is `queued` until handed over, then `sent` once the transport
+took it, `deferred` while it's retried (after 1 minute, then 5, 15, 30, an
+hour, 2, then every 4 hours), or `failed` if the transport refused it for
+good or for 24 hours. `ListDeliveries` lists them by message, mailbox, or
+status, and `RetryDelivery` tries a deferred or failed one again now.
+Deleting a message deletes its deliveries, cancelling those still to go.
+Changes are logged as `delivery.created` and `delivery.updated` events.
+
+The transport is `MAIL_TRANSPORT`:
+
+- `smtp`: any SMTP relay, such as Google Workspace's SMTP relay service
+  (`smtp-relay.gmail.com`), which sends from any address of your domains.
+  Port 465 speaks TLS from the start; any other must offer STARTTLS, so mail
+  never goes in the clear.
+- `cloudflare`: Cloudflare Email Service, over its SMTP submission with an
+  API token. The domain must be onboarded to Email Sending, which needs the
+  Workers Paid plan.
+
+Either way, publish SPF and DKIM for the relay, and DMARC, or mail goes to
+spam.
 
 ## Folders, labels, and flags
 
@@ -315,6 +362,10 @@ The OpenAPI spec is generated to `public/openapi.yaml` and served at
 | `GCS_BUCKET` | Bucket for `gcs`; credentials from Application Default Credentials | — |
 | `EVENTS_RETENTION` | How long changes are kept for lists of changes; at least `EXPUNGE_AFTER` | `720h` (30 days) |
 | `EXPUNGE_AFTER` | How long a message deleted for good can still be restored by an admin, its raw source kept; `0` removes it at once | `168h` (7 days) |
+| `MAIL_TRANSPORT` | How mail is sent: `smtp`, `cloudflare`, or empty to turn sending off | — (off) |
+| `SMTP_HOST`, `SMTP_PORT` | The relay for `smtp`; port 465 is TLS from the start, any other must offer STARTTLS | —, `587` |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | The relay's login, if it takes one | — |
+| `CLOUDFLARE_API_TOKEN` | An API token with Email Sending: Edit, for `cloudflare` | — |
 | `ADMIN_EMAILS` | Comma-separated sign-in emails of admins, who manage mailboxes, labels, and users, and reach every mailbox | — (no admins) |
 | `SESSION_SECRET` | HMAC key for signing session cookies | required |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID | required |
@@ -366,10 +417,11 @@ just build      # build the spooly binary
 | Package | |
 |---|---|
 | [cmd/spooly](cmd/spooly) | Entry point: `serve` and `migrate` |
-| [internal/service](internal/service) | The API: Mailbox, Label, and Message services, mounted for Connect, gRPC, and REST |
+| [internal/service](internal/service) | The API: Mailbox, Label, and Message services, and the alpha Change and Delivery services, mounted for Connect, gRPC, and REST |
 | [internal/mailparse](internal/mailparse) | Parses raw messages into header fields, bodies, a snippet, and attachments |
 | [internal/db](internal/db) | SQLite and PostgreSQL storage, with migrations |
 | [internal/storage](internal/storage) | Raw message storage: local disk, S3-compatible, GCS, or memory |
+| [internal/delivery](internal/delivery) | Sends mail through a transport, SMTP or Cloudflare, retrying each recipient's delivery |
 | [internal/web](internal/web) | The dashboard |
 | [internal/auth](internal/auth) | Google sign-in and session cookies |
 | [spoolytest](spoolytest) | Runs the API in-process for other modules' tests, such as the bridge's |

@@ -49,14 +49,16 @@ func NewHandler(database *db.DB, sessions *auth.SessionManager, svc *service.Ser
 		pages:    map[string]*template.Template{},
 	}
 	funcs := template.FuncMap{
-		"version":    func() string { return h.version },
-		"isFolder":   db.IsFolder,
-		"formatSize": formatSize,
-		"labelTitle": labelTitle,
-		"listURL":    listURL,
-		"sub":        func(a, b int) int { return a - b },
+		"version":       func() string { return h.version },
+		"isFolder":      db.IsFolder,
+		"formatSize":    formatSize,
+		"labelTitle":    labelTitle,
+		"listURL":       listURL,
+		"sub":           func(a, b int) int { return a - b },
+		"deliveryClass": deliveryClass,
+		"timeOf":        func(t *time.Time) string { return t.Local().Format(time.DateTime) },
 	}
-	for _, p := range []string{"messages", "message", "mailboxes", "mailbox", "labels", "users", "apikeys"} {
+	for _, p := range []string{"messages", "message", "compose", "mailboxes", "mailbox", "labels", "users", "apikeys"} {
 		h.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).ParseFS(
 			templateFS,
 			"templates/layout.html",
@@ -76,6 +78,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// isn't a message ID is a 404. A second path segment would clash with
 	// the API's /v1/ and /spooly.v1.*Service/ subtrees.
 	page("GET /{id}", h.MessagePage)
+	page("GET /compose", h.ComposePage)
 	page("GET /mailboxes", h.MailboxesPage)
 	page("GET /mailboxes/{address}", h.MailboxPage)
 	page("GET /labels", h.LabelsPage)
@@ -98,6 +101,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	action("POST /ui/messages/{id}/update", h.updateMessage)
 	action("POST /ui/messages/update", h.updateMessages)
 	action("POST /ui/messages/delete", h.deleteMessages)
+	action("POST /ui/messages/send", h.sendMessage)
+	action("POST /ui/deliveries/{id}/retry", h.retryDelivery)
 	action("POST /ui/mailboxes/{id}/empty", h.emptyFolder)
 	action("DELETE /ui/users/{id}/keys", h.revokeKeys)
 	action("DELETE /ui/users/{id}/access", h.removeAccess)
@@ -157,6 +162,10 @@ type messageRow struct {
 	Attachments int
 	ReceivedAt  string
 	ReceivedISO string
+	// Delivery says how sending it went, for a message Spooly sent; Problem
+	// if a delivery failed.
+	Delivery        string
+	DeliveryProblem bool
 }
 
 // view is what a message list shows, as its URL says, with the API's
@@ -368,6 +377,15 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 		}
 		data.Views = append(data.Views, link)
 	}
+	ids := make([]string, len(messages))
+	for i, m := range messages {
+		ids[i] = m.ID
+	}
+	deliveries, err := h.deliveriesOf(r, ids)
+	if err != nil {
+		h.internalError(w, "listing deliveries", err)
+		return
+	}
 	for _, m := range messages {
 		row := messageRow{
 			ID:          m.ID,
@@ -386,6 +404,15 @@ func (h *Handler) MessagesPage(w http.ResponseWriter, r *http.Request) {
 		}
 		if row.From == "" {
 			row.From = m.From.Address
+		}
+		// What Spooly sent went to its recipients, not to the mailbox.
+		if list := deliveries[m.ID]; len(list) > 0 {
+			row.Delivery, row.DeliveryProblem = deliverySummary(list)
+			to := make([]string, len(list))
+			for i, d := range list {
+				to[i] = d.Recipient
+			}
+			row.RcptTo = strings.Join(to, ", ")
 		}
 		// Inbox tells, outside the inbox, what isn't archived.
 		if m.Folder == db.FolderInbox && v.Folder != db.FolderInbox {
@@ -415,6 +442,8 @@ type messageData struct {
 	// Attachments are the indexes of the parts to list as attachments: not
 	// a body, nor an image the HTML body shows.
 	Attachments []int
+	// Deliveries are its deliveries, if Spooly sent it.
+	Deliveries []*db.Delivery
 }
 
 func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
@@ -497,6 +526,12 @@ func (h *Handler) MessagePage(w http.ResponseWriter, r *http.Request) {
 	for _, l := range m.Labels {
 		data.Has[l] = true
 	}
+	deliveries, err := h.deliveriesOf(r, []string{m.ID})
+	if err != nil {
+		h.internalError(w, "listing deliveries", err)
+		return
+	}
+	data.Deliveries = deliveries[m.ID]
 	html, shown := inlineParts(m)
 	for _, i := range m.Parts.AttachmentIndexes() {
 		if !shown[i] {

@@ -2,6 +2,7 @@
 <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
   <h2 class="text-2xl font-bold text-gray-900 tracking-tight text-balance">{{.View.Title}}</h2>
   <div class="flex flex-wrap items-center gap-3">
+    <a href="/compose{{if .Mailbox}}?mailbox={{.Mailbox}}{{end}}" class="rounded-md bg-brand-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2">New message</a>
     <label for="mailbox-filter" class="sr-only">Mailbox</label>
     <select id="mailbox-filter" onchange="location.href = this.value" class="select">
       <option value="{{listURL "" .View}}">All mailboxes</option>
@@ -97,6 +98,7 @@
             <p class="mt-0.5 flex items-center gap-3 text-xs text-gray-400">
               <span class="truncate">to {{.RcptTo}}</span>
               {{if .Attachments}}<span class="shrink-0" title="{{.Attachments}} attachment(s)">&#128206; {{.Attachments}}</span>{{end}}
+              {{if .Delivery}}<span class="shrink-0 rounded border px-1.5 font-medium {{if .DeliveryProblem}}bg-red-50 text-red-700 border-red-200{{else}}bg-gray-50 text-gray-600 border-gray-200{{end}}">{{.Delivery}}</span>{{end}}
             </p>
           </div>
         </a>

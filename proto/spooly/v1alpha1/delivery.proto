@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package spooly.v1alpha1;
+
+import "buf/validate/validate.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/spoolysh/spooly/gen/spooly/v1alpha1;spoolyv1alpha1";
+
+// How sent messages are getting to their recipients; still taking shape.
+service DeliveryService {
+  // List deliveries, oldest first: a message's, those of several messages,
+  // such as a page of a list, or a mailbox's. Only of mailboxes the caller
+  // can see. A page shorter than limit is the last one.
+  rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Try a deferred or failed delivery again now. Others fail with
+  // FAILED_PRECONDITION.
+  rpc RetryDelivery(RetryDeliveryRequest) returns (RetryDeliveryResponse);
+}
+
+// A sent message's way to one recipient, through the mail transport.
+message Delivery {
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  string message_id = 2 [(google.api.field_behavior) = REQUIRED];
+  string mailbox_id = 3 [(google.api.field_behavior) = REQUIRED];
+  string recipient = 4 [(google.api.field_behavior) = REQUIRED];
+  // queued: waiting to be handed to the transport. deferred: the transport
+  // failed for now; tried again at next_attempt_at. sent: the transport
+  // took it. Then, as far as the transport tells: delayed, still trying;
+  // delivered, the recipient's server took it; bounced; complained, the
+  // recipient reported it as spam. failed: Spooly gave up, as the transport
+  // refused it for good, or for too long.
+  string status = 5 [(google.api.field_behavior) = REQUIRED];
+  // The transport, as MAIL_TRANSPORT names it: smtp or cloudflare.
+  string transport = 6 [(google.api.field_behavior) = REQUIRED];
+  // The transport's ID for the message, to look it up there. Empty if it
+  // gave none.
+  string transport_message_id = 7 [(google.api.field_behavior) = REQUIRED];
+  // How many times it was handed to the transport.
+  int32 attempts = 8 [(google.api.field_behavior) = REQUIRED];
+  // While queued or deferred: when it's tried next.
+  optional google.protobuf.Timestamp next_attempt_at = 9;
+  // The transport's last reply, or why it failed, such as "550 5.1.1 user
+  // unknown".
+  string detail = 10 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.Timestamp created_at = 11 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.Timestamp updated_at = 12 [(google.api.field_behavior) = REQUIRED];
+}
+
+message ListDeliveriesRequest {
+  // Those of these messages.
+  repeated string message_ids = 1 [(buf.validate.field).repeated = {
+    max_items: 1000
+    unique: true
+    items: {
+      string: {pattern: "^[0-9a-hjkmnp-tv-z]{26}$"}
+    }
+  }];
+  // Those of this mailbox. Treated as an address if it contains "@".
+  optional string mailbox_id_or_address = 2 [(buf.validate.field).cel = {
+    id: "mailbox_id_or_address"
+    message: "must be a mailbox ID or an email address"
+    expression: "this.matches('^[0-9a-hjkmnp-tv-z]{26}$') || this.isEmail()"
+  }];
+  // Those with this status.
+  optional string status = 3 [(buf.validate.field).string = {
+    in: [
+      "queued",
+      "deferred",
+      "sent",
+      "delayed",
+      "delivered",
+      "bounced",
+      "complained",
+      "failed"
+    ]
+  }];
+  // ID of the last delivery of the previous page.
+  optional string after = 4 [(buf.validate.field).string.pattern = "^[0-9a-hjkmnp-tv-z]{26}$"];
+  // Absent means 50.
+  optional int32 limit = 5 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 1000
+  }];
+}
+
+message ListDeliveriesResponse {
+  repeated Delivery deliveries = 1;
+}
+
+message RetryDeliveryRequest {
+  string id = 1 [(buf.validate.field) = {
+    required: true
+    string: {pattern: "^[0-9a-hjkmnp-tv-z]{26}$"}
+  }];
+}
+
+message RetryDeliveryResponse {
+  // After the retry: sent, deferred again, or failed.
+  Delivery delivery = 1 [(buf.validate.field).required = true];
+}

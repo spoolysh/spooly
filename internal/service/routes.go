@@ -50,6 +50,7 @@ func (s *Service) mount(mux *http.ServeMux, authenticate func(http.Handler) http
 	spoolyv1connect.RegisterMessageServiceHandler(server, s)
 	spoolyv1alpha1connect.RegisterMessageServiceHandler(server, s)
 	spoolyv1alpha1connect.RegisterChangeServiceHandler(server, s)
+	spoolyv1alpha1connect.RegisterDeliveryServiceHandler(server, s)
 
 	connecthttp.Mount(wrappingMux{mux, authenticate}, server)
 

@@ -279,8 +279,9 @@ func (d *DB) restorable() string {
 // DeleteMessage deletes a message for good, logging it as deleted with its
 // mailbox. If restorable, the event also keeps the DeletedMessage, which
 // RestoreMessage needs until Expunge drops it, and the caller keeps the raw
-// source until then; otherwise the caller removes it now. Deleting a
-// missing message is not an error.
+// source until then; otherwise the caller removes it now. Its deliveries go
+// too, so those still to go are cancelled. Deleting a missing message is
+// not an error.
 func (d *DB) DeleteMessage(ctx context.Context, id string, restorable bool) error {
 	tx, err := d.begin(ctx)
 	if err != nil {
@@ -298,7 +299,7 @@ func (d *DB) DeleteMessage(ctx context.Context, id string, restorable bool) erro
 	if err != nil {
 		return err
 	}
-	for _, query := range []string{`DELETE FROM message_labels WHERE message_id = ?`, `DELETE FROM messages WHERE id = ?`} {
+	for _, query := range []string{`DELETE FROM message_labels WHERE message_id = ?`, `DELETE FROM deliveries WHERE message_id = ?`, `DELETE FROM messages WHERE id = ?`} {
 		if _, err := tx.ExecContext(ctx, d.q(query), id); err != nil {
 			return fmt.Errorf("deleting message: %w", err)
 		}

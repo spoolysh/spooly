@@ -1,5 +1,5 @@
-// Package service implements the Spooly API: MailboxService, LabelService, and
-// MessageService.
+// Package service implements the Spooly API: MailboxService, LabelService,
+// MessageService, and the alpha ChangeService and DeliveryService.
 package service
 
 import (
@@ -16,6 +16,7 @@ import (
 	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
 	"github.com/spoolysh/spooly/gen/spooly/v1alpha1/spoolyv1alpha1connect"
 	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/delivery"
 	"github.com/spoolysh/spooly/internal/storage"
 )
 
@@ -28,6 +29,7 @@ type Service struct {
 	store  storage.Storage
 	admins []string // lowercased emails
 	opts   Options
+	spool  *delivery.Spool // nil without a transport: sending is off
 }
 
 var (
@@ -35,8 +37,9 @@ var (
 	_ spoolyv1connect.LabelServiceHandler   = (*Service)(nil)
 	_ spoolyv1connect.MessageServiceHandler = (*Service)(nil)
 
-	_ spoolyv1alpha1connect.MessageServiceHandler = (*Service)(nil)
-	_ spoolyv1alpha1connect.ChangeServiceHandler  = (*Service)(nil)
+	_ spoolyv1alpha1connect.MessageServiceHandler  = (*Service)(nil)
+	_ spoolyv1alpha1connect.ChangeServiceHandler   = (*Service)(nil)
+	_ spoolyv1alpha1connect.DeliveryServiceHandler = (*Service)(nil)
 )
 
 // Options configure a Service.
@@ -50,10 +53,15 @@ type Options struct {
 	// EventsRetention is how long changes are kept for lists of changes; it
 	// must be at least ExpungeAfter.
 	EventsRetention time.Duration
+	// Transport sends mail; nil turns sending off.
+	Transport delivery.Transport
 }
 
 func New(database *db.DB, store storage.Storage, opts Options) *Service {
 	s := &Service{db: database, store: store, opts: opts}
+	if opts.Transport != nil {
+		s.spool = delivery.NewSpool(database, store, opts.Transport)
+	}
 	for _, email := range opts.Admins {
 		if email = strings.ToLower(strings.TrimSpace(email)); email != "" {
 			s.admins = append(s.admins, email)
@@ -67,7 +75,7 @@ func dbError(err error) error {
 	code := connect.CodeInternal
 	switch {
 	case errors.Is(err, db.ErrMailboxNotFound), errors.Is(err, db.ErrMessageNotFound), errors.Is(err, db.ErrLabelNotFound),
-		errors.Is(err, db.ErrNotRestorable),
+		errors.Is(err, db.ErrNotRestorable), errors.Is(err, db.ErrDeliveryNotFound),
 		errors.Is(err, db.ErrUserNotFound), errors.Is(err, storage.ErrNotFound):
 		code = connect.CodeNotFound
 	case errors.Is(err, db.ErrAddressTaken), errors.Is(err, db.ErrLabelExists):
@@ -76,7 +84,7 @@ func dbError(err error) error {
 		code = connect.CodeInvalidArgument
 	case errors.Is(err, db.ErrUnknownLabel), errors.Is(err, db.ErrUnknownFolder), errors.Is(err, db.ErrReservedLabel):
 		code = connect.CodeInvalidArgument
-	case errors.Is(err, db.ErrChangesPruned):
+	case errors.Is(err, db.ErrChangesPruned), errors.Is(err, db.ErrNotRetryable):
 		code = connect.CodeFailedPrecondition
 	}
 	return connect.NewError(code, err.Error()).WithCause(err)

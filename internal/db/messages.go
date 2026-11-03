@@ -197,6 +197,12 @@ func marshalJSON(v any) string {
 // If m has an idempotency key that its mailbox already used, the stored
 // message is returned instead, with created false.
 func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (stored *Message, created bool, err error) {
+	return d.createMessage(ctx, m, labels, nil)
+}
+
+// createMessage is CreateMessage, with also, if not nil, run in the same
+// transaction after the insert.
+func (d *DB) createMessage(ctx context.Context, m Message, labels []string, also func(*txn) error) (stored *Message, created bool, err error) {
 	if !IsFolder(m.Folder) {
 		return nil, false, fmt.Errorf("%w: %q", ErrUnknownFolder, m.Folder)
 	}
@@ -215,7 +221,11 @@ func (d *DB) CreateMessage(ctx context.Context, m Message, labels []string) (sto
 		return nil, false, fmt.Errorf("inserting message: %w", err)
 	}
 	defer tx.Rollback()
-	if err := d.insertMessage(ctx, tx, m, labels, EventMessageCreated); err != nil {
+	err = d.insertMessage(ctx, tx, m, labels, EventMessageCreated)
+	if err == nil && also != nil {
+		err = also(tx)
+	}
+	if err != nil {
 		tx.Rollback()
 		// Lost a race with a retry using the same idempotency key.
 		if m.IdempotencyKey != "" {

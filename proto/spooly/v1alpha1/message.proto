@@ -6,11 +6,13 @@ import "buf/validate/validate.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/timestamp.proto";
 import "spooly/v1/message.proto";
+import "spooly/v1alpha1/delivery.proto";
 
 option go_package = "github.com/spoolysh/spooly/gen/spooly/v1alpha1;spoolyv1alpha1";
 
 // Message methods still taking shape, for sync clients such as an IMAP
-// bridge: they move to spooly.v1.MessageService once settled.
+// bridge, and for sending: they move to spooly.v1.MessageService once
+// settled.
 service MessageService {
   // List a mailbox's messages in a folder or with a label in the order they
   // came there, each with its seq there, for sync clients: an IMAP bridge
@@ -27,6 +29,15 @@ service MessageService {
   rpc BatchUpdateMessages(BatchUpdateMessagesRequest) returns (BatchUpdateMessagesResponse) {
     option idempotency_level = IDEMPOTENT;
   }
+
+  // Send a message from the mailbox its From is an address of, through the
+  // mail transport: it's stored in the mailbox's sent folder, read, with a
+  // delivery to each recipient, tried at once. How each went is in the
+  // deliveries: a refusal doesn't fail the call. Without a transport, it fails with FAILED_PRECONDITION.
+  // To make retries safe, send an Idempotency-Key request header, unique per
+  // mailbox and up to 128 bytes: a repeat returns the stored message, and
+  // sends nothing again.
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
 }
 
 message ListMessagesBySeqRequest {
@@ -132,4 +143,30 @@ message BatchUpdateMessagesRequest {
 message BatchUpdateMessagesResponse {
   // How many messages were updated.
   int32 updated = 1;
+}
+
+message SendMessageRequest {
+  // The envelope recipients (RCPT TO). Absent means the To, Cc, and Bcc
+  // addresses.
+  repeated string rcpt_to = 1 [(buf.validate.field).repeated = {
+    max_items: 100
+    unique: true
+    items: {
+      string: {email: true}
+    }
+  }];
+  // Raw RFC 5322 source. Its From is the address of a mailbox the caller
+  // can see, or a plus address of one, which it's sent from. Its Bcc header
+  // is taken out, and a Message-ID and a Date are added if missing.
+  bytes raw = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 41943040
+  }];
+}
+
+message SendMessageResponse {
+  // The message, as stored in the sent folder.
+  spooly.v1.Message message = 1 [(buf.validate.field).required = true];
+  // A delivery to each recipient, after the first try.
+  repeated Delivery deliveries = 2;
 }

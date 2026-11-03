@@ -14,6 +14,7 @@ import (
 	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
 	"github.com/spoolysh/spooly/internal/auth"
 	"github.com/spoolysh/spooly/internal/db"
+	"github.com/spoolysh/spooly/internal/delivery"
 	"github.com/spoolysh/spooly/internal/service"
 	"github.com/spoolysh/spooly/internal/storage/memory"
 )
@@ -33,6 +34,12 @@ type testUI struct {
 
 func newTestUI(t *testing.T) *testUI {
 	t.Helper()
+	return newTestUIWith(t, nil)
+}
+
+// newTestUIWith is newTestUI sending mail through transport.
+func newTestUIWith(t *testing.T, transport delivery.Transport) *testUI {
+	t.Helper()
 
 	database, err := db.New(t.Context(), "sqlite", "file:"+t.TempDir()+"/test.db")
 	if err != nil {
@@ -51,7 +58,7 @@ func newTestUI(t *testing.T) *testUI {
 	rec := httptest.NewRecorder()
 	sessions.SetSession(rec, user.ID)
 
-	svc := service.New(database, memory.New(), service.Options{Admins: []string{"vh@example.com"}})
+	svc := service.New(database, memory.New(), service.Options{Admins: []string{"vh@example.com"}, Transport: transport})
 	mux := http.NewServeMux()
 	NewHandler(database, sessions, svc, "http://example.test", "dev").RegisterRoutes(mux)
 	// Mount the API too, as cmd/spooly does, so routes that clash with it

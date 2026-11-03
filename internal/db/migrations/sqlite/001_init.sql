@@ -119,6 +119,34 @@ CREATE TABLE IF NOT EXISTS message_labels (
 CREATE INDEX IF NOT EXISTS idx_message_labels_label ON message_labels(label, message_id);
 CREATE INDEX IF NOT EXISTS idx_message_labels_label_seq ON message_labels(label, seq);
 
+-- A sent message's way to each recipient, through the mail transport: queued
+-- until handed over, deferred while retrying, sent once the transport took
+-- it, then what the transport tells of it later: delayed, delivered,
+-- bounced, or complained. Failed when Spooly gave up. Deleting the message
+-- deletes its deliveries, cancelling those still to go.
+CREATE TABLE IF NOT EXISTS deliveries (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL REFERENCES messages(id),
+    mailbox_id TEXT NOT NULL REFERENCES mailboxes(id),
+    recipient TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'deferred', 'sent', 'delayed', 'delivered', 'bounced', 'complained', 'failed')),
+    transport TEXT NOT NULL,
+    -- The transport's ID for the message, to look it up there.
+    transport_message_id TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    -- When to try next, while queued or deferred: a spool claims a
+    -- delivery by moving it ahead, so another doesn't send it meanwhile.
+    next_attempt_at TIMESTAMP,
+    -- The last reply or reason, such as "550 5.1.1 user unknown".
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    UNIQUE (message_id, recipient)
+);
+
+CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(next_attempt_at) WHERE status IN ('queued', 'deferred');
+CREATE INDEX IF NOT EXISTS idx_deliveries_mailbox ON deliveries(mailbox_id, id);
+
 -- Every change in the organization, by its place in commit order: lists
 -- of changes resume after an ID. IDs come from state's events counter as
 -- the transaction logging them commits: that row stays locked until then,
@@ -153,6 +181,7 @@ INSERT INTO state (name, value) VALUES ('events', 0);
 -- +goose Down
 DROP TABLE IF EXISTS state;
 DROP TABLE IF EXISTS events;
+DROP TABLE IF EXISTS deliveries;
 DROP TABLE IF EXISTS message_labels;
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS labels;
