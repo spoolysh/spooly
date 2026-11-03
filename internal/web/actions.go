@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
+	spoolyv1alpha1 "github.com/spoolysh/spooly/gen/spooly/v1alpha1"
 )
 
 // The dashboard calls the service directly rather than over HTTP, so it
@@ -205,7 +206,7 @@ func (h *Handler) updateMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := body.messageUpdate
-	req := &spoolyv1.BatchUpdateMessagesRequest{Ids: body.IDs, Folder: u.Folder, AddLabels: u.AddLabels, RemoveLabels: u.RemoveLabels, Seen: u.Seen, Flagged: u.Flagged}
+	req := &spoolyv1alpha1.BatchUpdateMessagesRequest{Ids: body.IDs, Folder: u.Folder, AddLabels: u.AddLabels, RemoveLabels: u.RemoveLabels, Seen: u.Seen, Flagged: u.Flagged}
 	if err := validate(req); err != nil {
 		writeError(w, "updateMessages", err)
 		return

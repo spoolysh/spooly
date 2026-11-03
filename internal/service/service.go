@@ -14,6 +14,7 @@ import (
 
 	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
 	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
+	"github.com/spoolysh/spooly/gen/spooly/v1alpha1/spoolyv1alpha1connect"
 	"github.com/spoolysh/spooly/internal/db"
 	"github.com/spoolysh/spooly/internal/storage"
 )
@@ -33,6 +34,9 @@ var (
 	_ spoolyv1connect.MailboxServiceHandler = (*Service)(nil)
 	_ spoolyv1connect.LabelServiceHandler   = (*Service)(nil)
 	_ spoolyv1connect.MessageServiceHandler = (*Service)(nil)
+
+	_ spoolyv1alpha1connect.MessageServiceHandler = (*Service)(nil)
+	_ spoolyv1alpha1connect.ChangeServiceHandler  = (*Service)(nil)
 )
 
 // Options configure a Service.

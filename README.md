@@ -171,11 +171,12 @@ says where it resumes; it's opaque, so pass it back as it came. Events
 are the organization's, one stream for every mailbox: webhooks will send
 them all, and a mailbox's changes are its own of them.
 
-Syncing is over Connect or gRPC only, not mapped to REST:
-`MessageService/ListMessagesBySeq` and `MessageService/ListChanges`.
+Syncing is over Connect or gRPC only, not mapped to REST, and in alpha
+(`spooly.v1alpha1`), so it may still change:
+`MessageService/ListMessagesBySeq` and `ChangeService/ListChanges`.
 
 1. Take a cursor to start from: `ListChanges` without one, as
-   `POST /spooly.v1.MessageService/ListChanges` with
+   `POST /spooly.v1alpha1.ChangeService/ListChanges` with
    `{"mailbox_id_or_address": "hello@spooly.sh"}`, has no changes, only the
    `cursor` for changes from now. Taken before listing, it misses no change
    made while the client lists.
@@ -217,10 +218,10 @@ that came there before it: moved to the archive, or back from the trash, it
 gets a new one. The IMAP bridge uses seqs as UIDs.
 
 Messages can be updated a thousand at a time, as `PATCH` does each, over
-Connect or gRPC only for now:
+Connect or gRPC only, in alpha for now:
 
 ```bash
-curl -X POST "https://spooly.example.com/spooly.v1.MessageService/BatchUpdateMessages" \
+curl -X POST "https://spooly.example.com/spooly.v1alpha1.MessageService/BatchUpdateMessages" \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"ids": ["01j9z3…", "..."], "seen": true}'
 ```
@@ -351,8 +352,9 @@ of someone with access.
 
 ## Development
 
-API definitions are in [proto/spooly/v1](proto/spooly/v1). Code is generated with
-[buf](https://buf.build):
+API definitions are in [proto/spooly/v1](proto/spooly/v1), and those still
+taking shape in [proto/spooly/v1alpha1](proto/spooly/v1alpha1), which breaking
+changes checks skip. Code is generated with [buf](https://buf.build):
 
 ```bash
 just generate   # buf generate: Go + Connect into gen/, OpenAPI into public/

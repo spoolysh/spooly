@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package spooly.v1alpha1;
+
+import "buf/validate/validate.proto";
+import "spooly/v1/message.proto";
+
+option go_package = "github.com/spoolysh/spooly/gen/spooly/v1alpha1;spoolyv1alpha1";
+
+// What changed in a mailbox, for sync clients to follow; still taking shape.
+service ChangeService {
+  // List what changed in a mailbox since a cursor: messages created,
+  // updated, and deleted, each once. Without a cursor, it returns just the
+  // cursor to start from. Events are the organization's, so the cursor moves
+  // past other mailboxes' too. Pass the response's cursor next time; while
+  // has_more, there are more right away. Events are kept for a while, then
+  // pruned: a cursor from before fails with FAILED_PRECONDITION, and the
+  // mailbox has to be synced again. For sync clients, over Connect or gRPC
+  // only: not mapped to REST.
+  rpc ListChanges(ListChangesRequest) returns (ListChangesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message ListChangesRequest {
+  // Treated as an address if it contains "@".
+  string mailbox_id_or_address = 1 [(buf.validate.field) = {
+    required: true
+    cel: {
+      id: "mailbox_id_or_address"
+      message: "must be a mailbox ID or an email address"
+      expression: "this.matches('^[0-9a-hjkmnp-tv-z]{26}$') || this.isEmail()"
+    }
+  }];
+  // The cursor from the last changes. Opaque: pass back what ListChanges
+  // returned. Absent means from now: no changes, just the cursor to start
+  // from. A sync client takes it before listing a mailbox, so it misses no
+  // change made meanwhile.
+  string cursor = 2 [(buf.validate.field).string.max_len = 64];
+  // How many of the organization's events to read, other mailboxes'
+  // included: a page can have fewer changes. Absent means 1000.
+  optional int32 limit = 3 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 5000
+  }];
+}
+
+message ListChangesResponse {
+  // Messages that came into the mailbox since, delivered or restored, in
+  // their current state. A client that listed the mailbox after taking the
+  // cursor may have them already.
+  repeated spooly.v1.MessageSummary created = 1;
+  // Messages that were there before and changed since, in their current
+  // state.
+  repeated spooly.v1.MessageSummary updated = 2;
+  // IDs of messages deleted since, even those created since: a client that
+  // listed the mailbox after taking the cursor may have them.
+  repeated string deleted = 3;
+  // Where these changes end, opaque: pass it as cursor next time.
+  string cursor = 4;
+  // Whether there are more changes after it already.
+  bool has_more = 5;
+}

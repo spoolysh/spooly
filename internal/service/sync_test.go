@@ -53,9 +53,9 @@ type changesJSON struct {
 	HasMore bool          `json:"hasMore"`
 }
 
-// rpc calls a MessageService method over Connect, for those not mapped to
-// REST. Connect leaves out empty fields, so nothing of a reused out
-// survives.
+// rpc calls a spooly.v1alpha1 method, such as "ChangeService/ListChanges",
+// over Connect: none is mapped to REST. Connect leaves out empty fields, so
+// nothing of a reused out survives.
 func rpc(t *testing.T, srv *httptest.Server, method string, req map[string]any, want int, out any) {
 	t.Helper()
 	body, err := json.Marshal(req)
@@ -65,7 +65,7 @@ func rpc(t *testing.T, srv *httptest.Server, method string, req map[string]any, 
 	if out != nil {
 		reflect.ValueOf(out).Elem().SetZero()
 	}
-	call(t, srv, "POST", "/spooly.v1.MessageService/"+method, "application/json", string(body), want, out)
+	call(t, srv, "POST", "/spooly.v1alpha1."+method, "application/json", string(body), want, out)
 }
 
 // listChanges lists a mailbox's changes since cursor.
@@ -78,7 +78,7 @@ func listChanges(t *testing.T, srv *httptest.Server, mailbox, cursor string, lim
 	if limit != 0 {
 		req["limit"] = limit
 	}
-	rpc(t, srv, "ListChanges", req, want, out)
+	rpc(t, srv, "ChangeService/ListChanges", req, want, out)
 }
 
 // listBySeq lists a@spooly.sh's messages in view, a folder or label=name,
@@ -96,7 +96,7 @@ func listBySeq(t *testing.T, srv *httptest.Server, view string, afterSeq uint32,
 		req["limit"] = limit
 	}
 	var l seqListingJSON
-	rpc(t, srv, "ListMessagesBySeq", req, 200, &l)
+	rpc(t, srv, "MessageService/ListMessagesBySeq", req, 200, &l)
 	return l
 }
 
@@ -167,7 +167,7 @@ func TestSync(t *testing.T) {
 	// Archive one, label two at once, and delete one of those.
 	call(t, srv, "PATCH", "/v1/messages/"+ids[0], "application/json", `{"folder": "archive"}`, 200, nil)
 	var batch struct{ Updated int }
-	rpc(t, srv, "BatchUpdateMessages", map[string]any{"ids": []string{ids[1], ids[2], "00000000000000000000000000"}, "add_labels": []string{"billing"}}, 200, &batch)
+	rpc(t, srv, "MessageService/BatchUpdateMessages", map[string]any{"ids": []string{ids[1], ids[2], "00000000000000000000000000"}, "add_labels": []string{"billing"}}, 200, &batch)
 	if batch.Updated != 2 {
 		t.Errorf("batch updated %d, want 2", batch.Updated)
 	}
@@ -225,10 +225,10 @@ func TestSync(t *testing.T) {
 	}
 
 	// A list by seq is a folder's or a label's, not both.
-	rpc(t, srv, "ListMessagesBySeq", map[string]any{"mailbox_id_or_address": "a@spooly.sh"}, 400, nil)
-	rpc(t, srv, "ListMessagesBySeq", map[string]any{"mailbox_id_or_address": "a@spooly.sh", "folder": "inbox", "label": "billing"}, 400, nil)
-	rpc(t, srv, "ListMessagesBySeq", map[string]any{"mailbox_id_or_address": "nobody@spooly.sh", "folder": "inbox"}, 404, nil)
-	rpc(t, srv, "ListMessagesBySeq", map[string]any{"mailbox_id_or_address": "a@spooly.sh", "label": "nolabel"}, 404, nil)
+	rpc(t, srv, "MessageService/ListMessagesBySeq", map[string]any{"mailbox_id_or_address": "a@spooly.sh"}, 400, nil)
+	rpc(t, srv, "MessageService/ListMessagesBySeq", map[string]any{"mailbox_id_or_address": "a@spooly.sh", "folder": "inbox", "label": "billing"}, 400, nil)
+	rpc(t, srv, "MessageService/ListMessagesBySeq", map[string]any{"mailbox_id_or_address": "nobody@spooly.sh", "folder": "inbox"}, 404, nil)
+	rpc(t, srv, "MessageService/ListMessagesBySeq", map[string]any{"mailbox_id_or_address": "a@spooly.sh", "label": "nolabel"}, 404, nil)
 	var newest listingJSON
 	call(t, srv, "GET", base+"messages", "", "", 200, &newest)
 	if len(newest.Messages) == 0 || newest.Messages[0].Subject == "" {

@@ -19,6 +19,7 @@ import (
 
 	spoolyv1 "github.com/spoolysh/spooly/gen/spooly/v1"
 	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
+	spoolyv1alpha1 "github.com/spoolysh/spooly/gen/spooly/v1alpha1"
 	"github.com/spoolysh/spooly/internal/db"
 	"github.com/spoolysh/spooly/internal/mailparse"
 )
@@ -291,7 +292,7 @@ func (s *Service) ListMessages(ctx context.Context, req *spoolyv1.ListMessagesRe
 	return &spoolyv1.ListMessagesResponse{Messages: summaryProtos(messages)}, nil
 }
 
-func (s *Service) ListMessagesBySeq(ctx context.Context, req *spoolyv1.ListMessagesBySeqRequest) (*spoolyv1.ListMessagesBySeqResponse, error) {
+func (s *Service) ListMessagesBySeq(ctx context.Context, req *spoolyv1alpha1.ListMessagesBySeqRequest) (*spoolyv1alpha1.ListMessagesBySeqResponse, error) {
 	a, err := s.requireMailbox(ctx, req.MailboxIdOrAddress)
 	if err != nil {
 		return nil, err
@@ -308,13 +309,13 @@ func (s *Service) ListMessagesBySeq(ctx context.Context, req *spoolyv1.ListMessa
 	if err != nil {
 		return nil, dbError(err)
 	}
-	resp := &spoolyv1.ListMessagesBySeqResponse{
-		Messages: make([]*spoolyv1.ListMessagesBySeqResponse_Entry, 0, len(messages)),
+	resp := &spoolyv1alpha1.ListMessagesBySeqResponse{
+		Messages: make([]*spoolyv1alpha1.ListMessagesBySeqResponse_Entry, 0, len(messages)),
 		Since:    timestamppb.New(since),
 		NextSeq:  next,
 	}
 	for i := range messages {
-		resp.Messages = append(resp.Messages, &spoolyv1.ListMessagesBySeqResponse_Entry{Seq: messages[i].Seq, Message: summaryProto(&messages[i])})
+		resp.Messages = append(resp.Messages, &spoolyv1alpha1.ListMessagesBySeqResponse_Entry{Seq: messages[i].Seq, Message: summaryProto(&messages[i])})
 	}
 	return resp, nil
 }
@@ -386,7 +387,7 @@ func (s *Service) UpdateMessage(ctx context.Context, req *spoolyv1.UpdateMessage
 
 // BatchUpdateMessages applies one update to each message, skipping those that
 // don't exist or that the caller can't see.
-func (s *Service) BatchUpdateMessages(ctx context.Context, req *spoolyv1.BatchUpdateMessagesRequest) (*spoolyv1.BatchUpdateMessagesResponse, error) {
+func (s *Service) BatchUpdateMessages(ctx context.Context, req *spoolyv1alpha1.BatchUpdateMessagesRequest) (*spoolyv1alpha1.BatchUpdateMessagesResponse, error) {
 	if err := checkLabels(req.AddLabels, req.RemoveLabels); err != nil {
 		return nil, err
 	}
@@ -400,7 +401,7 @@ func (s *Service) BatchUpdateMessages(ctx context.Context, req *spoolyv1.BatchUp
 		Draft:        req.Draft,
 		Forwarded:    req.Forwarded,
 	}
-	resp := &spoolyv1.BatchUpdateMessagesResponse{}
+	resp := &spoolyv1alpha1.BatchUpdateMessagesResponse{}
 	for _, id := range req.Ids {
 		_, err := s.requireMessage(ctx, id)
 		if connect.CodeOf(err) == connect.CodeNotFound {
@@ -451,7 +452,7 @@ func (s *Service) requireMailbox(ctx context.Context, idOrAddress string) (*db.M
 	return a, nil
 }
 
-func (s *Service) ListChanges(ctx context.Context, req *spoolyv1.ListChangesRequest) (*spoolyv1.ListChangesResponse, error) {
+func (s *Service) ListChanges(ctx context.Context, req *spoolyv1alpha1.ListChangesRequest) (*spoolyv1alpha1.ListChangesResponse, error) {
 	a, err := s.requireMailbox(ctx, req.MailboxIdOrAddress)
 	if err != nil {
 		return nil, err
@@ -462,7 +463,7 @@ func (s *Service) ListChanges(ctx context.Context, req *spoolyv1.ListChangesRequ
 		if err != nil {
 			return nil, dbError(err)
 		}
-		return &spoolyv1.ListChangesResponse{Created: []*spoolyv1.MessageSummary{}, Updated: []*spoolyv1.MessageSummary{}, Deleted: []string{}, Cursor: encodeCursor(now)}, nil
+		return &spoolyv1alpha1.ListChangesResponse{Created: []*spoolyv1.MessageSummary{}, Updated: []*spoolyv1.MessageSummary{}, Deleted: []string{}, Cursor: encodeCursor(now)}, nil
 	}
 	since, err := decodeCursor(req.Cursor)
 	if err != nil {
@@ -476,7 +477,7 @@ func (s *Service) ListChanges(ctx context.Context, req *spoolyv1.ListChangesRequ
 	if err != nil {
 		return nil, dbError(err)
 	}
-	return &spoolyv1.ListChangesResponse{
+	return &spoolyv1alpha1.ListChangesResponse{
 		Created: summaryProtos(c.Created),
 		Updated: summaryProtos(c.Updated),
 		Deleted: c.Deleted,

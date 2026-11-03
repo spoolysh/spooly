@@ -13,12 +13,13 @@ import (
 	"connectrpc.com/vanguard"
 
 	"github.com/spoolysh/spooly/gen/spooly/v1/spoolyv1connect"
+	"github.com/spoolysh/spooly/gen/spooly/v1alpha1/spoolyv1alpha1connect"
 	"github.com/spoolysh/spooly/internal/auth"
 )
 
 // Mount registers the API on mux: Connect, gRPC, and gRPC-Web under
-// /spooly.v1.*Service/, and REST under /v1/. Every route authenticates with
-// API keys.
+// /spooly.v1.*Service/ and /spooly.v1alpha1.*Service/, and REST under /v1/.
+// Every route authenticates with API keys.
 func (s *Service) Mount(mux *http.ServeMux) error {
 	return s.mount(mux, s.requireAPIKey)
 }
@@ -47,6 +48,8 @@ func (s *Service) mount(mux *http.ServeMux, authenticate func(http.Handler) http
 	spoolyv1connect.RegisterMailboxServiceHandler(server, s)
 	spoolyv1connect.RegisterLabelServiceHandler(server, s)
 	spoolyv1connect.RegisterMessageServiceHandler(server, s)
+	spoolyv1alpha1connect.RegisterMessageServiceHandler(server, s)
+	spoolyv1alpha1connect.RegisterChangeServiceHandler(server, s)
 
 	connecthttp.Mount(wrappingMux{mux, authenticate}, server)
 

@@ -34,6 +34,25 @@ Self-hosted mail backend with multi-protocol API (gRPC, gRPC-Web, Connect, REST)
 | `ListLabels` | `GET` | `/v1/labels` |
 | `DeleteLabel` | `DELETE` | `/v1/labels/{name}` |
 
+## Alpha
+
+Over Connect or gRPC only, and still taking shape: they may change before
+moving to `spooly.v1`.
+
+`spooly.v1alpha1.MessageService` — list a folder or label by seq, for sync
+clients such as an IMAP bridge, and update messages in batches.
+
+| RPC | |
+|---|---|
+| `ListMessagesBySeq` | A folder or label in arrival order, with each message's seq |
+| `BatchUpdateMessages` | One update to up to 1000 messages |
+
+`spooly.v1alpha1.ChangeService` — follow what changes in a mailbox.
+
+| RPC | |
+|---|---|
+| `ListChanges` | Messages created, updated, and deleted since a cursor |
+
 ## Links
 
 - [GitHub](https://github.com/spoolysh/spooly)

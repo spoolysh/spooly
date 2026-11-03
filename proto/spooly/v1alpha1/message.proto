@@ -1,0 +1,135 @@
+syntax = "proto3";
+
+package spooly.v1alpha1;
+
+import "buf/validate/validate.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+import "spooly/v1/message.proto";
+
+option go_package = "github.com/spoolysh/spooly/gen/spooly/v1alpha1;spoolyv1alpha1";
+
+// Message methods still taking shape, for sync clients such as an IMAP
+// bridge: they move to spooly.v1.MessageService once settled.
+service MessageService {
+  // List a mailbox's messages in a folder or with a label in the order they
+  // came there, each with its seq there, for sync clients: an IMAP bridge
+  // uses seqs as UIDs. Junk and trash show only in their own folders. A
+  // page shorter than limit is the last one. Over Connect or gRPC only: not
+  // mapped to REST.
+  rpc ListMessagesBySeq(ListMessagesBySeqRequest) returns (ListMessagesBySeqResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // Update several messages at once, as UpdateMessage does each. Messages
+  // that don't exist, or that the caller can't see, are skipped. Over
+  // Connect or gRPC only, for now: not mapped to REST.
+  rpc BatchUpdateMessages(BatchUpdateMessagesRequest) returns (BatchUpdateMessagesResponse) {
+    option idempotency_level = IDEMPOTENT;
+  }
+}
+
+message ListMessagesBySeqRequest {
+  // Treated as an address if it contains "@".
+  string mailbox_id_or_address = 1 [(buf.validate.field) = {
+    required: true
+    cel: {
+      id: "mailbox_id_or_address"
+      message: "must be a mailbox ID or an email address"
+      expression: "this.matches('^[0-9a-hjkmnp-tv-z]{26}$') || this.isEmail()"
+    }
+  }];
+  // What to list: a folder, or a label.
+  oneof view {
+    option (buf.validate.oneof).required = true;
+    string folder = 2 [(buf.validate.field).string = {
+      in: [
+        "inbox",
+        "archive",
+        "sent",
+        "drafts",
+        "junk",
+        "trash"
+      ]
+    }];
+    string label = 3 [(buf.validate.field).string = {
+      pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+      max_len: 64
+    }];
+  }
+  // The seq of the last message on the previous page.
+  optional uint32 after = 4;
+  // Absent means 50.
+  optional int32 limit = 5 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 1000
+  }];
+}
+
+message ListMessagesBySeqResponse {
+  // A message, with its seq in the folder or label: higher than that of
+  // any message that came there before it.
+  message Entry {
+    uint32 seq = 1 [(google.api.field_behavior) = REQUIRED];
+    spooly.v1.MessageSummary message = 2 [(google.api.field_behavior) = REQUIRED];
+  }
+  repeated Entry messages = 1;
+  // When seqs here began: the mailbox's creation for a folder, the label's
+  // for a label, so a label deleted and created again starts over. Seqs from
+  // before mean nothing. IMAP's UIDVALIDITY.
+  google.protobuf.Timestamp since = 2 [(google.api.field_behavior) = REQUIRED];
+  // Higher than any seq here, now or later. IMAP's UIDNEXT.
+  uint32 next_seq = 3 [(google.api.field_behavior) = REQUIRED];
+}
+
+message BatchUpdateMessagesRequest {
+  repeated string ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 1000
+    unique: true
+    items: {
+      string: {pattern: "^[0-9a-hjkmnp-tv-z]{26}$"}
+    }
+  }];
+  // Moves the messages to this folder.
+  optional string folder = 2 [(buf.validate.field).string = {
+    in: [
+      "inbox",
+      "archive",
+      "sent",
+      "drafts",
+      "junk",
+      "trash"
+    ]
+  }];
+  repeated string add_labels = 3 [(buf.validate.field).repeated = {
+    max_items: 100
+    unique: true
+    items: {
+      string: {
+        pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+        max_len: 64
+      }
+    }
+  }];
+  repeated string remove_labels = 4 [(buf.validate.field).repeated = {
+    max_items: 100
+    unique: true
+    items: {
+      string: {
+        pattern: "^[a-z0-9]+(?:[_-][a-z0-9]+)*$"
+        max_len: 64
+      }
+    }
+  }];
+  optional bool seen = 5;
+  optional bool answered = 6;
+  optional bool flagged = 7;
+  optional bool draft = 8;
+  optional bool forwarded = 9;
+}
+
+message BatchUpdateMessagesResponse {
+  // How many messages were updated.
+  int32 updated = 1;
+}
