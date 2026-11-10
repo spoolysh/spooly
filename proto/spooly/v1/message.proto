@@ -29,42 +29,6 @@ service MessageService {
     option (gnostic.openapi.v3.operation) = {
       parameters: {
         parameter: {
-          name: "mailbox_id_or_address"
-          in: "query"
-          description: "Mailbox ID or address. Only for POST /v1/messages."
-          schema: {
-            schema: {type: "string"}
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "mail_from"
-          in: "query"
-          description: "SMTP envelope sender (MAIL FROM)."
-          schema: {
-            schema: {
-              type: "string"
-              max_length: 254
-            }
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "received_at"
-          in: "query"
-          description: "When the MTA accepted it. Absent means now."
-          schema: {
-            schema: {
-              type: "string"
-              format: "date-time"
-            }
-          }
-        }
-      }
-      parameters: {
-        parameter: {
           name: "Idempotency-Key"
           in: "header"
           description: "Unique per mailbox, up to 128 bytes. A repeat returns the stored message."
@@ -73,84 +37,6 @@ service MessageService {
               type: "string"
               max_length: 128
             }
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "folder"
-          in: "query"
-          description: "The message's folder: inbox, archive, sent, drafts, junk, or trash. Absent means inbox."
-          schema: {
-            schema: {type: "string"}
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "labels"
-          in: "query"
-          description: "The message's labels, repeated for each, such as labels=billing. A plus address adds its tag's label too, if it exists."
-          explode: true
-          schema: {
-            schema: {
-              type: "array"
-              items: {
-                schema_or_reference: {
-                  schema: {type: "string"}
-                }
-              }
-            }
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "seen"
-          in: "query"
-          description: "Read, such as seen=true for mirrored mail that was. Absent means false."
-          schema: {
-            schema: {type: "boolean"}
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "answered"
-          in: "query"
-          description: "Replied to. Absent means false."
-          schema: {
-            schema: {type: "boolean"}
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "flagged"
-          in: "query"
-          description: "Starred. Absent means false."
-          schema: {
-            schema: {type: "boolean"}
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "draft"
-          in: "query"
-          description: "Not finished. Absent means false."
-          schema: {
-            schema: {type: "boolean"}
-          }
-        }
-      }
-      parameters: {
-        parameter: {
-          name: "forwarded"
-          in: "query"
-          description: "Forwarded. Absent means false."
-          schema: {
-            schema: {type: "boolean"}
           }
         }
       }
@@ -427,9 +313,9 @@ message MessagePart {
 // header, unique per mailbox and up to 128 bytes: a repeat returns the
 // stored message.
 message CreateMessageRequest {
-  // Treated as an address if it contains "@"; "local+tag@domain" finds
-  // "local@domain". Stored as the message's rcpt_to. Required in the first
-  // message.
+  // Mailbox ID or address. Treated as an address if it contains "@";
+  // "local+tag@domain" finds "local@domain". Stored as the message's
+  // rcpt_to. Over a stream, required in the first message.
   string mailbox_id_or_address = 1 [(buf.validate.field) = {
     ignore: IGNORE_IF_ZERO_VALUE
     cel: {
@@ -442,7 +328,7 @@ message CreateMessageRequest {
   google.api.HttpBody raw = 2 [(buf.validate.field).required = true];
   // SMTP envelope sender (MAIL FROM), e.g. Cloudflare's message.from.
   string mail_from = 3 [(buf.validate.field).string.max_len = 254];
-  // Absent means now.
+  // When the MTA accepted it. Absent means now.
   optional google.protobuf.Timestamp received_at = 4;
   // The message's folder, such as "sent" for mirrored sent mail. Empty
   // means inbox, as for new mail.
@@ -459,7 +345,8 @@ message CreateMessageRequest {
       ]
     }
   }];
-  // The message's labels. Each must exist. Mail to a plus address, such as
+  // The message's labels, repeated for each in a query string, such as
+  // labels=billing. Each must exist. Mail to a plus address, such as
   // hello+billing@spooly.sh, also gets its tag's label if there is one.
   repeated string labels = 6 [(buf.validate.field).repeated = {
     max_items: 100
@@ -471,12 +358,16 @@ message CreateMessageRequest {
       }
     }
   }];
-  // The message's flags, such as seen for mirrored mail that was read.
-  // Absent means unset, as for new mail.
+  // Read, such as seen=true for mirrored mail that was. Absent means
+  // false, as for new mail.
   bool seen = 7;
+  // Replied to. Absent means false.
   bool answered = 8;
+  // Starred. Absent means false.
   bool flagged = 9;
+  // Not finished. Absent means false.
   bool draft = 10;
+  // Forwarded. Absent means false.
   bool forwarded = 11;
 }
 
