@@ -25,9 +25,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: ./.github/actions/setup
-      - run: printf '%s\n' "$GPG_PRIVATE_KEY" > "$RUNNER_TEMP/signing.asc"
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: latest
@@ -35,4 +32,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-          GPG_KEY_FILE: ${{ runner.temp }}/signing.asc
